@@ -7981,6 +7981,11 @@ function engCaptionTypeKind(raw){
   const x=String(raw||"").toLowerCase().replace(/\./g,"").replace(/\s+/g," ").trim();
   if(/^fig(?:ure)?s?$/.test(x)) return "FIGURE_CAPTION";
   if(/^tab(?:le)?s?$/.test(x)) return "TABLE_CAPTION";
+  // Annexure/Appendix items that carry a numbered caption next to a Word table label
+  // that table (e.g. "Annexure A.1", "Appendix C.2", "Annex 4"). All annex/appendix
+  // word forms are treated as table captions; a nearby-media guard prevents a plain
+  // appendix section heading (with no adjacent table) from being mistaken for one.
+  if(/^(?:annex(?:ure|e)?s?|appendix(?:es)?|appendices)$/.test(x)) return "TABLE_CAPTION";
   if(/scheme/.test(x)) return "SCHEME_CAPTION";
   if(/graphical abstract/.test(x)) return "GRAPHICAL_ABSTRACT";
   return "OTHER_CAPTION";
@@ -7995,8 +8000,8 @@ function engParseCaptionLead(text){
   if(ga) return {raw:ga[0].slice(0,ga[0].length-(ga[1]||"").length).trim(),kind:"GRAPHICAL_ABSTRACT",type:"Graphical Abstract",id:null,rest:(ga[1]||"").trim(),strongSeparator:/^graphical\s+abstract\s*[.:;,|\-]/i.test(s),plural:false,range:false};
 
   // Full family of caption labels used across journal and supplementary files.
-  const type=String.raw`(?:supplementary\s+)?(?:figures?|figs?\.?|tables?|tabs?\.?|reaction\s+schemes?|schemes?|plates?|charts?|graphs?|images?|photographs?|photos?|illustrations?|diagrams?|flowcharts?|algorithms?|box(?:es)?|maps?)`;
-  const idAtom=String.raw`(?:S\s*-?\s*\d+(?:\.\d+)*|SI\s*-?\s*\d+(?:\.\d+)*|ESI\s*-?\s*\d+(?:\.\d+)*|[A-Z]\s*-?\s*\d+(?:\.\d+)*|\d+(?:\.\d+)*|[IVXLCDM]+)`;
+  const type=String.raw`(?:supplementary\s+)?(?:figures?|figs?\.?|tables?|tabs?\.?|reaction\s+schemes?|schemes?|plates?|charts?|graphs?|images?|photographs?|photos?|illustrations?|diagrams?|flowcharts?|algorithms?|box(?:es)?|maps?|annex(?:ure|e)?s?|appendix(?:es)?|appendices)`;
+  const idAtom=String.raw`(?:S\s*-?\s*\d+(?:\.\d+)*|SI\s*-?\s*\d+(?:\.\d+)*|ESI\s*-?\s*\d+(?:\.\d+)*|[A-Z]\s*[-.]?\s*\d+(?:\.\d+)*|\d+(?:\.\d+)*|[IVXLCDM]+)`;
   const range=String.raw`(?:\s*[-]\s*${idAtom})?`;
   const panel=String.raw`(?:\s*(?:\([A-Za-z]\s*[-]\s*[A-Za-z]\)|\([A-Za-z]\)(?:\s*[-]\s*\([A-Za-z]\))?|[A-Za-z](?:\s*[-]\s*[A-Za-z])?))?`;
   const re=new RegExp(`^(${type})\\s*(${idAtom}${range})${panel}(?=\\s|[.:;,|\\-]|$)`,`i`);
@@ -8008,7 +8013,7 @@ function engParseCaptionLead(text){
   if(sep) after=after.replace(/^\s*[.:;,|\-]\s*/,"");
   else after=after.trimStart();
   const kind=engCaptionTypeKind(m[1]);
-  return {raw,type:m[1],id:m[2].replace(/\s+/g,""),kind,rest:after.trim(),strongSeparator:!!sep,separator:sep,plural:/\b(?:figures|figs|tables|schemes|plates|charts|graphs|images|photographs|photos|illustrations|diagrams|flowcharts|algorithms|boxes|maps)\b/i.test(m[1]),range:/[-]/.test(m[2].replace(/^S-/i,""))};
+  return {raw,type:m[1],id:m[2].replace(/\s+/g,""),kind,rest:after.trim(),strongSeparator:!!sep,separator:sep,plural:/\b(?:figures|figs|tables|schemes|plates|charts|graphs|images|photographs|photos|illustrations|diagrams|flowcharts|algorithms|boxes|maps)\b/i.test(m[1]),range:/[-]/.test(m[2].replace(/^S-/i,"")),appendix:/^(?:annex|appendix|appendices)/i.test(m[1])};
 }
 
 function engCaptionStyle(style){ return ENG_CAPTION_STYLE_RE.test(String(style||"").replace(/[_-]+/g," ")); }
@@ -8049,6 +8054,10 @@ function engCaptionScoreForBlock(blocks,i){
     else if(dist===1){ score+=32; reasons.push("adjacent media/table"); }
     else if(dist===2){ score+=20; reasons.push("near media/table"); }
     else if(dist===3){ score+=10; reasons.push("nearby media/table"); }
+    // An Annexure/Appendix caption only labels a table when a table actually sits next
+    // to it. Without adjacent table media it is a plain appendix section heading, not a
+    // captioned table, so withhold caption credit.
+    if(lead.appendix && !(b.seqCaptionType==="table") && dist>3){ score-=45; reasons.push("appendix heading without adjacent table"); }
   }else if(b.seqCaptionType){
     const kind=b.seqCaptionType==="table"?"TABLE_CAPTION":"FIGURE_CAPTION";
     const dist=engCaptionMediaDistance(blocks,i,kind);
@@ -14114,7 +14123,7 @@ function fteWordSeparatorMeta(node,rawStructuralText=""){
   const tabs=(raw.match(/\t/g)||[]).length;
   const breaks=(raw.match(/\n/g)||[]).length;
   const captionHead=String.raw`(?:supplementary\s+)?(?:figures?|figs?\.?|tables?|tabs?\.?|schemes?|plates?|charts?|graphs?|images?|photographs?|photos?|illustrations?|diagrams?|flowcharts?|algorithms?|boxes?|maps?)`;
-  const captionId=String.raw`(?:S|SI|ESI|A|B)?[.-]?\d+(?:\.\d+)*(?:\s*(?:\([A-Za-z]\)|-?[A-Za-z]))?`;
+  const captionId=String.raw`(?:SI|ESI|[A-Z])?[.-]?\d+(?:\.\d+)*(?:\s*(?:\([A-Za-z]\)|-?[A-Za-z]))?`;
   let captionTabAfterId=false;
   try{ captionTabAfterId=new RegExp(String.raw`^\s*${captionHead}\s*${captionId}\s*\t`,'i').test(raw); }catch(_e){}
   return {contentTabs:tabs,contentBreaks:breaks,captionTabAfterId,leadingTab:/^\s*\t/.test(raw)};
@@ -23501,7 +23510,7 @@ function fteStructuralIdParse(raw){
 
   // Normalize child notation: 2(a) -> 2a, 2-a -> 2a, 6.2 (b) -> 6.2b.
   s=s.replace(/\s+/g,"");
-  const m=s.match(/^(?:(S|SI|ESI|A|B)[.-]?)?(\d+(?:\.\d+)*)(?:\(([A-Za-z])\)|-?([A-Za-z]))?$/i);
+  const m=s.match(/^(?:(SI|ESI|[A-Z])[.-]?)?(\d+(?:\.\d+)*)(?:\(([A-Za-z])\)|-?([A-Za-z]))?$/i);
   if(!m) return null;
   let prefix=(m[1]||"").toUpperCase();
   if(prefix==="SI"||prefix==="ESI") prefix="S";
@@ -23530,7 +23539,7 @@ fteIdParts=function(id){
 fteCmpId=function(a,b){
   const A=fteIdParts(a),B=fteIdParts(b); if(!A||!B) return 0;
   if(A.prefix!==B.prefix){
-    const rank=x=>x===""?0:(x==="A"?1:(x==="B"?2:(x==="S"?9:5)));
+    const rank=x=>x===""?0:(x==="S"?99:(/^[A-Z]$/i.test(x)?x.toUpperCase().charCodeAt(0)-64:50));
     const ra=rank(A.prefix),rb=rank(B.prefix); if(ra!==rb) return ra-rb;
     return A.prefix.localeCompare(B.prefix);
   }
@@ -23790,6 +23799,17 @@ fteCitations=function(text,kind){
   if(kind==="figure"){
     const special=fteFigureSpecialCitations(text);
     special.forEach(c=>{if(!out.some(x=>x.id===c.id&&x.index===c.index))out.push(c);});
+  }
+  if(kind==="table"){
+    // Annexure/Appendix cross-references ("Annexure A.1", "Appendix B.3") point to the
+    // correspondingly labelled table. Handled directly so the canonical id (A1, B3) is
+    // produced without routing letter-prefixed ids through the numeric id expander.
+    const axRe=/\b(?:annex(?:ure|e)?s?|appendix(?:es)?|appendices)\s+([A-Za-z]?\s*[.-]?\s*\d+(?:\.\d+)*)/gi;
+    let am;
+    while((am=axRe.exec(text))){
+      const id=fteCanonId(am[1].replace(/\s+/g,""));
+      if(id && !out.some(x=>x.id===id&&x.index===am.index)) out.push({id,index:am.index,match:am[0]});
+    }
   }
   if(kind==="equation"){
     const special=fteEquationSpecialCitations(text);
