@@ -15001,7 +15001,9 @@ function extractHtmlStructure(box){
       const rows=[...el.querySelectorAll(":scope > tbody > tr,:scope > thead > tr,:scope > tr")];
       const maxCols=rows.reduce((m,r)=>Math.max(m,r.querySelectorAll(":scope > td,:scope > th").length),0);
       const tableText=(el.textContent||"").replace(/\s+/g," ").trim();
-      blocks.push({type:"table",pos:pos++,text:tableText.slice(0,500),abbrText:tableText.slice(0,30000),rows:rows.length,cols:maxCols,style:"",hasDrawing:false,hasMath:false});
+      const rowToText=tr=>[...tr.querySelectorAll(":scope > td,:scope > th")].map(td=>(td.textContent||"").replace(/\s+/g," ").trim()).join(" | ");
+      const tableGrid=rows.map(rowToText).join("  \u2016  ").trim();
+      blocks.push({type:"table",pos:pos++,text:tableText.slice(0,500),abbrText:tableText.slice(0,30000),abbrGrid:tableGrid.slice(0,30000),rows:rows.length,cols:maxCols,style:"",hasDrawing:false,hasMath:false});
     }else{
       blocks.push({type:"p",pos:pos++,text:(el.textContent||"").replace(/\s+/g," ").trim(),style:el.className||"",hasDrawing:!!el.querySelector("img,svg"),hasMath:false,hasMathPara:false,mathCount:0});
     }
@@ -23973,8 +23975,14 @@ extractDocxStructure=async function(buf){
 
     const mathCount=el.getElementsByTagNameNS(FTE_M_NS,"oMath").length;
     const mathParaCount=el.getElementsByTagNameNS(FTE_M_NS,"oMathPara").length;
+    // Scanning text stays in the original glued form so abbreviation detection is
+    // unchanged (cell values are not turned into standalone tokens). A separate
+    // cell/row-separated grid ("AC | Activated carbon  ‖  …") is kept only for the
+    // human-readable context snippet.
     const tableText=fteXmlText(el).replace(/\s+/g," ").trim();
-    blocks.push({type:"table",pos:pos++,text:tableText.slice(0,500),abbrText:tableText.slice(0,30000),rows:rows.length,cols:maxCols,style:"",hasDrawing:drawCount>0,hasMath:mathCount>0||mathParaCount>0,mathCount,mathParaCount,isEquationLayout:false,physicalAnchor:`table:${pos-1}`});
+    const rowToText=tr=>[...tr.getElementsByTagNameNS(FTE_W_NS,"tc")].map(tc=>fteXmlText(tc).replace(/\s+/g," ").trim()).join(" | ");
+    const tableGrid=rows.map(rowToText).join("  \u2016  ").trim();
+    blocks.push({type:"table",pos:pos++,text:tableText.slice(0,500),abbrText:tableText.slice(0,30000),abbrGrid:tableGrid.slice(0,30000),rows:rows.length,cols:maxCols,style:"",hasDrawing:drawCount>0,hasMath:mathCount>0||mathParaCount>0,mathCount,mathParaCount,isEquationLayout:false,physicalAnchor:`table:${pos-1}`});
   });
   return blocks;
 };
@@ -26689,7 +26697,12 @@ fteAnalyze=function(blocks){
     const txt=ntext(overrideText!=null?overrideText:(rec?.block?.abbrText||rec?.text||""));
     if(!txt) return;
     if(scope.parts.some(p=>p.index===rec?.index&&p.role===role&&p.text===txt)) return;
-    scope.parts.push({index:rec?.index??-1,role,type:String(rec?.type||""),text:txt,
+    // Scanning runs on `text` (unchanged glued form). `display` is a readable,
+    // cell/row-separated rendering of the same table content, used only when building
+    // the context snippet so a finding's row is legible without affecting detection.
+    const grid=ntext(rec?.block?.abbrGrid||"");
+    const display=(role==="table_content"&&grid)?grid:txt;
+    scope.parts.push({index:rec?.index??-1,role,type:String(rec?.type||""),text:txt,display,
       confidence:Number(rec?.confidence||0.8),structuralEvidence:[...(rec?.reasons||[])]});
   }
 
@@ -26784,10 +26797,32 @@ fteAnalyze=function(blocks){
 
   function snippet(text,token){
     const s=String(text||"").replace(/\s+/g," ").trim();if(!s)return"";
-    const idx=s.toLowerCase().indexOf(String(token||"").toLowerCase());let start=idx>120?Math.max(0,idx-100):0;
-    let piece=s.slice(start,start+330);if(start>0)piece="… "+piece;if(start+330<s.length)piece+=" …";
+    const tok=String(token||"");
+    const idx=s.toLowerCase().indexOf(tok.toLowerCase());
+    let piece;
+    if(idx>=0 && s.indexOf("\u2016")>=0){
+      // Table content: isolate the single "‖"-delimited row that contains the finding
+      // so neighbouring rows do not spill into the snippet. The row begins with its
+      // first cell, which serves as the row label ("Chemical oxygen demand (COD) …").
+      const rs=s.lastIndexOf("\u2016",idx);
+      const rowStart=rs<0?0:rs+1;
+      const re=s.indexOf("\u2016",idx+tok.length);
+      const rowEnd=re<0?s.length:re;
+      let row=s.slice(rowStart,rowEnd).replace(/^[\s|]+/,"").replace(/[\s|]+$/,"").trim();
+      if(row.length>360){
+        // A very wide row: keep the leading label cell plus a window around the match.
+        const label=row.split(" | ")[0]||"";
+        const mIn=row.toLowerCase().indexOf(tok.toLowerCase());
+        const from=Math.max(0,mIn-70),to=Math.min(row.length,mIn+tok.length+110);
+        let win=(from>0?"… ":"")+row.slice(from,to)+(to<row.length?" …":"");
+        piece=(from>label.length+3)?(label+" | … "+win):win;
+      }else piece=row;
+    }else{
+      let start=idx>120?Math.max(0,idx-100):0;
+      piece=s.slice(start,start+330);if(start>0)piece="… "+piece;if(start+330<s.length)piece+=" …";
+    }
     let html=escapeHtml(piece);
-    try{html=html.replace(new RegExp(`\\b(${escapeRegExp(token)})\\b`,"i"),"<mark>$1</mark>");}catch(_e){}
+    try{html=html.replace(new RegExp(`\\b(${escapeRegExp(tok)})\\b`,"i"),"<mark>$1</mark>");}catch(_e){}
     return html;
   }
   function tokenCandidate(scopeText,index,raw,standardSet){
@@ -26808,7 +26843,7 @@ fteAnalyze=function(blocks){
     const defsByKey=new Map(),occByKey=new Map();
     const addDefs=part=>{
       for(const d of definitionPairs(part.text)){
-        const rec={...d,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label,partRole:part.role,text:part.text};
+        const rec={...d,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label,partRole:part.role,text:part.text,display:part.display||part.text};
         if(!defsByKey.has(d.key))defsByKey.set(d.key,[]);
         if(!defsByKey.get(d.key).some(x=>String(x.long).toLowerCase()===String(d.long).toLowerCase()))defsByKey.get(d.key).push(rec);
       }
@@ -26827,7 +26862,7 @@ fteAnalyze=function(blocks){
           return false;
         });
         if(!occByKey.has(k))occByKey.set(k,[]);
-        occByKey.get(k).push({key:k,raw,index:m.index,partRole:part.role,text:part.text,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label,definitionOccurrence});
+        occByKey.get(k).push({key:k,raw,index:m.index,partRole:part.role,text:part.text,display:part.display||part.text,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label,definitionOccurrence});
       }
     }
     scope.definitions=[...defsByKey.values()].flat();scope.occurrences=[...occByKey.values()].flat();scope.byKey=new Map();
@@ -26859,7 +26894,7 @@ fteAnalyze=function(blocks){
       const differing=allDefs.filter(d=>baseMeaning&&!sameMeaning(baseMeaning,d.long,display));
       const localMeanings=[];allDefs.forEach(d=>{if(!localMeanings.some(x=>sameMeaning(x.long,d.long,display)))localMeanings.push(d);});
       if((differing.length||(!baseMeaning&&localMeanings.length>1))&&!issueKeys.has(k+'|conflict')){
-        const contexts=allDefs.map(d=>({label:`${d.scopeLabel} definition`,html:snippet(d.text,d.form||display),structuralScope:d.scopeId})).filter(x=>x.html);
+        const contexts=allDefs.map(d=>({label:`${d.scopeLabel} definition`,html:snippet(d.display||d.text,d.form||display),structuralScope:d.scopeId})).filter(x=>x.html);
         result.errors.push({abbr:display,msg:`Conflicting definitions across manuscript scopes. ${display} is associated with materially different full forms. Use one unambiguous meaning throughout the manuscript.`,contexts,snip:contexts[0]?.html||null,semanticConflict:true,structuralScopeConflict:true});
         issueKeys.add(k+'|conflict');if(row)row.status='err';
       }
@@ -26867,10 +26902,10 @@ fteAnalyze=function(blocks){
         if((e.definitions||[]).length)continue;
         const msg=e.scopeType==='table'?`${display} is used in ${e.scopeLabel} without a local definition. This does not affect main-text first-use compliance; review whether the target journal requires the table to be self-contained.`:`${display} is used in ${e.scopeLabel} without a local definition. This does not affect main-text first-use compliance; review whether the target journal requires the figure caption or legend to be self-contained.`;
         const ik=k+'|'+e.scopeId;if(issueKeys.has(ik))continue;const use=e.ordinaryUses[0];
-        result.warnings.push({abbr:display,msg,rowLongForm:row?.longForm||bestDef?.long||null,snip:snippet(use?.text||'',use?.raw||display),contexts:[{label:`${e.scopeLabel} use`,html:snippet(use?.text||'',use?.raw||display),structuralScope:e.scopeId}],structuralSelfContainment:true,localScopeType:e.scopeType,localScopeLabel:e.scopeLabel});
+        result.warnings.push({abbr:display,msg,rowLongForm:row?.longForm||bestDef?.long||null,snip:snippet(use?.display||use?.text||'',use?.raw||display),contexts:[{label:`${e.scopeLabel} use`,html:snippet(use?.display||use?.text||'',use?.raw||display),structuralScope:e.scopeId}],structuralSelfContainment:true,localScopeType:e.scopeType,localScopeLabel:e.scopeLabel});
         issueKeys.add(ik);if(row&&row.status==='ok')row.status='warn';
       }
-      const localInstances=allUses.map((o,i)=>({label:`${o.scopeLabel} · use ${i+1}`,structuralScope:o.scopeId,structuralScopeType:o.scopeType,occurrenceRole:'structural_local_use',html:snippet(o.text,o.raw||display)})).filter(x=>x.html);
+      const localInstances=allUses.map((o,i)=>({label:`${o.scopeLabel} · use ${i+1}`,structuralScope:o.scopeId,structuralScopeType:o.scopeType,occurrenceRole:'structural_local_use',html:snippet(o.display||o.text,o.raw||display)})).filter(x=>x.html);
       const localDefinitionInstances=allDefs.map((d,i)=>({
         label:`${d.scopeLabel} · definition ${i+1}`,
         structuralScope:d.scopeId,
@@ -26878,7 +26913,7 @@ fteAnalyze=function(blocks){
         definitionRole:'structural_local_definition',
         html:(typeof abbrFullDefinitionSentenceHtml==="function"
           ?abbrFullDefinitionSentenceHtml(d.text,d.form||display,Number.isFinite(d.shortStart)?d.shortStart:null)
-          :snippet(d.text,d.form||display))
+          :snippet(d.display||d.text,d.form||display))
       })).filter(x=>x.html);
       if(row){
         if(!row.longForm && bestDef?.long) row.longForm=bestDef.long;
