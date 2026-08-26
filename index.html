@@ -9604,8 +9604,11 @@ function collectDefs(sent,si,add){
 
     // Parenthesised atom groups followed by a stoichiometric subscript are
     // chemical formula syntax, not abbreviation definitions: Ni(OH)2,
-    // Al(OH)3, Ca(NO3)2, etc.
-    if(/^\s*[₀-₉0-9]/u.test(afterParen) && /^[A-Za-z][A-Za-z0-9+−-]{0,8}$/.test(inner)) continue;
+    // Al(OH)3, Ca(NO3)2, etc. The subscript is attached to the closing
+    // parenthesis, so require the digit immediately after ")" — a digit
+    // separated by a space is a trailing value (e.g. "…(LDPE) 99.99%"),
+    // which must not suppress a genuine definition.
+    if(/^[₀-₉0-9]/u.test(afterParen) && /^[A-Za-z][A-Za-z0-9+−-]{0,8}$/.test(inner)) continue;
 
     // High-confidence forward definition. Accept both the classic full form
     // (ABBR) construction and real scientific variants where the abbreviation
@@ -26842,7 +26845,13 @@ fteAnalyze=function(blocks){
   function scanScope(scope,standardSet){
     const defsByKey=new Map(),occByKey=new Map();
     const addDefs=part=>{
-      for(const d of definitionPairs(part.text)){
+      // Extract definitions from the cell/row-separated rendering when available
+      // (table scopes carry it as part.display). Cell boundaries keep a "Full form
+      // (ABBR)" definition from being corrupted by the adjacent cell, so an in-table
+      // definition such as "Low density polyethylene (LDPE)" is recognised instead of
+      // being fused into "…residueLow density polyethylene (LDPE)". Non-table parts have
+      // display === text, so their behaviour is unchanged.
+      for(const d of definitionPairs(part.display||part.text)){
         const rec={...d,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label,partRole:part.role,text:part.text,display:part.display||part.text};
         if(!defsByKey.has(d.key))defsByKey.set(d.key,[]);
         if(!defsByKey.get(d.key).some(x=>String(x.long).toLowerCase()===String(d.long).toLowerCase()))defsByKey.get(d.key).push(rec);
