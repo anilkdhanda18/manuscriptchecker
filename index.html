@@ -7981,11 +7981,6 @@ function engCaptionTypeKind(raw){
   const x=String(raw||"").toLowerCase().replace(/\./g,"").replace(/\s+/g," ").trim();
   if(/^fig(?:ure)?s?$/.test(x)) return "FIGURE_CAPTION";
   if(/^tab(?:le)?s?$/.test(x)) return "TABLE_CAPTION";
-  // Annexure/Appendix items that carry a numbered caption next to a Word table label
-  // that table (e.g. "Annexure A.1", "Appendix C.2", "Annex 4"). All annex/appendix
-  // word forms are treated as table captions; a nearby-media guard prevents a plain
-  // appendix section heading (with no adjacent table) from being mistaken for one.
-  if(/^(?:annex(?:ure|e)?s?|appendix(?:es)?|appendices)$/.test(x)) return "TABLE_CAPTION";
   if(/scheme/.test(x)) return "SCHEME_CAPTION";
   if(/graphical abstract/.test(x)) return "GRAPHICAL_ABSTRACT";
   return "OTHER_CAPTION";
@@ -8000,8 +7995,8 @@ function engParseCaptionLead(text){
   if(ga) return {raw:ga[0].slice(0,ga[0].length-(ga[1]||"").length).trim(),kind:"GRAPHICAL_ABSTRACT",type:"Graphical Abstract",id:null,rest:(ga[1]||"").trim(),strongSeparator:/^graphical\s+abstract\s*[.:;,|\-]/i.test(s),plural:false,range:false};
 
   // Full family of caption labels used across journal and supplementary files.
-  const type=String.raw`(?:supplementary\s+)?(?:figures?|figs?\.?|tables?|tabs?\.?|reaction\s+schemes?|schemes?|plates?|charts?|graphs?|images?|photographs?|photos?|illustrations?|diagrams?|flowcharts?|algorithms?|box(?:es)?|maps?|annex(?:ure|e)?s?|appendix(?:es)?|appendices)`;
-  const idAtom=String.raw`(?:S\s*-?\s*\d+(?:\.\d+)*|SI\s*-?\s*\d+(?:\.\d+)*|ESI\s*-?\s*\d+(?:\.\d+)*|[A-Z]\s*[-.]?\s*\d+(?:\.\d+)*|\d+(?:\.\d+)*|[IVXLCDM]+)`;
+  const type=String.raw`(?:supplementary\s+)?(?:figures?|figs?\.?|tables?|tabs?\.?|reaction\s+schemes?|schemes?|plates?|charts?|graphs?|images?|photographs?|photos?|illustrations?|diagrams?|flowcharts?|algorithms?|box(?:es)?|maps?)`;
+  const idAtom=String.raw`(?:S\s*-?\s*\d+(?:\.\d+)*|SI\s*-?\s*\d+(?:\.\d+)*|ESI\s*-?\s*\d+(?:\.\d+)*|[A-Z]\s*-?\s*\d+(?:\.\d+)*|\d+(?:\.\d+)*|[IVXLCDM]+)`;
   const range=String.raw`(?:\s*[-]\s*${idAtom})?`;
   const panel=String.raw`(?:\s*(?:\([A-Za-z]\s*[-]\s*[A-Za-z]\)|\([A-Za-z]\)(?:\s*[-]\s*\([A-Za-z]\))?|[A-Za-z](?:\s*[-]\s*[A-Za-z])?))?`;
   const re=new RegExp(`^(${type})\\s*(${idAtom}${range})${panel}(?=\\s|[.:;,|\\-]|$)`,`i`);
@@ -8013,7 +8008,7 @@ function engParseCaptionLead(text){
   if(sep) after=after.replace(/^\s*[.:;,|\-]\s*/,"");
   else after=after.trimStart();
   const kind=engCaptionTypeKind(m[1]);
-  return {raw,type:m[1],id:m[2].replace(/\s+/g,""),kind,rest:after.trim(),strongSeparator:!!sep,separator:sep,plural:/\b(?:figures|figs|tables|schemes|plates|charts|graphs|images|photographs|photos|illustrations|diagrams|flowcharts|algorithms|boxes|maps)\b/i.test(m[1]),range:/[-]/.test(m[2].replace(/^S-/i,"")),appendix:/^(?:annex|appendix|appendices)/i.test(m[1])};
+  return {raw,type:m[1],id:m[2].replace(/\s+/g,""),kind,rest:after.trim(),strongSeparator:!!sep,separator:sep,plural:/\b(?:figures|figs|tables|schemes|plates|charts|graphs|images|photographs|photos|illustrations|diagrams|flowcharts|algorithms|boxes|maps)\b/i.test(m[1]),range:/[-]/.test(m[2].replace(/^S-/i,""))};
 }
 
 function engCaptionStyle(style){ return ENG_CAPTION_STYLE_RE.test(String(style||"").replace(/[_-]+/g," ")); }
@@ -8054,10 +8049,6 @@ function engCaptionScoreForBlock(blocks,i){
     else if(dist===1){ score+=32; reasons.push("adjacent media/table"); }
     else if(dist===2){ score+=20; reasons.push("near media/table"); }
     else if(dist===3){ score+=10; reasons.push("nearby media/table"); }
-    // An Annexure/Appendix caption only labels a table when a table actually sits next
-    // to it. Without adjacent table media it is a plain appendix section heading, not a
-    // captioned table, so withhold caption credit.
-    if(lead.appendix && !(b.seqCaptionType==="table") && dist>3){ score-=45; reasons.push("appendix heading without adjacent table"); }
   }else if(b.seqCaptionType){
     const kind=b.seqCaptionType==="table"?"TABLE_CAPTION":"FIGURE_CAPTION";
     const dist=engCaptionMediaDistance(blocks,i,kind);
@@ -9604,10 +9595,7 @@ function collectDefs(sent,si,add){
 
     // Parenthesised atom groups followed by a stoichiometric subscript are
     // chemical formula syntax, not abbreviation definitions: Ni(OH)2,
-    // Al(OH)3, Ca(NO3)2, etc. The subscript is attached to the closing
-    // parenthesis, so require the digit immediately after ")" — a digit
-    // separated by a space is a trailing value (e.g. "…(LDPE) 99.99%"),
-    // which must not suppress a genuine definition.
+    // Al(OH)3, Ca(NO3)2, etc.
     if(/^[₀-₉0-9]/u.test(afterParen) && /^[A-Za-z][A-Za-z0-9+−-]{0,8}$/.test(inner)) continue;
 
     // High-confidence forward definition. Accept both the classic full form
@@ -14126,7 +14114,7 @@ function fteWordSeparatorMeta(node,rawStructuralText=""){
   const tabs=(raw.match(/\t/g)||[]).length;
   const breaks=(raw.match(/\n/g)||[]).length;
   const captionHead=String.raw`(?:supplementary\s+)?(?:figures?|figs?\.?|tables?|tabs?\.?|schemes?|plates?|charts?|graphs?|images?|photographs?|photos?|illustrations?|diagrams?|flowcharts?|algorithms?|boxes?|maps?)`;
-  const captionId=String.raw`(?:SI|ESI|[A-Z])?[.-]?\d+(?:\.\d+)*(?:\s*(?:\([A-Za-z]\)|-?[A-Za-z]))?`;
+  const captionId=String.raw`(?:S|SI|ESI|A|B)?[.-]?\d+(?:\.\d+)*(?:\s*(?:\([A-Za-z]\)|-?[A-Za-z]))?`;
   let captionTabAfterId=false;
   try{ captionTabAfterId=new RegExp(String.raw`^\s*${captionHead}\s*${captionId}\s*\t`,'i').test(raw); }catch(_e){}
   return {contentTabs:tabs,contentBreaks:breaks,captionTabAfterId,leadingTab:/^\s*\t/.test(raw)};
@@ -15004,9 +14992,10 @@ function extractHtmlStructure(box){
       const rows=[...el.querySelectorAll(":scope > tbody > tr,:scope > thead > tr,:scope > tr")];
       const maxCols=rows.reduce((m,r)=>Math.max(m,r.querySelectorAll(":scope > td,:scope > th").length),0);
       const tableText=(el.textContent||"").replace(/\s+/g," ").trim();
-      const rowToText=tr=>[...tr.querySelectorAll(":scope > td,:scope > th")].map(td=>(td.textContent||"").replace(/\s+/g," ").trim()).join(" | ");
-      const tableGrid=rows.map(rowToText).join("  \u2016  ").trim();
-      blocks.push({type:"table",pos:pos++,text:tableText.slice(0,500),abbrText:tableText.slice(0,30000),abbrGrid:tableGrid.slice(0,30000),rows:rows.length,cols:maxCols,style:"",hasDrawing:false,hasMath:false});
+      const abbrGrid=rows.map(r=>[...r.querySelectorAll(":scope > td,:scope > th")]
+        .map(c=>(c.textContent||"").replace(/\s+/g," ").trim())
+        .filter(Boolean).join(" | ")).filter(Boolean).join(" || ");
+      blocks.push({type:"table",pos:pos++,text:tableText.slice(0,500),abbrText:tableText.slice(0,30000),abbrGrid:abbrGrid.slice(0,30000),rows:rows.length,cols:maxCols,style:"",hasDrawing:false,hasMath:false});
     }else{
       blocks.push({type:"p",pos:pos++,text:(el.textContent||"").replace(/\s+/g," ").trim(),style:el.className||"",hasDrawing:!!el.querySelector("img,svg"),hasMath:false,hasMathPara:false,mathCount:0});
     }
@@ -23515,7 +23504,7 @@ function fteStructuralIdParse(raw){
 
   // Normalize child notation: 2(a) -> 2a, 2-a -> 2a, 6.2 (b) -> 6.2b.
   s=s.replace(/\s+/g,"");
-  const m=s.match(/^(?:(SI|ESI|[A-Z])[.-]?)?(\d+(?:\.\d+)*)(?:\(([A-Za-z])\)|-?([A-Za-z]))?$/i);
+  const m=s.match(/^(?:(S|SI|ESI|A|B)[.-]?)?(\d+(?:\.\d+)*)(?:\(([A-Za-z])\)|-?([A-Za-z]))?$/i);
   if(!m) return null;
   let prefix=(m[1]||"").toUpperCase();
   if(prefix==="SI"||prefix==="ESI") prefix="S";
@@ -23544,7 +23533,7 @@ fteIdParts=function(id){
 fteCmpId=function(a,b){
   const A=fteIdParts(a),B=fteIdParts(b); if(!A||!B) return 0;
   if(A.prefix!==B.prefix){
-    const rank=x=>x===""?0:(x==="S"?99:(/^[A-Z]$/i.test(x)?x.toUpperCase().charCodeAt(0)-64:50));
+    const rank=x=>x===""?0:(x==="A"?1:(x==="B"?2:(x==="S"?9:5)));
     const ra=rank(A.prefix),rb=rank(B.prefix); if(ra!==rb) return ra-rb;
     return A.prefix.localeCompare(B.prefix);
   }
@@ -23805,17 +23794,6 @@ fteCitations=function(text,kind){
     const special=fteFigureSpecialCitations(text);
     special.forEach(c=>{if(!out.some(x=>x.id===c.id&&x.index===c.index))out.push(c);});
   }
-  if(kind==="table"){
-    // Annexure/Appendix cross-references ("Annexure A.1", "Appendix B.3") point to the
-    // correspondingly labelled table. Handled directly so the canonical id (A1, B3) is
-    // produced without routing letter-prefixed ids through the numeric id expander.
-    const axRe=/\b(?:annex(?:ure|e)?s?|appendix(?:es)?|appendices)\s+([A-Za-z]?\s*[.-]?\s*\d+(?:\.\d+)*)/gi;
-    let am;
-    while((am=axRe.exec(text))){
-      const id=fteCanonId(am[1].replace(/\s+/g,""));
-      if(id && !out.some(x=>x.id===id&&x.index===am.index)) out.push({id,index:am.index,match:am[0]});
-    }
-  }
   if(kind==="equation"){
     const special=fteEquationSpecialCitations(text);
     special.forEach(c=>{if(!out.some(x=>x.id===c.id&&x.index===c.index))out.push(c);});
@@ -23978,14 +23956,11 @@ extractDocxStructure=async function(buf){
 
     const mathCount=el.getElementsByTagNameNS(FTE_M_NS,"oMath").length;
     const mathParaCount=el.getElementsByTagNameNS(FTE_M_NS,"oMathPara").length;
-    // Scanning text stays in the original glued form so abbreviation detection is
-    // unchanged (cell values are not turned into standalone tokens). A separate
-    // cell/row-separated grid ("AC | Activated carbon  ‖  …") is kept only for the
-    // human-readable context snippet.
     const tableText=fteXmlText(el).replace(/\s+/g," ").trim();
-    const rowToText=tr=>[...tr.getElementsByTagNameNS(FTE_W_NS,"tc")].map(tc=>fteXmlText(tc).replace(/\s+/g," ").trim()).join(" | ");
-    const tableGrid=rows.map(rowToText).join("  \u2016  ").trim();
-    blocks.push({type:"table",pos:pos++,text:tableText.slice(0,500),abbrText:tableText.slice(0,30000),abbrGrid:tableGrid.slice(0,30000),rows:rows.length,cols:maxCols,style:"",hasDrawing:drawCount>0,hasMath:mathCount>0||mathParaCount>0,mathCount,mathParaCount,isEquationLayout:false,physicalAnchor:`table:${pos-1}`});
+    const abbrGrid=rows.map(r=>[...r.getElementsByTagNameNS(FTE_W_NS,"tc")]
+      .map(tc=>fteXmlText(tc).replace(/\s+/g," ").trim())
+      .filter(Boolean).join(" | ")).filter(Boolean).join(" || ");
+    blocks.push({type:"table",pos:pos++,text:tableText.slice(0,500),abbrText:tableText.slice(0,30000),abbrGrid:abbrGrid.slice(0,30000),rows:rows.length,cols:maxCols,style:"",hasDrawing:drawCount>0,hasMath:mathCount>0||mathParaCount>0,mathCount,mathParaCount,isEquationLayout:false,physicalAnchor:`table:${pos-1}`});
   });
   return blocks;
 };
@@ -26696,16 +26671,12 @@ fteAnalyze=function(blocks){
     }
     return true;
   }
-  function addPart(scope,rec,role,overrideText=null){
+  function addPart(scope,rec,role,overrideText=null,overrideDisplay=null){
     const txt=ntext(overrideText!=null?overrideText:(rec?.block?.abbrText||rec?.text||""));
+    const display=ntext(overrideDisplay!=null?overrideDisplay:(rec?.block?.abbrGrid||txt));
     if(!txt) return;
     if(scope.parts.some(p=>p.index===rec?.index&&p.role===role&&p.text===txt)) return;
-    // Scanning runs on `text` (unchanged glued form). `display` is a readable,
-    // cell/row-separated rendering of the same table content, used only when building
-    // the context snippet so a finding's row is legible without affecting detection.
-    const grid=ntext(rec?.block?.abbrGrid||"");
-    const display=(role==="table_content"&&grid)?grid:txt;
-    scope.parts.push({index:rec?.index??-1,role,type:String(rec?.type||""),text:txt,display,
+    scope.parts.push({index:rec?.index??-1,role,type:String(rec?.type||""),text:txt,display:display||txt,
       confidence:Number(rec?.confidence||0.8),structuralEvidence:[...(rec?.reasons||[])]});
   }
 
@@ -26800,33 +26771,22 @@ fteAnalyze=function(blocks){
 
   function snippet(text,token){
     const s=String(text||"").replace(/\s+/g," ").trim();if(!s)return"";
-    const tok=String(token||"");
-    const idx=s.toLowerCase().indexOf(tok.toLowerCase());
-    let piece;
-    if(idx>=0 && s.indexOf("\u2016")>=0){
-      // Table content: isolate the single "‖"-delimited row that contains the finding
-      // so neighbouring rows do not spill into the snippet. The row begins with its
-      // first cell, which serves as the row label ("Chemical oxygen demand (COD) …").
-      const rs=s.lastIndexOf("\u2016",idx);
-      const rowStart=rs<0?0:rs+1;
-      const re=s.indexOf("\u2016",idx+tok.length);
-      const rowEnd=re<0?s.length:re;
-      let row=s.slice(rowStart,rowEnd).replace(/^[\s|]+/,"").replace(/[\s|]+$/,"").trim();
-      if(row.length>360){
-        // A very wide row: keep the leading label cell plus a window around the match.
-        const label=row.split(" | ")[0]||"";
-        const mIn=row.toLowerCase().indexOf(tok.toLowerCase());
-        const from=Math.max(0,mIn-70),to=Math.min(row.length,mIn+tok.length+110);
-        let win=(from>0?"… ":"")+row.slice(from,to)+(to<row.length?" …":"");
-        piece=(from>label.length+3)?(label+" | … "+win):win;
-      }else piece=row;
-    }else{
-      let start=idx>120?Math.max(0,idx-100):0;
-      piece=s.slice(start,start+330);if(start>0)piece="… "+piece;if(start+330<s.length)piece+=" …";
-    }
-    let html=escapeHtml(piece);
-    try{html=html.replace(new RegExp(`\\b(${escapeRegExp(tok)})\\b`,"i"),"<mark>$1</mark>");}catch(_e){}
-    return html;
+    const needle=String(token||"").trim();
+    const wholeTokenIndex=(hay,term)=>{
+      if(!term)return -1;
+      try{
+        const re=new RegExp(`(^|[^\\p{L}\\p{N}_])(${escapeRegExp(term)})(?=$|[^\\p{L}\\p{N}_])`,"iu");
+        const m=re.exec(hay);
+        return m?m.index+m[1].length:-1;
+      }catch(_e){return -1;}
+    };
+    let idx=wholeTokenIndex(s,needle);
+    if(idx<0)idx=s.toLowerCase().indexOf(needle.toLowerCase());
+    let start=idx>120?Math.max(0,idx-100):0;
+    let piece=s.slice(start,start+330);if(start>0)piece="… "+piece;if(start+330<s.length)piece+=" …";
+    const markAt=wholeTokenIndex(piece,needle);
+    if(markAt>=0)return escapeHtml(piece.slice(0,markAt))+"<mark>"+escapeHtml(piece.slice(markAt,markAt+needle.length))+"</mark>"+escapeHtml(piece.slice(markAt+needle.length));
+    return escapeHtml(piece);
   }
   function tokenCandidate(scopeText,index,raw,standardSet){
     const k=keyOf(raw);if(!k||STOPWORDS?.has?.(k))return false;
@@ -26845,14 +26805,9 @@ fteAnalyze=function(blocks){
   function scanScope(scope,standardSet){
     const defsByKey=new Map(),occByKey=new Map();
     const addDefs=part=>{
-      // Extract definitions from the cell/row-separated rendering when available
-      // (table scopes carry it as part.display). Cell boundaries keep a "Full form
-      // (ABBR)" definition from being corrupted by the adjacent cell, so an in-table
-      // definition such as "Low density polyethylene (LDPE)" is recognised instead of
-      // being fused into "…residueLow density polyethylene (LDPE)". Non-table parts have
-      // display === text, so their behaviour is unchanged.
-      for(const d of definitionPairs(part.display||part.text)){
-        const rec={...d,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label,partRole:part.role,text:part.text,display:part.display||part.text};
+      const defText=part.display||part.text;
+      for(const d of definitionPairs(defText)){
+        const rec={...d,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label,partRole:part.role,text:part.text,display:defText};
         if(!defsByKey.has(d.key))defsByKey.set(d.key,[]);
         if(!defsByKey.get(d.key).some(x=>String(x.long).toLowerCase()===String(d.long).toLowerCase()))defsByKey.get(d.key).push(rec);
       }
@@ -26921,7 +26876,7 @@ fteAnalyze=function(blocks){
         structuralScopeType:d.scopeType,
         definitionRole:'structural_local_definition',
         html:(typeof abbrFullDefinitionSentenceHtml==="function"
-          ?abbrFullDefinitionSentenceHtml(d.text,d.form||display,Number.isFinite(d.shortStart)?d.shortStart:null)
+          ?abbrFullDefinitionSentenceHtml(d.display||d.text,d.form||display,Number.isFinite(d.shortStart)?d.shortStart:null)
           :snippet(d.display||d.text,d.form||display))
       })).filter(x=>x.html);
       if(row){
@@ -26982,6 +26937,7 @@ fteAnalyze=function(blocks){
 })();
 </script>
 
+<!-- mc-patch-2026-08-26: structural abbreviation display-grid + whole-token evidence locator -->
 <script id="mc-ux24-v1">
 (()=>{
   "use strict";
