@@ -17,6 +17,7 @@ materials remain subject to their respective licences and terms.
 Project source and public version history:
 https://github.com/anilkdhanda18/manuscriptchecker/
 -->
+<!-- mc-patch-2026-08-26: nomenclature first-class declaration source -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -7863,7 +7864,7 @@ function abbrTableNoteDefinitionAssignments(text){
   // "#6:2", "# 6:2", "†", "a)", or a similar marker before the first
   // abbreviation. Remove only a leading marker when an assignment follows.
   s=s.replace(
-    /^\s*(?:(?:[#*†‡§¶]+\s*)?(?:\d{1,4}(?::\d{1,4})?\s+)|(?:[#*†‡§¶]+\s+))(?=\(?\s*[A-Za-z][A-Za-z0-9_\/-]{0,14}\s*\)?\s*(?:[:=]|\s+[–—-]\s+))/u,
+    /^\s*(?:(?:[#*†‡§¶%^&$]+\s*)?(?:\d{1,4}(?::\d{1,4})?\s+)|(?:[#*†‡§¶%^&$]+\s+))(?=\(?\s*[A-Za-z][A-Za-z0-9_\/-]{0,14}\s*\)?\s*(?:[:=]|\s+[–—-]\s+))/u,
     ""
   );
 
@@ -7876,7 +7877,7 @@ function abbrTableNoteDefinitionAssignments(text){
       // a real abbreviation (for example GA + C from GAC) under case-insensitive
       // matching. Inside an explicit list, comma/semicolon boundaries already
       // identify each entry; only punctuation-style markers are allowed.
-      String.raw`(?:^|[,;]\s*)(?:[*†‡§¶#]+\s*)?\(?\s*(${sf})\s*\)?\s*(?:[:=]|\s+[–—-]\s+)`,
+      String.raw`(?:^|[,;]\s*)(?:[*†‡§¶#%^&$]+\s*)?\(?\s*(${sf})\s*\)?\s*(?:[:=]|\s+[–—-]\s+)`,
       "gu"
     );
   }catch(_e){
@@ -7909,6 +7910,11 @@ function abbrTableNoteDefinitionAssignments(text){
       .replace(/[\s,;:.]+$/,"")
       .trim();
 
+    // Do not reinterpret ratio notation such as C:N ratio as the assignment
+    // "C: N ratio", and never treat the Note/Source label itself as a short form.
+    if(/^(?:note|notes|source|abbreviations?)$/i.test(cur.token)) continue;
+    if(cur.token.length===1 && /^[A-Z]\s+ratio\b/i.test(value)) continue;
+
     // Explicit definition-list values may legitimately contain commas, digits,
     // hyphens and chemical nomenclature. Require lexical content, but do not
     // demand acronym-initial matching because forms such as GenX and ADONA are
@@ -7916,6 +7922,41 @@ function abbrTableNoteDefinitionAssignments(text){
     if(!value || value.length>260 || !/\p{L}/u.test(value)) continue;
     if(/^(?:https?:\/\/|www\.)/i.test(value)) continue;
     if(/^[\d\s.,±×x%°µμ\/^·⋅−–—-]+$/u.test(value)) continue;
+
+    // Reactor/sample/material designations written with a dash are not
+    // abbreviation-key assignments. In narrative prose a sequence such as
+    // "MFC - R ..., MFC - G ..., MFC - RG ..." previously allowed the first
+    // label to consume the following prose as an apparent full form, which in
+    // turn caused the whole paragraph to be reclassified as a table/figure
+    // note. Reject an assignment when its proposed value itself contains a
+    // repeated instance of the same short-form used as a dash designation.
+    // This is deliberately narrow so genuine definitions such as
+    // "COD - Chemical oxygen demand" remain valid.
+    try{
+      const repeatedDesignation=new RegExp(
+        String.raw`\b${escapeRegExp(cur.token)}\s*[–—-]\s*[A-Za-z0-9][A-Za-z0-9_-]{0,20}\b`,
+        "u"
+      );
+      if(repeatedDesignation.test(value)) continue;
+
+      // A dash designation can also be isolated by punctuation before the next
+      // designation, e.g. "MFC - R achieved ..., MFC - G achieved ...". In
+      // that case the candidate value begins with the designation suffix rather
+      // than with a lexical full form. Reject this narrow code + narrative-verb
+      // shape while preserving genuine definitions such as
+      // "OV - Operating voltage" and "MFC - Microbial fuel cell".
+      const dm=value.match(/^([A-Z][A-Z0-9]{0,5})\b(?:\s+([\s\S]*))?$/u);
+      if(dm){
+        const rest=String(dm[2]||"").trim();
+        if(!rest || /^(?:achiev(?:e|ed|es)|show(?:s|ed)?|was|were|is|are|had|has|have|produced?|recorded?|reached?|gave|gives?|yielded?|exhibited?|displayed?|measured?|at|with|in|for|compared|\d)/i.test(rest)) continue;
+        // A dash-separated material/sample series such as "rGO - GCN and GO"
+        // is a designation, not the lexical expansion of rGO. If the proposed
+        // value starts with another compact code followed by a list connector,
+        // reject the assignment. Genuine definitions such as "COD - Chemical
+        // oxygen demand" and non-initialism names such as GenX remain eligible.
+        if(/^(?:and|or|\/|,|[-–—])\s*[A-Z0-9]/.test(rest)) continue;
+      }
+    }catch(_e){}
 
     out.push({
       shortForm:cur.token,
@@ -7937,12 +7978,17 @@ function abbrLooksTableNoteDefinitionLine(text){
   const assignments=abbrTableNoteDefinitionAssignments(s);
   if(assignments.length>=2) return true;
 
-  // A single explicit assignment can also be a table note when it is a compact
-  // note/continuation paragraph. This covers NA=Not applicable, NR=Not reported,
-  // and similar table-specific definitions.
-  if(assignments.length===1 && s.length<=1200) return true;
+  // A single assignment alone is not enough to convert ordinary narrative prose
+  // into a table note. The anchored syntax check below handles genuine compact
+  // notes such as "NA = Not applicable" while avoiding ratio notation such as
+  // "C:N ratio" inside normal paragraphs.
 
-  const lead=abbrDefinitionMarkerSource();
+  // Use a stricter marker grammar here than in the general definition
+  // collector. A bare alphabetic word must never be consumed as a footnote
+  // marker, otherwise narrative text such as "The C:N ratio ..." can be
+  // misread as the assignment "C: N ratio". Supported markers remain
+  // punctuation/symbols and explicit forms such as a), (a), 1), or (1).
+  const lead=String.raw`(?:(?:[\p{P}\p{S}\u2070-\u209F\u1D2C-\u1DFF]{1,8}|\(?[a-z0-9]{1,3}\)?[.)])\s*)?`;
   const sf=ABBR_TABLE_NOTE_SHORTFORM_SRC;
   try{
     const first=new RegExp(
@@ -7959,7 +8005,12 @@ function abbrLooksTableNoteDefinitionLine(text){
 function abbrLooksTableNoteContinuationLine(text){
   const s=engNormStructuralText(text);
   if(!s || s.length>1600) return false;
-  if(abbrTableNoteDefinitionAssignments(s).length>=1) return true;
+
+  // Reuse the anchored table-note definition classifier rather than accepting
+  // any assignment-like substring anywhere in the paragraph. This prevents
+  // ordinary scientific prose containing expressions such as C=O, C-O or
+  // equation fragments from being pulled into a nearby table/figure scope.
+  if(abbrLooksTableNoteDefinitionLine(s)) return true;
 
   // Symbol/footnote explanations often continue directly after an abbreviation
   // list and belong to the same table scope.
@@ -8108,20 +8159,30 @@ function engClassifyStructuralBlocks(blocks){
     const baseStyle=String(r.block?.style||"");
     for(let j=i+1;j<Math.min(out.length,i+5);j++){
       const x=out[j];
-      if(x.type==="EMPTY"||x.type==="MEDIA") continue;
+
+      // A blank paragraph is a strong Word-level boundary between a caption and
+      // following narrative prose. Do not jump across it and attach later body
+      // paragraphs to the caption. A media-only block may still sit between a
+      // caption and an explicit legend/note, so it can be skipped.
+      if(x.type==="EMPTY") break;
+      if(x.type==="MEDIA") continue;
       if(x.type!=="BODY_PROSE") break;
+
       const sameCaptionStyle=baseStyle && String(x.block?.style||"")===baseStyle && engCaptionStyle(baseStyle);
       const continuation=engLooksLikeCaptionContinuation(x.text);
       const labelOnly=engWordCount(r.text)<=5 && !engParseCaptionLead(r.text)?.rest;
       const nounContinuation=labelOnly && engWordCount(x.text)<=120 && !/[.!?]\s+[A-Z]/.test(x.text) && !ENG_CAPTION_REPORTING_VERB_RE.test(x.text);
-      const grammaticalContinuation=engWordCount(x.text)<=120 && (
-        (!/[.!?]\s*$/.test(r.text) && !ENG_CAPTION_REPORTING_VERB_RE.test(x.text)) ||
-        /^[a-z(\[]/.test(x.text)
-      );
-      if(sameCaptionStyle || continuation || nounContinuation || grammaticalContinuation){
+
+      // Deliberately do not infer caption continuation merely because the
+      // caption lacks terminal punctuation or the next paragraph begins with a
+      // lower-case word. Journal/thesis layouts frequently place normal prose
+      // immediately after captions, and figures can interrupt a body sentence.
+      // Continuation therefore requires Word caption style, explicit legend/
+      // note/panel grammar, or a genuine label-only caption split.
+      if(sameCaptionStyle || continuation || nounContinuation){
         x.type=/^TABLE/.test(r.type)?"TABLE_NOTE":"CAPTION_CONTINUATION";
         x.confidence=.93;
-        x.reasons.push(sameCaptionStyle?"same caption style":continuation?"caption-note/panel continuation":nounContinuation?"description following label-only caption":"grammatical continuation of caption");
+        x.reasons.push(sameCaptionStyle?"same caption style":continuation?"caption-note/panel continuation":"description following label-only caption");
         continue;
       }
       break;
@@ -9217,6 +9278,48 @@ function abbrFindProtectedChemicalFormulaSpans(sent){
   return spans;
 }
 
+/* Chemical-formula case consistency. A formula such as KCl is chemistry, while
+   an all-capital spelling such as KCL should not be misreported as an undefined
+   acronym when the correctly cased formula occurs elsewhere in the manuscript.
+   We only infer a correction from an observed valid formula containing at least
+   one genuine two-letter element symbol, which avoids turning arbitrary acronym
+   strings such as COD or PBS into chemistry. */
+function mcChemFormulaCaseKey(raw){
+  return mcChemAsciiSubscripts(mcChemStripCharge(raw))
+    .replace(/[^A-Za-z0-9]/g,"")
+    .toUpperCase();
+}
+function mcChemCollectProperCaseFormulaVariants(sentences){
+  const map=new Map();
+  const re=/(?<![A-Za-z0-9_])([A-Za-z0-9()[\]{}·⋅⁺⁻+−₀-₉⁰-⁹]{2,64})(?![A-Za-z0-9_])/gu;
+  for(const sent of (sentences||[])){
+    const text=String(sent||""); let m; re.lastIndex=0;
+    while((m=re.exec(text))!==null){
+      const raw=m[1],info=mcChemFormulaInfo(raw);
+      if(!info.valid || info.elementTokens<2 || !info.hasProperTwoLetterElement) continue;
+      let display=raw;
+      const outer=raw.match(/^\(([^()]+)\)$/);
+      if(outer){
+        const innerInfo=mcChemFormulaInfo(outer[1]);
+        if(innerInfo.valid && innerInfo.elementTokens>=2) display=outer[1];
+      }
+      const key=mcChemFormulaCaseKey(display); if(!key) continue;
+      if(!map.has(key)) map.set(key,display);
+    }
+  }
+  return map;
+}
+function mcChemProbableCaseCorrection(raw,variantMap){
+  const token=String(raw||"").trim();
+  if(!/^[A-Z]{2,16}$/.test(token)) return null;
+  const key=mcChemFormulaCaseKey(token);
+  const proper=variantMap?.get?.(key)||null;
+  if(!proper || proper===token || proper.toUpperCase()!==token.toUpperCase()) return null;
+  const info=mcChemFormulaInfo(proper);
+  if(!info.valid || !info.hasProperTwoLetterElement) return null;
+  return proper;
+}
+
 /* Build note: abbreviation-list convention rule updated 2026-08-15.
    Two consistent approaches are accepted within a prose scope: listed
    abbreviations may be used directly, or listed abbreviations may be defined
@@ -9248,14 +9351,19 @@ function abbrListClean(s){
     .trim();
 }
 function abbrListKey(s){
-  return abbrCanonicalAbbreviationKey(String(s||"").replace(/^[*#$%^&†‡§¶]+\s*/,"").trim());
+  const raw=String(s||"").replace(/^[*#$%^&†‡§¶]+\s*/,"").trim();
+  const ratio=raw.match(/^([A-Z]):([A-Z])(?:\s+ratio)?$/);
+  if(ratio) return norm(ratio[1]+ratio[2]);
+  return abbrCanonicalAbbreviationKey(raw);
 }
 function abbrLooksListShort(s){
   const raw=abbrListClean(s).replace(/^[*#$%^&†‡§¶]+\s*/,"").replace(/[,:;]+$/,"").trim();
   if(!raw || raw.length>20) return false;
   if(/^(?:abbreviation|abbrev\.?|acronym|symbol|short\s*form|term|code)$/i.test(raw)) return false;
   if(/\s{2,}/.test(raw)) return false;
-  // Allow common forms: BOD, NOSB-PD, WQI, pH, CI, UASB, MLD.
+  // Allow common forms: BOD, NOSB-PD, WQI, pH, CI, UASB, MLD, and
+  // scientific ratio notation such as C:N ratio.
+  if(/^[A-Z]:[A-Z](?:\s+ratio)?$/.test(raw)) return true;
   return /^[A-Za-z][A-Za-z0-9]*(?:[./\-][A-Za-z0-9]+)*$/.test(raw) &&
          (/[A-Z]/.test(raw) || /^[a-z]{1,6}$/.test(raw));
 }
@@ -9266,14 +9374,47 @@ function abbrLooksListLong(s,shortForm=""){
   if(abbrListKey(raw)===abbrListKey(shortForm)) return false;
   return /[A-Za-z]/.test(raw);
 }
+
+/* A Nomenclature section can contain true scientific symbols in addition to
+   ordinary acronym-like entries. Keep this recognition deliberately narrower
+   than the general abbreviation grammar so symbols are accepted only when the
+   author has explicitly declared them in a recognised Nomenclature/Symbols
+   section. Unicode subscript notation such as kₙ and Word-flattened forms such
+   as C_I are canonicalised through the same scientific-symbol key used by the
+   occurrence analyser. */
+function abbrLooksNomenclatureSymbol(s){
+  const raw=abbrListClean(s).replace(/^[*#$%^&†‡§¶]+\s*/,"").replace(/[,:;]+$/,"").trim();
+  if(!raw || raw.length>24) return false;
+  const compact=raw.replace(/[\s{}]/g,"");
+  if(!compact) return false;
+  if(/^[α-ωΑ-Ωηλμσρζ]$/u.test(compact)) return true;
+  if(/^[A-Za-zα-ωΑ-Ωηλμσρζ](?:_?[A-Za-z0-9₀-₉ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜᵤᵥₓ]{1,10})?$/u.test(compact)){
+    try{
+      if(typeof isUnitExpr==="function" && isUnitExpr(compact) && [...compact].length>1) return false;
+    }catch(_e){}
+    return !!abbrScientificSymbolKey(compact);
+  }
+  return false;
+}
+function abbrIsNomenclatureSectionName(value){
+  return /^(?:nomenclature|(?:list\s+of\s+)?symbols?)\s*:?\s*$/i.test(abbrListClean(value));
+}
 function abbrRegisterListDefinition(map,shortForm,longForm,meta={}){
   const sf=abbrListClean(shortForm).replace(/^[*#$%^&†‡§¶]+\s*/,"").replace(/[,:;]+$/,"").trim();
   const lf=abbrListClean(longForm).replace(/^[–—:=\-\s]+/,"").replace(/[.;,\s]+$/,"").trim();
-  if(!abbrLooksListShort(sf) || !abbrLooksListLong(lf,sf)) return false;
-  const key=abbrListKey(sf);
+  const conventional=abbrLooksListShort(sf);
+  const scientific=!!meta.allowScientificSymbol && !conventional && abbrLooksNomenclatureSymbol(sf);
+  if((!conventional && !scientific) || !abbrLooksListLong(lf,sf)) return false;
+  const key=scientific ? abbrScientificSymbolKey(sf) : abbrListKey(sf);
   if(!key) return false;
 
-  const rec={key,form:sf,long:lf,source:"abbreviation-list",section:meta.section||"Abbreviations",location:meta.location||""};
+  const rec={
+    key,form:sf,long:lf,
+    source:scientific?"nomenclature-symbol":"abbreviation-list",
+    notationType:scientific?"scientific_symbol":"conventional_acronym",
+    section:meta.section||"Abbreviations",
+    location:meta.location||""
+  };
   const prev=map.get(key);
   if(!prev || lf.length>prev.long.length) map.set(key,rec);
   return true;
@@ -9311,7 +9452,17 @@ function extractDeclaredAbbrs(text){
       // unmistakably abbreviation-like and the expansion has >= 2 words.
       m=bare.match(/^([A-Z][A-Z0-9./\-]{1,19})\s+([A-Za-z][A-Za-z'’\-]*(?:\s+[A-Za-z][A-Za-z'’\-]*){1,15})$/);
     }
-    if(m) abbrRegisterListDefinition(map,m[1],m[2],{section,location:`text line ${i+1}`});
+    if(!m && abbrIsNomenclatureSectionName(section)){
+      // Nomenclature fallback for scientific symbols such as θ and kₙ. This
+      // runs only inside an explicitly recognised Nomenclature/Symbols section.
+      const nm=bare.match(/^(\S{1,24})\s+(.{2,220})$/);
+      if(nm && abbrLooksNomenclatureSymbol(nm[1])) m=nm;
+    }
+    if(m) abbrRegisterListDefinition(map,m[1],m[2],{
+      section,
+      location:`text line ${i+1}`,
+      allowScientificSymbol:abbrIsNomenclatureSectionName(section)
+    });
   }
   return {found,map,sections};
 }
@@ -9538,6 +9689,8 @@ function abbrDefLooksLexicalFullForm(sf,raw){
 }
 
 function abbrDefForwardShortCandidates(inner){
+  const qualified=String(inner||"").trim().match(/^([A-Z]{2,12})\s+(?:Rules|Regulations|Guidelines|Standards?|Act)$/);
+  if(qualified) return [qualified[1]];
   const src=String(inner||"").trim().replace(/[‘’]/g,"'");
   if(!src) return [];
   // Scientific writing commonly appends model, concentration, loading or other
@@ -9560,15 +9713,43 @@ function abbrPairedComponentDefinitions(sf,longForm){
   const parts=short.split("-").filter(Boolean);
   if(parts.length!==2 || !parts.every(p=>/^[A-Z]{2,10}$/.test(p))) return [];
   const lf=String(longForm||"").replace(/\s+/g," ").trim();
-  const phrases=lf.split(/\s+(?:and|&)\s+/i).map(x=>x.trim()).filter(Boolean);
-  if(phrases.length!==2) return [];
-  const out=[];
-  for(let i=0;i<2;i++){
-    const mapped=validLongForm(parts[i],phrases[i]);
-    if(!mapped || !abbrDefLooksLexicalFullForm(parts[i],mapped)) return [];
-    out.push({sf:parts[i],lf:mapped});
+
+  // Explicit coordinated wording remains the strongest case:
+  // artificial intelligence and machine learning (AI-ML).
+  const coordinated=lf.split(/\s+(?:and|&)\s+/i).map(x=>x.trim()).filter(Boolean);
+  if(coordinated.length===2){
+    const out=[];
+    for(let i=0;i<2;i++){
+      const mapped=validLongForm(parts[i],coordinated[i]);
+      if(!mapped || !abbrDefLooksLexicalFullForm(parts[i],mapped)) return [];
+      out.push({sf:parts[i],lf:mapped});
+    }
+    return out;
   }
-  return out;
+
+  // Scientific compounds are also commonly written without "and", e.g.
+  // transition-metal nanoparticles (TM-NP), field emission scanning electron
+  // microscopy (FE-SEM), or gas chromatography-mass spectrometry (GC-MS).
+  // Infer component definitions only when exactly one lexical split maps both
+  // short-form components cleanly. Ambiguous splits are deliberately rejected.
+  const words=(lf.match(/[A-Za-z][A-Za-z'’]*/g)||[]);
+  if(words.length<2 || words.length>14) return [];
+  const candidates=[];
+  for(let cut=1;cut<words.length;cut++){
+    const left=words.slice(0,cut).join(" "),right=words.slice(cut).join(" ");
+    const ml=validLongForm(parts[0],left),mr=validLongForm(parts[1],right);
+    if(!ml||!mr) continue;
+    if(!abbrDefLooksLexicalFullForm(parts[0],ml)||!abbrDefLooksLexicalFullForm(parts[1],mr)) continue;
+    // Reject Schwartz-Hearst splits that silently discard lexical material.
+    // Example: FE must map to "field emission", not merely "field" while
+    // the missing word "emission" is skipped before SEM.
+    const originalWords=words.map(w=>w.toLowerCase()).join(" ");
+    const mappedWords=((ml+" "+mr).match(/[A-Za-z][A-Za-z'’]*/g)||[]).map(w=>w.toLowerCase()).join(" ");
+    if(mappedWords!==originalWords) continue;
+    candidates.push([{sf:parts[0],lf:ml},{sf:parts[1],lf:mr}]);
+  }
+  if(candidates.length!==1) return [];
+  return candidates[0];
 }
 
 function abbrDefOrdinaryUseRole(sent,index,raw){
@@ -9609,9 +9790,18 @@ function collectDefs(sent,si,add){
       const fam=abbrAcronymFamily(normalized);
       const base=fam?fam.base:normalized;
       if(!abbrLooksConventionalShortToken(base)||STOPWORDS.has(norm(base))) continue;
-      const lf=validLongForm(base,tailWords(pre,letters(base)+7));
+      let lf=validLongForm(base,tailWords(pre,letters(base)+7));
       const balancedLf=lf&&(lf.match(/\(/g)||[]).length===(lf.match(/\)/g)||[]).length;
-      if(!balancedLf||!abbrDefLooksLexicalFullForm(base,lf)) continue;
+      const qualifiedLegal=/^[A-Z]{2,12}\s+(?:Rules|Regulations|Guidelines|Standards?|Act)$/i.test(inner);
+      if(qualifiedLegal && lf){
+        // The qualifier belongs to the displayed legal citation (e.g. EP Rules),
+        // not to the base abbreviation itself. Canonicalise the base meaning so
+        // it reconciles with a glossary entry such as SWM = Solid waste management.
+        lf=lf.replace(/,\s*(?:19|20)\d{2}\s*$/i,"").trim();
+        const qm=inner.match(/\s+(Rules|Regulations|Guidelines|Standards?|Act)$/i);
+        if(qm) lf=lf.replace(new RegExp(`\\s+${escapeRegExp(qm[1])}\\s*$`,`i`),"").trim();
+      }
+      if(!balancedLf||(!qualifiedLegal&&!abbrDefLooksLexicalFullForm(base,lf))) continue;
 
       const innerNorm=abbrNormalizeShortDash(inner);
       const relRaw=innerNorm.indexOf(normalized);
@@ -9683,7 +9873,7 @@ function collectDefs(sent,si,add){
    These definitions must be accepted without pretending that an embedded term
    such as BET was itself expanded by the compound definition.
 */
-const ABBR_SCI_PARAMETER_HEAD_RE=/\b(?:surface\s+areas?|specific\s+surface\s+areas?|pore\s+volumes?|micropore\s+volumes?|mesopore\s+volumes?|total\s+pore\s+volumes?|pore\s+(?:diameters?|sizes?)|particle\s+sizes?|concentration|content|capacity|loading|uptake|efficienc(?:y|ies)|removal\s+efficienc(?:y|ies)|recovery\s+efficienc(?:y|ies)|rate(?:\s+constant)?|constant|coefficient|density|current\s+density|power\s+density|energy\s+density|flux|potential|voltage|current|resistance|resistivity|conductivity|conductance|permeability|porosity|diameter|radius|thickness|length|width|height|area|volume|mass|weight|fraction|ratio|index|factor|yield|conversion|selectivity|recovery|removal|adsorption|absorbance|intensity|wavelength|frequency|temperature|pressure|time|retention\s+time|residence\s+time|turbidity|viscosity|velocity|flow\s+rate|dose|dosage|parameter|value|number)\s*$/i;
+const ABBR_SCI_PARAMETER_HEAD_RE=/\b(?:surface\s+areas?|specific\s+surface\s+areas?|pore\s+volumes?|micropore\s+volumes?|mesopore\s+volumes?|total\s+pore\s+volumes?|pore\s+(?:diameters?|sizes?)|particle\s+sizes?|concentration|content|capacity|capacitance|loading|uptake|efficienc(?:y|ies)|removal\s+efficienc(?:y|ies)|recovery\s+efficienc(?:y|ies)|rate(?:\s+constant)?|constant|coefficient|density|current\s+density|power\s+density|energy\s+density|flux|potential|voltage|current|resistances?|resistivity|conductivity|conductance|permeability|porosity|diameter|radius|thickness|length|width|height|area|volume|mass|weight|fraction|ratio|index|factor|yield|conversion|selectivity|recovery|removal|current\s+retention|retention|adsorption|absorbance|intensity|wavelength|frequency|temperature|pressure|time|retention\s+time|residence\s+time|turbidity|viscosity|velocity|flow\s+rate|dose|dosage|parameter|value|number)\s*$/i;
 const ABBR_SCI_SAMPLE_HEAD_RE=/\b(?:sample|specimen|reactor|experiment|run|group|batch|treatment|condition|case|series|route|site|location|station)\s*(?:no\.?\s*)?$/i;
 
 function abbrScientificSymbolKey(s){
@@ -9820,9 +10010,14 @@ function abbrTrimScientificDescriptorContext(raw){
   */
   const boundaryPatterns=[
     /\b(?:due\s+to|because\s+of|resulting\s+in|leading\s+to|associated\s+with|related\s+to)\s+/gi,
+    /\b(?:was|were|is|are)?\s*(?:ascribed|attributed|assigned|linked|correlated)\s+to\s+/gi,
     /\b(?:reduction|increase|decrease|change|variation|difference|improvement|decline)\s+in\s+/gi,
     /\b(?:measurement|determination|calculation|estimation|evaluation|analysis|assessment|quantification)\s+of\s+/gi,
-    /\b(?:effect|effects|influence|impact)\s+of\s+/gi
+    /\b(?:evaluate|evaluated|measure|measured|determine|determined|calculate|calculated|estimate|estimated|quantify|quantified|assess|assessed|characteri[sz]e|characteri[sz]ed)\s+(?:the\s+)?/gi,
+    /\b(?:(?:can|could|may|might|will|would|is|was|were|are)\s+be\s+)?(?:used\s+to\s+)?(?:find\s+out|determine|estimate|calculate|evaluate|measure|obtain|derive)\s+(?:the\s+)?/gi,
+    /\bwith\s+(?:an?\s+|the\s+)?/gi,
+    /\b(?:effect|effects|influence|impact)\s+of\s+/gi,
+    /\b(?:including|namely|specifically|such\s+as)\s+(?:the\s+)?/gi
   ];
 
   for(const re of boundaryPatterns){
@@ -9842,7 +10037,7 @@ function abbrTrimScientificDescriptorContext(raw){
   // Remove evaluative words that describe the observed magnitude rather than
   // the parameter name itself. Domain-specific modifiers such as "interfacial"
   // are deliberately retained.
-  s=s.replace(/^(?:(?:significantly|remarkably|considerably|substantially|relatively|slightly|much)\s+)?(?:lower|higher|reduced|increased|decreased|low|high)\s+/i,"").trim();
+  s=s.replace(/^(?:(?:significantly|remarkably|considerably|substantially|relatively|slightly|much)\s+)?(?:lower|higher|reduced|increased|decreased|low|high|minimal|maximal|comparable)\s+/i,"").trim();
   s=s.replace(/^(?:the|a|an)\s+/i,"").trim();
   return s.replace(/^[,;\s]+|[,;\s]+$/g,"");
 }
@@ -9860,6 +10055,13 @@ function abbrScientificDescriptorBefore(sent,parenIndex){
   // Work within the nearest major clause.
   const parts=pre.split(/[.;:]/);
   pre=parts[parts.length-1].trim();
+
+  // Coordinated reporting clauses often place the newly defined parameter after
+  // a comma + and/or, e.g. "..., and maximum derivable power density (Pmax)".
+  // Treat that punctuation as a local descriptor boundary without splitting
+  // ordinary noun phrases that contain the word 'and'.
+  const coordinated=pre.split(/,\s+(?:and|or)\s+/i);
+  if(coordinated.length>1) pre=coordinated[coordinated.length-1].trim();
 
   // If another parenthetical definition already occurred in the same clause,
   // a following "and/or the ..." usually starts a new coordinated quantity:
@@ -9991,6 +10193,8 @@ function collectScientificReverseDefs(sent,si,add){
   while((m=sepRe.exec(sent))!==null){
     const sf=m[1], separator=m[2], descriptor=m[3].trim();
     if(separator==='=' && abbrLooksFormulaLikeDefinitionRhs(descriptor)) continue;
+    // Ratio notation such as C:N ratio is not a declaration "C: N ratio".
+    if(separator===':' && sf.length===1 && /^[A-Z]\b/i.test(descriptor) && /\bratio\b/i.test(descriptor)) continue;
     if(!abbrLooksScientificShort(sf) || !abbrDescriptorLooksScientific(descriptor)) continue;
     const local=m[0].indexOf(sf);
     const start=m.index+(local>=0?local:0);
@@ -10005,6 +10209,35 @@ function collectScientificReverseDefs(sent,si,add){
     const start=m.index+m[0].toLowerCase().indexOf(sf.toLowerCase());
     add(sf,descriptor,si,"scientific-reverse",{definitionType:abbrScientificDefinitionType(sf,descriptor),shortStart:start,shortEnd:start+sf.length,semanticDefinition:true});
   }
+
+  // Equation explanations commonly use copular syntax rather than parentheses:
+  // "CI was the concentration of the KPI, CL was the lower bound ...".
+  // Accept these only when the descriptor is independently scientific OR it
+  // matches a manuscript declaration from Nomenclature/Abbreviations. This
+  // prevents ordinary sentences such as "ABC was higher" from becoming
+  // fabricated definitions.
+  const copularRe=/\b([A-Za-z][A-Za-z0-9_]{0,14})\s+(?:is|was|are|were)\s+(?:the\s+|an?\s+)?([^.;]{2,160}?)(?=,\s+(?:and\s+)?[A-Za-z][A-Za-z0-9_]{0,14}\s+(?:(?:is|was|are|were)\s+|(?:stands?\s+for|denotes?|represents?|refers?\s+to|corresponds?\s+to)\s+)|[.;]|$)/gi;
+  while((m=copularRe.exec(sent))!==null){
+    const sf=m[1];
+    let descriptor=m[2].trim().replace(/[,;:\s]+$/g,"");
+    // Explanatory qualifiers after the lexical definition do not belong to the
+    // parameter name: "WI was the weightage of the KPIs, equal to 1/7...".
+    descriptor=descriptor.split(/,\s*(?=(?:equal\b|which\b|where\b|respectively\b|corresponding\b|with\b))/i)[0].trim();
+    if(!abbrLooksScientificShort(sf)) continue;
+    let declaration=null;
+    try{
+      const ordinaryKey=abbrListKey(sf), scientificKey=abbrScientificSymbolKey(sf);
+      declaration=DECLARED_ABBR_MAP?.get?.(ordinaryKey)||DECLARED_ABBR_MAP?.get?.(scientificKey)||null;
+    }catch(_e){}
+    if(!declaration?.long) continue;
+    let declaredEquivalent=false;
+    try{declaredEquivalent=abbrDefinitionsEquivalent(declaration.long,descriptor,sf);}catch(_e){declaredEquivalent=String(declaration.long).toLowerCase()===descriptor.toLowerCase();}
+    if(!declaredEquivalent) continue;
+    const start=m.index+m[0].toLowerCase().indexOf(sf.toLowerCase());
+    const dtype=declaration?.notationType==="scientific_symbol"?"scientific_symbol":"scientific_parameter";
+    add(sf,descriptor,si,"scientific-copular",{definitionType:dtype,shortStart:start,shortEnd:start+sf.length,semanticDefinition:true,definitionRole:"declared_copular_definition"});
+  }
+
 }
 
 function abbrScientificFormRegex(form){
@@ -10080,18 +10313,30 @@ function findEarlierLongForm(sentences,longForm,beforeSent){
 function abbrLooksReferencesOnlyDocument(raw){
   const text=String(raw||"").trim();
   if(text.length<120) return false;
-  // Do not classify a normal manuscript with recognizable body structure as a
-  // references-only file.
-  if(/(?:^|\n)\s*(?:abstract|introduction|materials?\s+and\s+methods?|methodology|results?|discussion|conclusions?)\s*:?\s*(?:\n|$)/im.test(text)) return false;
+
+  // Word structure is stronger evidence than plain-text bibliography heuristics.
+  // A generated TOC can resemble a numbered reference list, so genuine body
+  // headings veto the references-only short-circuit.
+  try{
+    const structural=Array.isArray(DOCX_STRUCTURAL_PARAGRAPHS)?DOCX_STRUCTURAL_PARAGRAPHS:[];
+    if(structural.length){
+      const bodyHeading=/^(?:abstract|executive\s+summary|introduction|background|objectives?(?:\s+and\s+scope)?|materials?\s+and\s+methods?|methods?|methodology|sampling(?:\s+and\s+analytical\s+programme)?|results?(?:\s+and\s+discussion)?|discussion|review|recommendations?|conclusions?|acknowledg(?:e)?ments?|basis\s+and\s+limitations)\b/i;
+      const realHeadings=structural.filter(r=>String(r?.type||"")==="HEADING" && bodyHeading.test(String(r?.text||"").trim()));
+      const bodyParas=structural.filter(r=>String(r?.type||"")==="BODY_PROSE" && String(r?.text||"").trim().length>=80);
+      if(realHeadings.length>=1 && bodyParas.length>=2) return false;
+    }
+  }catch(_e){}
+
+  // Plain-text fallback. Accept optional section numbering so "1. Introduction"
+  // is treated as manuscript structure, not as a bibliography entry.
+  if(/(?:^|\n)\s*(?:\d+(?:\.\d+)*[.)]?\s+)?(?:abstract|executive\s+summary|introduction|materials?\s+and\s+methods?|methodology|results?(?:\s+and\s+discussion)?|discussion|recommendations?|conclusions?)\s*:?\s*(?:\n|$)/im.test(text)) return false;
+
   const lines=text.split(/\n/).map(x=>x.trim()).filter(Boolean);
   if(lines.length<4) return false;
   const numbered=lines.filter(l=>/^(?:\[\d{1,4}\]|\(\d{1,4}\)|\d{1,4}[.)])\s+\S+/.test(l)).length;
   const authorYear=lines.filter(l=>/^[A-ZÀ-ÖØ-Ý][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+,\s*(?:[A-Z]\.|[A-Z][a-z]+).{0,180}\b(?:19|20)\d{2}\b/.test(l)).length;
   const doi=(text.match(/10\.\d{4,9}\//g)||[]).length;
   const years=(text.match(/\b(?:19|20)\d{2}\b/g)||[]).length;
-  // Wrapped DOCX references may occupy several physical lines, so require a
-  // strong entry-start signal plus bibliography metadata rather than a majority
-  // of all lines.
   return (numbered>=3 && (doi>=2||years>=3)) || (authorYear>=4 && (doi>=2||years>=4));
 }
 function abbrStripPublisherBoilerplateLine(line){
@@ -10342,14 +10587,14 @@ function abbrScopeIsHeading(rec){
 }
 function abbrScopeIsAbstractLabel(text){
   const s=abbrScopeNorm(text);
-  return /^(?:\d+(?:\.\d+)*\.?\s*)?abstract\s*:?\s*$/i.test(s);
+  return /^(?:\d+(?:\.\d+)*\.?\s*)?(?:abstract|executive\s+summary)\s*:?\s*$/i.test(s);
 }
 function abbrScopeStartsWithAbstract(text){
   const s=abbrScopeNorm(text);
-  return /^(?:\d+(?:\.\d+)*\.?\s*)?abstract\b\s*(?:[:.\-]\s*|\s*$)/i.test(s);
+  return /^(?:\d+(?:\.\d+)*\.?\s*)?(?:abstract|executive\s+summary)\b\s*(?:[:.\-]\s*|\s*$)/i.test(s);
 }
 function abbrScopeStyleIsAbstract(rec){
-  return /\babstract\b/i.test(abbrScopeStyleText(rec));
+  return /\b(?:abstract|executive\s+summary)\b/i.test(abbrScopeStyleText(rec));
 }
 function abbrScopeIsKeywords(text){
   return /^(?:keywords?|key\s+words?|index\s+terms?)\b\s*(?:[:.\-]|$)/i.test(abbrScopeNorm(text));
@@ -10508,7 +10753,8 @@ function abbrBuildScopePlanFromStructure(lines){
       const sameOrHigher=level!=null && (absLevel==null ? level<=1 : level<=absLevel);
       const strength=abbrScopeMajorHeadingStrength(r);
 
-      if(structuredSub && !topNumbered && !pageBreak && structuredAbsHeads<5){
+      const executiveSummaryScope=/^(?:\d+(?:\.\d+)*\.?\s*)?executive\s+summary\s*:?\s*$/i.test(abbrScopeText(records[absIndex]));
+      if(!executiveSummaryScope && structuredSub && !topNumbered && !pageBreak && structuredAbsHeads<5){
         structuredAbsHeads++;
         continue;
       }
@@ -10527,7 +10773,24 @@ function abbrBuildScopePlanFromStructure(lines){
   }
 
   const absLine=abbrScopeFindRecordLine(lines,records[absIndex],0);
-  const mainLine=mainIndex>=0?abbrScopeFindRecordLine(lines,records[mainIndex],Math.max(0,absLine+1)):-1;
+  let mainLine=mainIndex>=0?abbrScopeFindRecordLine(lines,records[mainIndex],Math.max(0,absLine+1)):-1;
+
+  // Mammoth can omit a Word heading from the flattened raw text even though the
+  // structural record is present. In that case anchor the main-text boundary to
+  // the first substantive body paragraph after that structural heading. This is
+  // especially important for Executive Summary sections in technical reports.
+  if(mainIndex>=0 && mainLine<0 && absLine>=0){
+    for(let j=mainIndex+1;j<Math.min(records.length,mainIndex+16);j++){
+      if(!abbrScopeIsSubstantiveProse(records[j])) continue;
+      const candidate=abbrScopeFindRecordLine(lines,records[j],Math.max(0,absLine+1));
+      if(candidate>absLine){
+        mainLine=candidate;
+        evidence=(evidence||"structural main heading")+"; first body prose after structural heading";
+        confidence=Math.max(confidence,.90);
+        break;
+      }
+    }
+  }
 
   if(absLine<0) return null;
   return {
@@ -10629,7 +10892,7 @@ function prepareAbbreviationBody(rawText){
     // Remove only the Abstract heading label itself. If the Abstract is carried
     // by a dedicated paragraph style without a literal label, retain its prose.
     lines[bodyStart]=lines[bodyStart].replace(
-      /^\s*(?:\d+(?:\.\d+)*\.?\s*)?abstract\b\s*(?:[.:\-–—]\s*)?/i,""
+      /^\s*(?:\d+(?:\.\d+)*\.?\s*)?(?:abstract|executive\s+summary)\b\s*(?:[.:\-–—]\s*)?/i,""
     );
 
     // Insert the internal scope boundary before the true body start. This may be
@@ -11260,14 +11523,46 @@ function abbrExplicitDefinitionEvidence(sent,index,raw){
 
 function abbrIsCorporateAuthorYearOccurrence(sent,index,raw){
   const s=String(sent||"");
-  const end=index+String(raw||"").length;
-  const after=s.slice(end,Math.min(s.length,end+28));
-  if(!/^\s*\(\s*(?:19|20)\d{2}[a-z]?\s*\)/i.test(after)) return false;
-  // A year parenthetical after an uppercase token is author-year citation syntax,
-  // not an abbreviation definition. Keep this occurrence out of first-use logic.
-  const before=s.slice(Math.max(0,index-80),index);
-  if(/\b(?:defined|denoted|abbreviated|referred\s+to)\s+as\s*$/i.test(before)) return false;
-  return true;
+  const token=String(raw||"");
+  const end=index+token.length;
+  const after=s.slice(end,Math.min(s.length,end+40));
+  const before=s.slice(Math.max(0,index-100),index);
+
+  // Direct author-year form: EPA (1999).
+  if(/^\s*\(\s*(?:19|20)\d{2}[a-z]?\s*\)/i.test(after)){
+    if(/\b(?:defined|denoted|abbreviated|referred\s+to)\s+as\s*$/i.test(before)) return false;
+    return true;
+  }
+
+  // Parenthetical citation form: (EPA, 1999), (NEIWPCC, 2005), including a
+  // token inside a semicolon-separated author-year citation group. A year must
+  // occur in the same enclosing parenthesis, so ordinary parenthetical
+  // abbreviation definitions remain unaffected.
+  const open=s.lastIndexOf("(",index), close=s.indexOf(")",end);
+  if(open>=0 && close>=end){
+    const inner=s.slice(open+1,close);
+    const rel=index-open-1;
+    const tokenEnd=rel+token.length;
+    if(rel>=0 && tokenEnd<=inner.length){
+      const tail=inner.slice(tokenEnd);
+      const head=inner.slice(0,rel);
+      const sameCitation=/^\s*,\s*(?:19|20)\d{2}[a-z]?\b/i.test(tail) ||
+        (/^\s*(?:et\s+al\.?)?\s*,?\s*(?:19|20)\d{2}[a-z]?\b/i.test(tail) && /(?:^|[;])\s*$/.test(head));
+      if(sameCitation) return true;
+    }
+  }
+  return false;
+}
+
+const ABBR_CURRENCY_CODES=new Set(["USD","EUR","GBP","INR","JPY","CNY","AUD","CAD","CHF","SGD","HKD","NZD","AED","SAR","KRW","ZAR","BRL","MXN","RUB","TRY"]);
+function abbrIsCurrencyCodeOccurrence(sent,index,raw){
+  const code=String(raw||"").toUpperCase();
+  if(!ABBR_CURRENCY_CODES.has(code)) return false;
+  const s=String(sent||""), before=s.slice(Math.max(0,index-24),index), after=s.slice(index+String(raw||"").length,index+String(raw||"").length+32);
+  if(/^\s*[-+]?\d[\d,]*(?:\.\d+)?\b/.test(after)) return true;            // INR 146.13
+  if(/[-+]?\d[\d,]*(?:\.\d+)?\s*$/.test(before)) return true;             // 146 INR
+  if(/[₹$€£¥]\s*$/.test(before) || /^\s*[₹$€£¥]/.test(after)) return true;
+  return false;
 }
 
 function abbrClassifyCandidateOccurrence(sent,index,raw,protectedSpans){
@@ -11345,6 +11640,25 @@ function abbrStrongIdentifierMorphology(raw){
   return /[\p{N}]/u.test(t) || /[-\/@+_.]/.test(t) ||
     (/[\p{Lu}]/u.test(t) && /[\p{Ll}]/u.test(t) && /\d/u.test(t));
 }
+
+/* Explicit scientific/material/model identifier guard.
+   Digit-bearing designations such as MIL-101, ZIF-8, UiO-66, MIL-53, SBR-1,
+   TiO2-P25 and MFC-ZIF-8 are complete identifiers. Their internal capital-letter
+   fragments must never be emitted as standalone undefined abbreviations.
+
+   This recogniser is intentionally narrow and additive. Existing designation and
+   product/model protection remains in force for non-numeric identifiers, while
+   genuine complete hyphenated abbreviations such as TM-NP, FE-SEM and GC-MS are
+   still checked normally when the scanner matches the complete term. */
+function abbrLooksStructuredScientificIdentifier(raw){
+  const t=abbrCanonicalIdentifier(raw);
+  if(!t || !/[\p{L}]/u.test(t) || !/[\p{N}]/u.test(t)) return false;
+  if(!/[-\/@+_.]/.test(t)) return false;
+  const parts=t.split(/[-\/@+_.]+/).filter(Boolean);
+  if(parts.length<2 || parts.length>8) return false;
+  if(!parts.some(part=>/[\p{N}]/u.test(part))) return false;
+  return parts.every(part=>/^[\p{L}\p{N}₀-₉⁰¹²³⁴⁵⁶⁷⁸⁹]+$/u.test(part));
+}
 function abbrIdentifierBoundaryOK(sent,start,end){
   const left=start>0?sent[start-1]:"";
   const right=end<sent.length?sent[end]:"";
@@ -11412,6 +11726,24 @@ function abbrStructuredIdentifierContainerAt(sent,index,len){
   if(!/[-\u2010\u2011\u2012\u2013\u2014\u2212\/\u2044\u2215\uFF0F@+_.]/u.test(raw)) return null;
   return {start:a,end:b,raw,key:abbrIdentifierKey(raw)};
 }
+function abbrFindSpacedDashDesignationSuffixSpans(sent){
+  const spans=[];
+  const entitySrc=String.raw`(?:sample|specimen|material|catalyst|electrode|reactor|cell|MFC|device|configuration|treatment|group|batch|run|condition|site|station|location|composite|biochar|hydrochar|adsorbent|membrane)s?`;
+  // Code-like suffixes only. This accepts R, RG, S1, Pt and rGO, while a
+  // lexical expansion such as "Microbial fuel cell" cannot match.
+  const dashSuffixSrc=String.raw`(?:[A-Z]{1,10}[0-9]{0,4}|[A-Z][a-z]{1,2}[0-9]{0,3}|[a-z]{1,2}[A-Z][A-Za-z0-9]{0,6})`;
+  const re=new RegExp(String.raw`\b${entitySrc}\s*${ABBR_IDENTIFIER_DASH_CLASS}\s*(${dashSuffixSrc})(?![\p{L}\p{N}_])`,'giu');
+  let m;
+  while((m=re.exec(String(sent||"")))!==null){
+    const raw=m[1];
+    if(/^(?:AND|OR|THE|AS|OF|IN|ON|TO|FOR|WITH|BY)$/i.test(raw)) continue;
+    const rel=m[0].lastIndexOf(raw),start=m.index+Math.max(0,rel),end=start+raw.length;
+    abbrPushSpan(spans,start,end,'experimental_identifier',7,'spaced-dash-designation-suffix');
+    if(re.lastIndex===m.index) re.lastIndex++;
+  }
+  return spans;
+}
+
 function abbrFindProtectedIdentifierSpans(sent,designatedRegistry){
   const spans=abbrCollectDesignationIdentifierSpans(sent);
 
@@ -11448,6 +11780,11 @@ function abbrFindProtectedIdentifierSpans(sent,designatedRegistry){
     const rel=m[0].indexOf(raw),start=m.index+rel,end=start+raw.length;
     abbrPushSpan(spans,start,end,'experimental_identifier',8,'identifier-entity-context');
   }
+
+  // Spaced-dash labels protect only their code suffix. Lower priority than an
+  // already recognised complete designation, so MFC-N-rGCS remains atomic.
+  for(const sp of abbrFindSpacedDashDesignationSuffixSpans(sent))
+    abbrPushSpan(spans,sp.start,sp.end,sp.kind,sp.score,sp.reason);
 
   return spans.sort((a,b)=>a.start-b.start||b.end-a.end);
 }
@@ -11804,8 +12141,12 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
   }else{
     splitIntoSentences(text).forEach(s=>{sentences.push(s);sentenceDefinitionScope.push("main");});
   }
+  const chemicalFormulaCaseVariants=mcChemCollectProperCaseFormulaVariants(sentences);
+  const chemicalFormulaCaseFindings=[];
+  try{window.MC_ABBR_CHEM_CASE_VARIANTS=chemicalFormulaCaseVariants;}catch(_e){}
   const acroRe = /\b([A-Z]{2,}(?:[-\u2010\u2011\u2012\u2013\u2014][A-Z]{2,})*)(s)?\b/g;
   const mixedAcroRe = /\b([a-z]{1,2}[A-Z]{2,8}(?:[A-Z0-9]{0,4})?)\b/g;
+  const ratioNotationRe = /\b([A-Z]):([A-Z])(?=\s+ratio\b)/g;
 
   const groups = new Map();
   const G = k => { if(!groups.has(k)) groups.set(k,{key:k,forms:new Map(),occ:[],defs:[]}); return groups.get(k); };
@@ -11838,6 +12179,15 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
     const dtype=meta.definitionType||"conventional_acronym";
     if(dtype==="conventional_acronym"){
       if(meta.validatedDefinition!==true || !abbrDefLooksLexicalFullForm(sf,lf)) return;
+    }else if(abbrDefUnitLikeToken(sf)){
+      // A unit symbol can resemble a legitimate one-letter scientific variable.
+      // Reject it as a scientific definition only when THIS exact occurrence is
+      // embedded in recognised measurement-unit syntax, e.g. h in 350 m3/h.
+      // Context-free symbols such as enthalpy (h) remain eligible because they
+      // do not satisfy the measurement-occurrence test.
+      const defSentence=sentences[Number(s2)]||"";
+      const defIndex=Number.isFinite(meta.shortStart)?Number(meta.shortStart):-1;
+      if(defIndex>=0 && abbrIsMeasurementUnitOccurrence(defSentence,defIndex,String(sf||""))) return;
     }
     const canonicalForm=dtype==="conventional_acronym"?abbrCanonicalAbbreviationForm(sf):String(sf||"").trim();
     const key=dtype==="conventional_acronym"?abbrCanonicalAbbreviationKey(sf):(abbrScientificSymbolKey(sf)||norm(sf));
@@ -12004,6 +12354,11 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
     const protectedChemicalFormulaSpans=abbrFindProtectedChemicalFormulaSpans(sent);
     const protectedScientific=scientificDefSpansBySentence.get(si)||[];
     acroRe.lastIndex=0; let m;
+    ratioNotationRe.lastIndex=0; let rm;
+    while((rm=ratioNotationRe.exec(sent))!==null){
+      const raw=`${rm[1]}:${rm[2]}`,k=norm(rm[1]+rm[2]),g=G(k);
+      bump(g,raw);g.occ.push({sent:si,index:rm.index,raw,plural:false,ratioNotation:true});
+    }
     while((m=acroRe.exec(sent))!==null){
       const raw=m[1], key=norm(raw);
       if(STOPWORDS.has(key)) continue;
@@ -12018,7 +12373,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
       if(structuredContainer){
         const registered=designatedIdentifierForms.has(structuredContainer.key);
         const completeExplicitAbbr=abbrExplicitDefinitionEvidence(sent,structuredContainer.start,structuredContainer.raw);
-        if(registered || (abbrStrongIdentifierMorphology(structuredContainer.raw) && !completeExplicitAbbr)) continue;
+        if(registered || ((abbrLooksStructuredScientificIdentifier(structuredContainer.raw) || abbrStrongIdentifierMorphology(structuredContainer.raw)) && !completeExplicitAbbr)) continue;
       }
 
       // A complete sample/material/reactor/device/configuration identifier is a
@@ -12037,12 +12392,24 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
       }
       if(abbrIsProtectedChemicalFormulaToken(raw,sent,m.index,groups.get(key)||null,key)) continue;
 
+      // Case-only chemical-formula mismatch. If a valid mixed-case formula such
+      // as KCl occurs elsewhere, KCL is much more likely a formula-capitalisation
+      // typo than a new undefined acronym. Keep genuine explicitly defined
+      // acronyms authoritative.
+      const chemCaseCorrection=mcChemStrongAcronymDefinition(raw,key,groups.get(key)||null)
+        ?null:mcChemProbableCaseCorrection(raw,chemicalFormulaCaseVariants);
+      if(chemCaseCorrection){
+        chemicalFormulaCaseFindings.push({raw,suggested:chemCaseCorrection,sent:si,index:m.index});
+        continue;
+      }
+
       // If Word formatting flattened a compound scientific symbol such as
       // S_BET, do not let the internal BET fragment become a separate candidate.
       const sciContainer=protectedScientific.find(sp=>m.index>=sp.start && m.index+raw.length<=sp.end);
       if(sciContainer && sciContainer.key!==key) continue;
 
       if(abbrIsCorporateAuthorYearOccurrence(sent,m.index,raw)) continue;
+      if(abbrIsCurrencyCodeOccurrence(sent,m.index,raw)) continue;
       const role=abbrClassifyCandidateOccurrence(sent,m.index,raw,protectedInstrumentSpans);
       if(role.kind!=="technical_abbreviation") continue;
       const after=sent.slice(m.index+raw.length);
@@ -12097,6 +12464,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
       const sciContainer=protectedScientific.find(sp=>m.index>=sp.start && m.index+raw.length<=sp.end);
       if(sciContainer && sciContainer.key!==key) continue;
       if(abbrIsCorporateAuthorYearOccurrence(sent,m.index,raw)) continue;
+      if(abbrIsCurrencyCodeOccurrence(sent,m.index,raw)) continue;
       const role=abbrClassifyCandidateOccurrence(sent,m.index,raw,protectedInstrumentSpans);
       if(role.kind!=="technical_abbreviation") continue;
       addOccurrence(raw,key,sent,si,m.index,spans,{role:abbrDefOrdinaryUseRole(sent,m.index,raw)});
@@ -12143,6 +12511,28 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
 
   const errors=[], warnings=[], infos=[], rows=[], standardSeen=[], declaredSeen=[];
 
+  // Report formula case inconsistencies as Review findings instead of false
+  // undefined-abbreviation errors. Group repeated spellings into one finding.
+  {
+    const grouped=new Map();
+    for(const f of chemicalFormulaCaseFindings){
+      const k=`${f.raw}|${f.suggested}`;
+      if(!grouped.has(k)) grouped.set(k,[]);
+      grouped.get(k).push(f);
+    }
+    for(const items of grouped.values()){
+      const f=items[0],ctx=sentences[f.sent]||"";
+      warnings.push({
+        abbr:f.raw,
+        msg:`Possible chemical formula case inconsistency. "${f.raw}" matches the valid formula "${f.suggested}" used elsewhere in the manuscript. Use element-symbol capitalisation consistently if the intended substance is ${f.suggested}.`,
+        snip:buildSnippet(ctx,f.raw),
+        chemicalFormulaCase:true,
+        suggestedFormula:f.suggested,
+        occurrenceCount:items.length
+      });
+    }
+  }
+
   const displayForm = g => {
     if(g.defs.length) return g.defs[0].form;
     let best=null,n=-1; for(const [f,c] of g.forms){ if(c>n){best=f;n=c;} } return best||g.key;
@@ -12159,7 +12549,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
       // A strong acronym-style lexical expansion can still override ambiguous
       // plain-letter chemistry morphology.
       const representativeOcc=g.occ[0]||null;
-      if(representativeOcc &&
+      if(representativeOcc && !representativeOcc.ratioNotation &&
          abbrIsProtectedChemicalFormulaToken(
            disp,
            sentences[representativeOcc.sent]||"",
@@ -12168,8 +12558,16 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
            g.key
          )) return;
 
-      const std=isStd(g.key);
       const listDef=DECLARED_ABBR_MAP.get(g.key)||null;
+      // An explicit author-supplied meaning is stronger evidence than the generic
+      // standard/allowed-term registry. This matters when normalization makes a
+      // standard notation collide with a manuscript abbreviation, e.g. C–F -> CF,
+      // or when a standard token such as SI is explicitly redefined as Subindex.
+      // Only validated/high-confidence definitions participate in the override.
+      const explicitDefinitionOverride=!!listDef || (g.defs||[]).some(d=>
+        d?.long && d.validatedDefinition!==false && (d.definitionConfidence||"high")!=="low"
+      );
+      const std=isStd(g.key) && !explicitDefinitionOverride && !(representativeOcc?.ratioNotation || [...g.forms.keys()].some(f=>String(f).includes(":")));
       const declared=DECLARED_ABBRS.has(g.key)||!!listDef;
       const count=g.occ.length;
       const defined=g.defs.length>0;
@@ -12292,7 +12690,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
       // anywhere" result, but prose first-use and repeated-definition checks remain
       // independent.
       const usedBefore=defined && abbrUseBeforeDefinition(ordinaryOccurrences,orderedDefs,null);
-      const firstUseOK=std || (defined && !usedBefore && !earlierLong);
+      const firstUseOK=std || !!listDef || (defined && !usedBefore && !earlierLong);
       const definitionSource=std?"standard":(defined?(scientificDefinition?"scientific":"prose"):(listDef?"list":(declared?"declared":"none")));
 
       if(std){
@@ -12312,7 +12710,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
           }
           status="err";
           errors.push({abbr:disp, msg:`Not defined anywhere. Spell it out in full at first use, for example "full term (${disp})".`, snip:snippet});
-        }else if(usedBefore){
+        }else if(usedBefore && !listDef){
         status="err";
         const lateContexts=abbrLateDefinitionContexts(disp,sentences,ordinaryOccurrences,orderedDefs,null);
         if(scientificDefinition){
@@ -12332,7 +12730,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
             lateDefinition:true
           });
         }
-        }else if(earlierLong){
+        }else if(earlierLong && !listDef){
           status="err";
           errors.push({
             abbr:disp,
@@ -12350,7 +12748,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
           norm(e?.abbr||"")===norm(disp) &&
           /Used before it is (?:defined|introduced)|appears in the text before its full form/i.test(String(e?.msg||""))
         );
-        if(mainLate && !mainLateAlready){
+        if(mainLate && !mainLateAlready && !listDef){
           status="err";
           const lateContexts=abbrLateDefinitionContexts(disp,sentences,ordinaryOccurrences,orderedDefs,"main");
           errors.push({
@@ -12406,7 +12804,8 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
 
       // Do not issue low-use warnings for an abbreviation intentionally included
       // in an explicit abbreviation list.
-      if(!std && !declared && defined && count<=2 && !reverseDefined && !scientificDefinition){
+      const inferredPairedComponent=orderedDefs.some(d=>d.definitionRole==="paired_component_definition");
+      if(!std && !declared && defined && count<=2 && !reverseDefined && !scientificDefinition && !inferredPairedComponent){
         if(status==="ok") status="warn";
         warnings.push({abbr:disp, msg:`Used only ${count} time${count===1?"":"s"}. Abbreviate only terms that recur; otherwise spell it out each time.`, snip:null});
       }
@@ -13782,14 +14181,16 @@ function abbrMergeDeclarationMap(sourceMap,options={}){
   if(found) DECLARED_ABBR_LIST_FOUND=true;
 
   map.forEach((rec,key)=>{
-    const canonical=abbrListKey(rec?.form||key);
+    const canonical=rec?.notationType==="scientific_symbol"
+      ? (abbrScientificSymbolKey(rec?.form||key)||String(key||""))
+      : abbrListKey(rec?.form||key);
     if(!canonical) return;
     DECLARED_ABBRS.add(canonical);
 
     // Structured Word extraction is authoritative. Text fallback fills gaps but
     // never overwrites a stronger structured declaration already retained.
     if(!preferExisting || !DECLARED_ABBR_MAP.has(canonical)){
-      DECLARED_ABBR_MAP.set(canonical,{...rec,key:canonical,source:"abbreviation-list"});
+      DECLARED_ABBR_MAP.set(canonical,{...rec,key:canonical,source:rec?.source||"abbreviation-list"});
     }
   });
 
@@ -13819,6 +14220,10 @@ const ABBR_NONESSENTIAL_LEADING_MODIFIERS=new Set([
 
 function abbrNormalizeDefinitionFullForm(value,abbr=""){
   let raw=abbrListClean(value);
+  // Pluralised acronym tokens inside a descriptor (KPIs, STPs, MFCs) are
+  // grammatical plurals of the same abbreviation and should not make two
+  // otherwise identical scientific definitions appear different.
+  raw=String(raw||"").replace(/\b([A-Z]{2,})s\b/g,"$1");
 
   // For conventional acronyms, Schwartz-Hearst can often remove accidental
   // leading context while retaining the lexical expansion.
@@ -13885,6 +14290,12 @@ function abbrDefinitionsEquivalent(a,b,abbr=""){
      ABBR_NONESSENTIAL_LEADING_MODIFIERS.has(longer[0]) &&
      longer.slice(1).join(" ")===shorter.join(" ")) return true;
 
+  const genericTail=/^(?:unit|units|system|systems|process|processes|plant|plants|reactor|reactors|facility|facilities)$/i;
+  const aa=String(a||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
+  const bb=String(b||"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
+  const aw2=aa.split(/\s+/),bw2=bb.split(/\s+/);
+  if(aw2.length+1===bw2.length && bw2.slice(0,-1).join(" ")===aa && genericTail.test(bw2.at(-1))) return true;
+  if(bw2.length+1===aw2.length && aw2.slice(0,-1).join(" ")===bb && genericTail.test(aw2.at(-1))) return true;
   return false;
 }
 
@@ -13908,8 +14319,9 @@ function abbrListDeclarationContext(def,abbr){
   const form=String(def.form||abbr||"").trim();
   const long=String(def.long||"").trim();
   if(!form || !long) return null;
+  const label=abbrIsNomenclatureSectionName(def.section)?"Nomenclature":"Abbreviation list";
   return {
-    label:"Abbreviation list",
+    label,
     html:`<mark>${escapeHtml(form)}</mark>: ${escapeHtml(long)}`
   };
 }
@@ -13921,8 +14333,11 @@ function abbrSelectedDocumentType(){
 
 function abbrListConventionEligibleRow(row){
   if(!row || !row.base) return false;
-  const key=norm(row.base);
-  if(!DECLARED_ABBR_MAP.has(key)) return false;
+  const ordinaryKey=norm(row.base);
+  const scientificKey=abbrScientificSymbolKey(row.base);
+  const declaration=DECLARED_ABBR_MAP.get(ordinaryKey)||DECLARED_ABBR_MAP.get(scientificKey)||null;
+  if(!declaration) return false;
+  if(declaration.notationType==="scientific_symbol") return false;
 
   // The continuous-manuscript consistency rule is based on MAIN prose only.
   // An Abstract is an independent abbreviation-definition scope and therefore
@@ -14504,7 +14919,11 @@ async function extractDocxAbbreviationDefinitions(buf){
   };
 
   const addPair=(sf,lf,location)=>{
-    return abbrRegisterListDefinition(map,sf,lf,{section:sectionName||"Abbreviations",location});
+    return abbrRegisterListDefinition(map,sf,lf,{
+      section:sectionName||"Abbreviations",
+      location,
+      allowScientificSymbol:abbrIsNomenclatureSectionName(sectionName)
+    });
   };
 
   const parseRowCells=(cells,rowNo,tableNo)=>{
@@ -26600,9 +27019,14 @@ fteAnalyze=function(blocks){
     return fallback;
   }
 
+  function annexureLabel(rec){
+    const m=ntext(rec?.text||"").match(/^Annexure\s+([A-Z](?:\.\d+)+)\s*:/i);
+    return m?`Annexure ${m[1]}`:null;
+  }
+
   function definitionPairs(text){
     const original=String(text||"");
-    const s=original.replace(/^\s*(?:[#*†‡§¶]+\s*)?\d{1,4}(?::\d{1,4})?\s+/u,"").trim();
+    const s=original.replace(/^\s*(?:[#*†‡§¶%^&$]+\s*)?\d{1,4}(?::\d{1,4})?\s+/u,"").trim();
     if(!s) return [];
     const defs=[];
     const add=(sf,lf,_si,kind="reverse",meta={})=>{
@@ -26659,6 +27083,17 @@ fteAnalyze=function(blocks){
           definitionRole:"structural_local_definition",shortStart:m.index+Math.max(0,rel),shortEnd:m.index+Math.max(0,rel)+sf.length});
       }
     }
+    // Explicit metalinguistic lower-case abbreviation declaration, e.g.
+    // "The abbreviation pc denotes % by mass". Lower-case tokens are accepted
+    // only under this strong syntax, never by general word scanning.
+    try{
+      const lm=original.match(/\bthe\s+abbreviation\s+([a-z][a-z0-9_]{0,10})\s+(?:denotes?|means?|represents?)\s*([^.;]{2,160})/i);
+      if(lm){
+        const sf=lm[1],lf=lm[2].replace(/^%\s*/,"percent ").trim();
+        const rel=original.toLowerCase().indexOf(sf.toLowerCase(),lm.index);
+        add(sf,lf,0,"explicit-lowercase",{definitionType:"explicit_lowercase_abbreviation",definitionConfidence:"high",definitionRole:"structural_local_definition",shortStart:rel,shortEnd:rel+sf.length});
+      }
+    }catch(_e){}
     return defs;
   }
 
@@ -26677,7 +27112,28 @@ fteAnalyze=function(blocks){
     if(!txt) return;
     if(scope.parts.some(p=>p.index===rec?.index&&p.role===role&&p.text===txt)) return;
     scope.parts.push({index:rec?.index??-1,role,type:String(rec?.type||""),text:txt,display:display||txt,
+      cellMatrix:Array.isArray(rec?.block?.cellMatrix)?rec.block.cellMatrix:null,
       confidence:Number(rec?.confidence||0.8),structuralEvidence:[...(rec?.reasons||[])]});
+  }
+
+  function isAbbreviationGlossaryTable(block){
+    const rows=Array.isArray(block?.cellMatrix)?block.cellMatrix:null;
+    if(!rows||rows.length<4) return false;
+    const declared=(typeof DOCX_ABBR_LIST!=="undefined" && DOCX_ABBR_LIST instanceof Map)?DOCX_ABBR_LIST:null;
+    if(!declared||declared.size<3) return false;
+    let candidates=0,matches=0;
+    for(const row of rows){
+      if(!Array.isArray(row)) continue;
+      for(let c=0;c+1<row.length;c+=2){
+        const sf=String(row[c]||"").trim(),lf=String(row[c+1]||"").trim();
+        if(!sf||!lf||sf.length>24||lf.length<3||!/\p{L}/u.test(lf)) continue;
+        candidates++;
+        const k=keyOf(sf.replace(/\s+ratio$/i,""));
+        const d=declared.get(k)||declared.get(keyOf(sf))||null;
+        if(d?.long && sameMeaning(d.long,lf,sf)) matches++;
+      }
+    }
+    return matches>=4 && matches/Math.max(1,candidates)>=0.55;
   }
 
   function buildRegistry(){
@@ -26707,11 +27163,21 @@ fteAnalyze=function(blocks){
         if(String(classed[j]?.type||"")!=="TABLE_CAPTION"||crossing(i,j,"table")) continue;
         const d=Math.abs(i-j); if(d<capDist){cap=classed[j];capDist=d;}
       }
-      const scope={id:`table:${i}`,scopeType:"table",label:cap?captionLabel(cap,`Table ${tableOrdinal}`):`Table ${tableOrdinal}`,
-        anchorIndex:i,parts:[],definitions:[],occurrences:[],confidence:0.98};
+      let annexureCap=null;
+      if(!cap){
+        for(let j=i-1;j>=Math.max(0,i-3);j--){
+          if(annexureLabel(classed[j])){annexureCap=classed[j];break;}
+          if(String(classed[j]?.type||"")==="TABLE")break;
+        }
+      }
+      const scopeLabel=cap?captionLabel(cap,`Table ${tableOrdinal}`):(annexureCap?annexureLabel(annexureCap):`Table ${tableOrdinal}`);
+      const scope={id:`table:${i}`,scopeType:"table",label:scopeLabel,
+        anchorIndex:i,parts:[],definitions:[],occurrences:[],confidence:0.98,
+        isAbbreviationGlossary:isAbbreviationGlossaryTable(r?.block)};
       addPart(scope,r,"table_content",r?.block?.abbrText||r?.text||""); assigned.set(i,scope.id); addExclusion(r?.block?.abbrText||r?.text||"");
       if(cap){addPart(scope,cap,"table_caption");assigned.set(cap.index,scope.id);addExclusion(cap.text);}
-      const anchorEnd=Math.max(i,cap?.index??i);
+      if(annexureCap){addPart(scope,annexureCap,"table_caption");assigned.set(annexureCap.index,scope.id);addExclusion(annexureCap.text);}
+      const anchorEnd=Math.max(i,cap?.index??annexureCap?.index??i);
       for(let j=Math.max(0,i-2);j<=Math.min(classed.length-1,anchorEnd+7);j++){
         if(j===i||j===cap?.index) continue;
         const x=classed[j],t=String(x?.type||"");
@@ -26723,7 +27189,12 @@ fteAnalyze=function(blocks){
         if(t==="HEADING"||t==="TABLE"||/^FIGURE/.test(t)) break;
         if(t!=="BODY_PROSE") continue;
         const txt=ntext(x.text); if(!txt||wordCount(txt)>160) continue;
-        const defs=definitionPairs(txt),strong=defs.length>=2||(/^(?:notes?|abbreviations?)\s*:/i.test(txt)&&defs.length>=1);
+        const defs=definitionPairs(txt);
+        const explicitAssignments=(()=>{try{return abbrTableNoteDefinitionAssignments(txt).length;}catch(_e){return 0;}})();
+        // Ordinary narrative prose can contain multiple parenthetical definitions.
+        // Recover a table note only when the paragraph is explicitly note-like or
+        // contains a genuine assignment list.
+        const strong=(/^(?:notes?|abbreviations?)\s*:/i.test(txt)&&defs.length>=1)||explicitAssignments>=2;
         if(!strong||!canAttachRecoveredNote(classed,anchorEnd,j)) continue;
         addPart(scope,x,"table_note_recovered");assigned.set(j,scope.id);addExclusion(txt);
       }
@@ -26788,10 +27259,16 @@ fteAnalyze=function(blocks){
     if(markAt>=0)return escapeHtml(piece.slice(0,markAt))+"<mark>"+escapeHtml(piece.slice(markAt,markAt+needle.length))+"</mark>"+escapeHtml(piece.slice(markAt+needle.length));
     return escapeHtml(piece);
   }
-  function tokenCandidate(scopeText,index,raw,standardSet){
+  function tokenCandidate(scopeText,index,raw,standardSet,protectedDesignationSuffixSpans=null,standardOverrideKeys=null){
     const k=keyOf(raw);if(!k||STOPWORDS?.has?.(k))return false;
-    if(standardSet?.has?.(k)||standardSet?.has?.(norm(raw)))return false;
+    // A manuscript-defined meaning overrides a generic standard-term collision.
+    // Keep the override key-specific so unrelated standard terms remain skipped.
+    const authorDefined=!!standardOverrideKeys?.has?.(k);
+    if(!authorDefined && (standardSet?.has?.(k)||standardSet?.has?.(norm(raw))))return false;
+    try{if(abbrOverlapsProtectedSpan(protectedDesignationSuffixSpans||[],index,String(raw||'').length))return false;}catch(_e){}
     try{if(abbrIsMeasurementUnitOccurrence(scopeText,index,raw))return false;}catch(_e){}
+    try{if(abbrIsCorporateAuthorYearOccurrence(scopeText,index,raw))return false;}catch(_e){}
+    try{if(abbrIsCurrencyCodeOccurrence(scopeText,index,raw))return false;}catch(_e){}
     try{if(abbrIsProtectedChemicalFormulaToken(raw,scopeText,index,null,k))return false;}catch(_e){}
     try{
       const ps=abbrFindProtectedInstrumentSpans(scopeText)||[];
@@ -26802,8 +27279,18 @@ fteAnalyze=function(blocks){
     return true;
   }
 
-  function scanScope(scope,standardSet){
-    const defsByKey=new Map(),occByKey=new Map();
+  function scanScope(scope,standardSet,standardOverrideKeys=null,explicitFormsByKey=null){
+    const defsByKey=new Map(),occByKey=new Map(),chemicalCaseFindings=[];
+    // Reuse proper-case formulae seen in running prose and augment them with
+    // valid formulae found inside this structural scope. This keeps chemical
+    // notation classification consistent between body text and independent
+    // table/figure scopes.
+    const chemicalCaseVariants=new Map();
+    try{for(const [k,v] of (window.MC_ABBR_CHEM_CASE_VARIANTS||new Map())) chemicalCaseVariants.set(k,v);}catch(_e){}
+    try{
+      const local=mcChemCollectProperCaseFormulaVariants((scope.parts||[]).map(p=>p.display||p.text||""));
+      for(const [k,v] of local) if(!chemicalCaseVariants.has(k)) chemicalCaseVariants.set(k,v);
+    }catch(_e){}
     const addDefs=part=>{
       const defText=part.display||part.text;
       for(const d of definitionPairs(defText)){
@@ -26813,26 +27300,85 @@ fteAnalyze=function(blocks){
       }
     };
     scope.parts.forEach(addDefs);
+    // Local definitions inside this table/figure are authoritative for that
+    // independent structural scope. Merge them with manuscript-level explicit
+    // definitions so standard-token collisions are still checked locally.
+    const effectiveStandardOverrideKeys=new Set([...(standardOverrideKeys||[]),...defsByKey.keys()]);
     for(const part of scope.parts){
+      // Preserve table-cell boundaries for occurrence scanning. Glued DOCX text
+      // can hide abbreviations at a cell boundary (e.g. NCV + Fixed carbon).
+      // The dedicated abbreviations glossary is definition metadata, not a table
+      // whose entries should be reported as ordinary local uses.
+      if(scope.isAbbreviationGlossary && part.role==="table_content") continue;
+      const scanText=(part.role==="table_content"?(part.display||part.text):part.text);
+      let protectedDesignationSuffixSpans=[];
+      try{protectedDesignationSuffixSpans=abbrFindSpacedDashDesignationSuffixSpans(scanText)||[];}catch(_e){}
       const re=/\b([A-Z]{2,}(?:-[A-Z]{2,})*)(?:s)?\b/g;let m;
-      while((m=re.exec(part.text))!==null){
-        const raw=m[1],k=keyOf(raw);if(!tokenCandidate(part.text,m.index,raw,standardSet))continue;
+      for(const [dk,darr] of defsByKey){
+        for(const d of darr){
+          if(!/^[a-z][a-z0-9_]{0,10}$/.test(String(d.form||""))) continue;
+          const lr=new RegExp(`\\b${escapeRegExp(d.form)}\\b`,"g");let lm;
+          while((lm=lr.exec(scanText))!==null){
+            if(!occByKey.has(dk))occByKey.set(dk,[]);
+            const already=occByKey.get(dk).some(o=>o.partRole===part.role&&o.index===lm.index&&o.raw===d.form);
+            if(already) continue;
+            occByKey.get(dk).push({key:dk,raw:d.form,index:lm.index,partRole:part.role,text:scanText,display:part.display||scanText,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label,definitionOccurrence:d.partRole===part.role&&Number.isFinite(d.shortStart)&&Math.abs(d.shortStart-lm.index)<=1});
+          }
+        }
+      }
+      // Known manuscript-defined mixed-case scientific parameters (Cdl, Rint,
+      // Iret, Cs, etc.) must also participate in independent table/figure
+      // self-containment checks. Scan only forms already established by prose or
+      // declaration, never arbitrary mixed-case words.
+      for(const [mk,forms] of (explicitFormsByKey||new Map())){
+        for(const form of forms||[]){
+          if(!form || /^[A-Z]{2,}(?:-[A-Z]{2,})*$/.test(form) || /^[a-z][a-z0-9_]{0,10}$/.test(form)) continue;
+          let mr;try{mr=new RegExp(`\\b${escapeRegExp(form)}\\b`,"g");}catch(_e){mr=null;}
+          if(!mr) continue;let mm;
+          while((mm=mr.exec(scanText))!==null){
+            if(!tokenCandidate(scanText,mm.index,form,standardSet,protectedDesignationSuffixSpans,effectiveStandardOverrideKeys))continue;
+            if(!occByKey.has(mk))occByKey.set(mk,[]);
+            if(!occByKey.get(mk).some(o=>o.partRole===part.role&&o.index===mm.index&&o.raw===form))occByKey.get(mk).push({key:mk,raw:form,index:mm.index,partRole:part.role,text:scanText,display:part.display||scanText,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label,definitionOccurrence:false});
+          }
+        }
+      }
+      while((m=re.exec(scanText))!==null){
+        const raw=m[1],k=keyOf(raw);
+        const chemCaseCorrection=(defsByKey.get(k)||[]).length?null:mcChemProbableCaseCorrection(raw,chemicalCaseVariants);
+        if(chemCaseCorrection){
+          chemicalCaseFindings.push({raw,suggested:chemCaseCorrection,index:m.index,partRole:part.role,text:scanText,display:part.display||scanText,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label});
+          continue;
+        }
+        if(!tokenCandidate(scanText,m.index,raw,standardSet,protectedDesignationSuffixSpans,effectiveStandardOverrideKeys))continue;
         const definitionOccurrence=(defsByKey.get(k)||[]).some(d=>{
-          if(d.text!==part.text)return false;
-          const tail=part.text.slice(m.index+raw.length,m.index+raw.length+10);
+          if(d.partRole!==part.role)return false;
+          if(Number.isFinite(d.shortStart) && Math.abs(d.shortStart-m.index)<=1) return true;
+          const tail=scanText.slice(m.index+raw.length,m.index+raw.length+10);
           if(/^\s*\)?\s*(?:[:=]|[–—-])/.test(tail))return true;
-          const before=part.text.slice(Math.max(0,m.index-180),m.index);
-          if(/\(\s*$/.test(before)){try{return!!validLongForm(raw,tailWords(before.replace(/\(\s*$/,"") ,letters(raw)+7));}catch(_e){}}
+          const before=scanText.slice(Math.max(0,m.index-180),m.index);
+          if(/\(\s*$/.test(before)){try{return!!validLongForm(raw,tailWords(before.replace(/\(\s*$/,""),letters(raw)+7));}catch(_e){}}
           return false;
         });
         if(!occByKey.has(k))occByKey.set(k,[]);
-        occByKey.get(k).push({key:k,raw,index:m.index,partRole:part.role,text:part.text,display:part.display||part.text,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label,definitionOccurrence});
+        occByKey.get(k).push({key:k,raw,index:m.index,partRole:part.role,text:scanText,display:part.display||scanText,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label,definitionOccurrence});
       }
     }
-    scope.definitions=[...defsByKey.values()].flat();scope.occurrences=[...occByKey.values()].flat();scope.byKey=new Map();
+    scope.definitions=[...defsByKey.values()].flat();scope.occurrences=[...occByKey.values()].flat();scope.chemicalCaseFindings=chemicalCaseFindings;scope.byKey=new Map();
     const keys=new Set([...defsByKey.keys(),...occByKey.keys()]);
     for(const k of keys){const defs=defsByKey.get(k)||[],occ=occByKey.get(k)||[];scope.byKey.set(k,{key:k,definitions:defs,occurrences:occ,ordinaryUses:occ.filter(o=>!o.definitionOccurrence)});}
     return scope;
+  }
+
+  function abbrIsTablePlaceholderUse(o){
+    const raw=String(o?.raw||"").toUpperCase();
+    if(!/^(?:NA|ND|BDL)$/.test(raw)) return false;
+    const s=String(o?.text||""), i=Number(o?.index);
+    if(!Number.isFinite(i)) return false;
+    const before=s.slice(Math.max(0,i-10),i), after=s.slice(i+String(o.raw||"").length,i+String(o.raw||"").length+10);
+    // Cell-aware table display uses | separators. Require the notation to occupy
+    // a complete cell so a scientific abbreviation such as ND in prose/table
+    // text is not downgraded merely because it has a familiar placeholder form.
+    return (/(?:^|\|)\s*$/.test(before) && /^\s*(?:\||$)/.test(after));
   }
 
   function localSource(entry){
@@ -26848,8 +27394,37 @@ fteAnalyze=function(blocks){
   }
   function reconcile(result,registry,standardSet){
     if(!result)return result;result.errors=result.errors||[];result.warnings=result.warnings||[];result.infos=result.infos||[];result.rows=result.rows||[];
-    const allEntries=new Map();
-    for(const scope of registry.scopes){scanScope(scope,standardSet);for(const [k,e] of scope.byKey||[]){if(!(e.ordinaryUses||[]).length)continue;if(!allEntries.has(k))allEntries.set(k,[]);allEntries.get(k).push({...e,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label});}}
+    const allEntries=new Map(),structuralChemCase=[];
+    // Carry explicit manuscript meanings into structural scanning. A table or
+    // figure remains independent: this only makes the token eligible for local
+    // checking; it does not import the prose/list definition into that scope.
+    const explicitStandardOverrideKeys=new Set(), explicitFormsByKey=new Map();
+    for(const row of result.rows||[]){
+      const src=String(row?.definitionSource||"");
+      if(row?.longForm && !["standard","none","nested"].includes(src)){
+        const k=keyOf(row.base);if(k){explicitStandardOverrideKeys.add(k);if(!explicitFormsByKey.has(k))explicitFormsByKey.set(k,new Set());explicitFormsByKey.get(k).add(String(row.base||"").trim());}
+      }
+    }
+    try{for(const [k,d] of DECLARED_ABBR_MAP||[]){explicitStandardOverrideKeys.add(k);const f=String(d?.form||"").trim();if(f){if(!explicitFormsByKey.has(k))explicitFormsByKey.set(k,new Set());explicitFormsByKey.get(k).add(f);}}}catch(_e){}
+    for(const scope of registry.scopes){
+      scanScope(scope,standardSet,explicitStandardOverrideKeys,explicitFormsByKey);
+      structuralChemCase.push(...(scope.chemicalCaseFindings||[]));
+      for(const [k,e] of scope.byKey||[]){if(!(e.ordinaryUses||[]).length)continue;if(!allEntries.has(k))allEntries.set(k,[]);allEntries.get(k).push({...e,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label});}
+    }
+    // Chemical formula case errors are notation/style findings, not missing
+    // abbreviation definitions. Merge structural instances with any prose-level
+    // formula-case warning and never create a table/figure self-containment error
+    // for the misspelled formula token itself.
+    for(const f of structuralChemCase){
+      let existing=(result.warnings||[]).find(w=>w?.chemicalFormulaCase&&String(w.abbr||"")===String(f.raw||"")&&String(w.suggestedFormula||"")===String(f.suggested||""));
+      const ctx={label:`${f.scopeLabel} formula case`,html:snippet(f.display||f.text,f.raw),structuralScope:f.scopeId};
+      if(existing){
+        existing.contexts=Array.isArray(existing.contexts)?existing.contexts:[];
+        if(ctx.html&&!existing.contexts.some(x=>x.structuralScope===ctx.structuralScope&&x.html===ctx.html))existing.contexts.push(ctx);
+      }else{
+        result.warnings.push({abbr:f.raw,msg:`Possible chemical formula case inconsistency. "${f.raw}" matches the valid formula "${f.suggested}" used elsewhere in the manuscript. Use element-symbol capitalisation consistently if the intended substance is ${f.suggested}.`,snip:ctx.html,contexts:ctx.html?[ctx]:[],chemicalFormulaCase:true,suggestedFormula:f.suggested,structuralFormulaCase:true});
+      }
+    }
     const rowByKey=new Map(result.rows.map(r=>[keyOf(r.base),r]));
     const issueKeys=new Set();
     for(const [k,entries] of allEntries){
@@ -26864,10 +27439,17 @@ fteAnalyze=function(blocks){
       }
       for(const e of entries){
         if((e.definitions||[]).length)continue;
-        const msg=e.scopeType==='table'?`${display} is used in ${e.scopeLabel} without a local definition. This does not affect main-text first-use compliance; review whether the target journal requires the table to be self-contained.`:`${display} is used in ${e.scopeLabel} without a local definition. This does not affect main-text first-use compliance; review whether the target journal requires the figure caption or legend to be self-contained.`;
+        const globallyDefined=!!(row?.longForm||listDef?.long||bestDef?.long);
+        const tablePlaceholder=e.scopeType==='table' && (e.ordinaryUses||[]).length>0 && (e.ordinaryUses||[]).every(abbrIsTablePlaceholderUse);
+        const msg=tablePlaceholder && !globallyDefined
+          ?`${display} is used as standalone table notation in ${e.scopeLabel}. Define what it means (for example, not applicable/not available/not detected) in that table's note if the notation is intended.`
+          :(globallyDefined
+            ?(e.scopeType==='table'?`${display} is used in ${e.scopeLabel} without a local definition. This does not affect main-text first-use compliance; review whether the target journal requires the table to be self-contained.`:`${display} is used in ${e.scopeLabel} without a local definition. This does not affect main-text first-use compliance; review whether the target journal requires the figure caption or legend to be self-contained.`)
+            :`${display} is used in ${e.scopeLabel} but is not defined anywhere in the manuscript or abbreviation list. Define the term or notation before relying on the abbreviated form.`);
         const ik=k+'|'+e.scopeId;if(issueKeys.has(ik))continue;const use=e.ordinaryUses[0];
-        result.warnings.push({abbr:display,msg,rowLongForm:row?.longForm||bestDef?.long||null,snip:snippet(use?.display||use?.text||'',use?.raw||display),contexts:[{label:`${e.scopeLabel} use`,html:snippet(use?.display||use?.text||'',use?.raw||display),structuralScope:e.scopeId}],structuralSelfContainment:true,localScopeType:e.scopeType,localScopeLabel:e.scopeLabel});
-        issueKeys.add(ik);if(row&&row.status==='ok')row.status='warn';
+        const payload={abbr:display,msg,rowLongForm:row?.longForm||bestDef?.long||listDef?.long||null,snip:snippet(use?.display||use?.text||'',use?.raw||display),contexts:[{label:`${e.scopeLabel} use`,html:snippet(use?.display||use?.text||'',use?.raw||display),structuralScope:e.scopeId}],structuralSelfContainment:globallyDefined||tablePlaceholder,structuralUndefined:!globallyDefined&&!tablePlaceholder,structuralTableNotation:tablePlaceholder,localScopeType:e.scopeType,localScopeLabel:e.scopeLabel};
+        (globallyDefined||tablePlaceholder?result.warnings:result.errors).push(payload);
+        issueKeys.add(ik);if(row)row.status=(globallyDefined||tablePlaceholder)?(row.status==='ok'?'warn':row.status):'err';
       }
       const localInstances=allUses.map((o,i)=>({label:`${o.scopeLabel} · use ${i+1}`,structuralScope:o.scopeId,structuralScopeType:o.scopeType,occurrenceRole:'structural_local_use',html:snippet(o.display||o.text,o.raw||display)})).filter(x=>x.html);
       const localDefinitionInstances=allDefs.map((d,i)=>({
@@ -26914,8 +27496,9 @@ fteAnalyze=function(blocks){
         }
         row.structuralScopeUseCount=allUses.length;row.structuralScopeDefinitionCount=allDefs.length;row.structuralScopeSummary=entries.map(e=>`${e.scopeLabel}: ${(e.definitions||[]).length?'locally defined':'definition review'}`).join('; ');row.instances=[...(row.instances||[]),...localInstances];row.definitionInstances=[...(row.definitionInstances||[]),...localDefinitionInstances];continue;
       }
-      const missing=entries.some(e=>!(e.definitions||[]).length),source=bestDef?localSource({definitions:allDefs,scopeType:entries[0]?.scopeType}):'structural_review';
-      const localRow={base:display,longForm:bestDef?.long||null,count:allUses.length,firstUseOK:bestDef?true:null,status:missing?'warn':'ok',definitionSource:source,definitionType:'structural_local',instances:localInstances,definitionInstances:localDefinitionInstances,mainProseUseCount:0,mainProseDefinitionCount:0,abstractUseCount:0,abstractDefinitionCount:0,ordinaryUseCount:allUses.length,definitionOccurrenceCount:allDefs.length,structuralScopeOnly:true,structuralScopeUseCount:allUses.length,structuralScopeDefinitionCount:allDefs.length,localSelfContainmentMissing:missing,structuralScopeSummary:entries.map(e=>`${e.scopeLabel}: ${(e.definitions||[]).length?'locally defined':'definition review'}`).join('; ')};
+      const missing=entries.some(e=>!(e.definitions||[]).length),placeholderOnly=entries.length>0&&entries.every(e=>e.scopeType==='table'&&(e.ordinaryUses||[]).length>0&&(e.ordinaryUses||[]).every(abbrIsTablePlaceholderUse)),source=bestDef?localSource({definitions:allDefs,scopeType:entries[0]?.scopeType}):(listDef?'list':(placeholderOnly?'table_notation_review':'structural_review'));
+      const inheritedLong=bestDef?.long||listDef?.long||null;
+      const localRow={base:display,longForm:inheritedLong,count:allUses.length,firstUseOK:bestDef?true:(listDef?true:null),status:missing?(inheritedLong||placeholderOnly?'warn':'err'):'ok',definitionSource:source,definitionType:bestDef?'structural_local':(listDef?'list':(placeholderOnly?'table_notation':'structural_local')),instances:localInstances,definitionInstances:localDefinitionInstances,mainProseUseCount:0,mainProseDefinitionCount:0,abstractUseCount:0,abstractDefinitionCount:0,ordinaryUseCount:allUses.length,definitionOccurrenceCount:allDefs.length,structuralScopeOnly:true,structuralScopeUseCount:allUses.length,structuralScopeDefinitionCount:allDefs.length,localSelfContainmentMissing:missing,structuralScopeSummary:entries.map(e=>`${e.scopeLabel}: ${(e.definitions||[]).length?'locally defined':'definition review'}`).join('; ')};
       result.rows.push(localRow);rowByKey.set(k,localRow);
     }
     if(registry.scopes.length)result.infos.unshift({abbr:null,msg:`Structural abbreviation scopes detected: ${registry.scopes.filter(s=>s.scopeType==='table').length} table scope(s) and ${registry.scopes.filter(s=>s.scopeType==='figure').length} figure scope(s). Local definitions are evaluated only within their table/figure and do not count as main-text first-use definitions or prose duplicates.`,snip:null,structuralScopeInfo:true});
@@ -26938,6 +27521,12 @@ fteAnalyze=function(blocks){
 </script>
 
 <!-- mc-patch-2026-08-26: structural abbreviation display-grid + whole-token evidence locator -->
+<!-- mc-patch-2026-08-26-issue2: explicit scientific/material/model identifier longest-span guard -->
+<!-- mc-patch-2026-08-26-remaining3: formula-case, hyphen-component inference, reverse-definition boundary -->
+<!-- mc-patch-2026-08-26-issue6: prevent dash-designation prose from becoming structural abbreviation notes -->
+<!-- mc-patch-2026-08-26-spaced-dash-designations: protect only code suffixes in spaced-dash experimental identifiers -->
+<!-- mc-patch-2026-08-26-explicit-definition-overrides-standard: manuscript definitions override generic standard-term collisions without weakening local table/figure scope -->
+<!-- mc-patch-2026-08-26-remaining-abbreviation-hardening: table-note boundaries, mixed-case scientific parameters, copular equation definitions, citation metadata, table placeholders, contextual currency codes -->
 <script id="mc-ux24-v1">
 (()=>{
   "use strict";
@@ -33698,6 +34287,21 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
         const r=runText("Microbial fuel cells (MFCs), namely MFC-RG, MFC-Pt, MFC-R, and MFC-G, were prepared. MFC-RG was operated first.");
         return !anyIssueFor(r,"RG")&&!anyIssueFor(r,"MFC-RG");
       });
+      add("spaced-dash MFC designation suffix",()=>{
+        const r=runText("Microbial fuel cell (MFC) reactors were operated. The open circuit voltage for MFC – RG was high. MFC - P was the control.");
+        return !anyIssueFor(r,"RG") && (r.rows||[]).some(x=>String(x.base||"").toUpperCase()==="MFC");
+      });
+      add("spaced-dash generic entity suffixes",()=>{
+        const text="Reactor – A was operated; Sample - S1 was retained.";
+        const spans=abbrFindSpacedDashDesignationSuffixSpans(text)||[];
+        const vals=spans.map(sp=>text.slice(sp.start,sp.end));
+        return vals.includes("A")&&vals.includes("S1");
+      });
+      add("dash lexical definitions remain definitions",()=>{
+        const r=runText("COD – Chemical oxygen demand. COD was measured twice.");
+        const row=(r.rows||[]).find(x=>String(x.base||"").toUpperCase()==="COD");
+        return !!row && /chemical oxygen demand/i.test(String(row.longForm||"")) && !hasIssue(r,"errors","COD","not defined");
+      });
       add("atomic hyphenated technique token",()=>{
         const r=runText("FT-IR and FE-SEM were used. FT-IR spectra and FE-SEM images were obtained.");
         return hasIssue(r,"errors","FT-IR","not defined")&&hasIssue(r,"errors","FE-SEM","not defined")&&!anyIssueFor(r,"FT")&&!anyIssueFor(r,"IR")&&!anyIssueFor(r,"FE")&&!anyIssueFor(r,"SEM");
@@ -33769,6 +34373,50 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       add("single letter A not promoted",()=>{
         const r=runText("A similar procedure was followed for the second experiment.");
         return !anyIssueFor(r,"A");
+      });
+      add("hour unit is measurement context",()=>{
+        const sent="The measured gas flow was 350 m3/h.";
+        const i=sent.lastIndexOf("h");
+        return i>=0 && abbrDefUnitLikeToken("h") && abbrIsMeasurementUnitOccurrence(sent,i,"h");
+      });
+      add("h scientific variable remains eligible",()=>{
+        const sent="Specific enthalpy (h) was calculated.";
+        const i=sent.indexOf("(h)")+1;
+        return i>0 && !abbrIsMeasurementUnitOccurrence(sent,i,"h");
+      });
+      add("nomenclature acronym declarations",()=>{
+        const m=new Map();
+        const a=abbrRegisterListDefinition(m,"CL","Lower bound of the KPI concentration range",{section:"Nomenclature",allowScientificSymbol:true});
+        const b=abbrRegisterListDefinition(m,"SII","Subindex score of a KPI",{section:"Nomenclature",allowScientificSymbol:true});
+        return !!a&&!!b&&m.get("CL")?.long==="Lower bound of the KPI concentration range"&&m.get("SII")?.notationType==="conventional_acronym";
+      });
+      add("nomenclature scientific-symbol declarations",()=>{
+        const m=new Map();
+        const a=abbrRegisterListDefinition(m,"θ","Arrhenius temperature correction coefficient",{section:"Nomenclature",allowScientificSymbol:true});
+        const b=abbrRegisterListDefinition(m,"kₙ","Arrhenius reaction rate constant",{section:"Nomenclature",allowScientificSymbol:true});
+        return !!a&&!!b&&m.get("Θ")?.notationType==="scientific_symbol"&&m.get("KN")?.source==="nomenclature-symbol";
+      });
+      add("chemical formula case correction",()=>{
+        const r=runText("Potassium chloride (KCl) was used as electrolyte. A 3 M KCL solution was then prepared.");
+        return !hasIssue(r,"errors","KCL","not defined")&&hasIssue(r,"warnings","KCL","chemical formula case");
+      });
+      add("hyphenated TM-NP component inference",()=>{
+        const r=runText("Transition-metal nanoparticles (TM-NP) were synthesised. TM loading was varied and NP aggregation was monitored.");
+        return !hasIssue(r,"errors","TM","not defined")&&!hasIssue(r,"errors","NP","not defined");
+      });
+      add("hyphenated FE-SEM component inference",()=>{
+        const r=runText("Field emission scanning electron microscopy (FE-SEM) was used. SEM images were collected after FE analysis.");
+        return !hasIssue(r,"errors","SEM","not defined")&&!hasIssue(r,"errors","FE","not defined");
+      });
+      add("Rct nearest noun phrase extraction",()=>{
+        const r=runText("A higher ORR activity of the support matrix was ascribed to comparable charge transport resistance (Rct). Later, charge transfer resistance (Rct) was reported.");
+        const row=(r.rows||[]).find(x=>String(x.base||"").toLowerCase()==="rct");
+        return !!row && !String(row.longForm||"").includes("support matrix was ascribed") && hasIssue(r,"errors","Rct","conflicting definitions");
+      });
+      add("Rct action-clause trimming",()=>{
+        const r=runText("EIS analysis was performed to evaluate the interfacial charge transfer resistance (Rct). Rct decreased after treatment.");
+        const row=(r.rows||[]).find(x=>String(x.base||"").toLowerCase()==="rct");
+        return !!row && String(row.longForm||"").toLowerCase()==="interfacial charge transfer resistance";
       });
 
       const failed=tests.filter(t=>!t.pass);
