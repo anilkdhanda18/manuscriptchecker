@@ -9458,6 +9458,11 @@ function extractDeclaredAbbrs(text){
       const nm=bare.match(/^(\S{1,24})\s+(.{2,220})$/);
       if(nm && abbrLooksNomenclatureSymbol(nm[1])) m=nm;
     }
+    // A table/figure note or list label ("Note:", "Source:", "Key:") that falls
+    // inside an over-running abbreviations section is not an abbreviation
+    // definition. Never register the label word itself as a short form (the same
+    // guard abbrTableNoteDefinitionAssignments applies to structural notes).
+    if(m && /^(?:notes?|sources?|keys?|legends?|captions?|footnotes?|abbreviations?|nomenclature|symbols?)$/i.test(String(m[1]).trim())) m=null;
     if(m) abbrRegisterListDefinition(map,m[1],m[2],{
       section,
       location:`text line ${i+1}`,
@@ -10254,6 +10259,48 @@ function abbrScientificFormRegex(form){
   return null;
 }
 
+function collectEquationNomenclatureDefs(sent,si,add){
+  // Equation nomenclature written as a "where" clause: e.g.
+  //   "Where SII represents the subindex score of a KPI, CI is the concentration
+  //    of the KPI, CL and CU represent the lower and upper bound ..., LI and UI
+  //    indicate the lower and upper score bound of the category CI".
+  // These clauses define equation symbols descriptively. The construction is only
+  // credited when the sentence opens with "where" AND lists at least two
+  // "symbol (and symbol)? verb descriptor" clauses, so ordinary prose (which does
+  // not take this shape) is never turned into a definition. Only tokens that pass
+  // abbrLooksScientificShort are accepted as symbols.
+  const s=String(sent||"");
+  // Allow a leading equation reference or list number before "where", e.g.
+  // "(Eq. 1) Where SII represents ..." or "1) Where ...".
+  const lead=s.replace(/^\s*(?:\([^)]{0,30}\)|\d+[.)]|eq(?:uation)?\.?\s*\d*[.:)]?)\s*/i,"");
+  if(!/^where\b/i.test(lead)) return;
+  const SYM="[A-Za-z][A-Za-z0-9_]{0,14}";
+  const VERB="(?:is|are|was|were|represents?|denotes?|indicates?|designates?|signif(?:y|ies)|refers?\\s+to|corresponds?\\s+to|stands?\\s+for|is\\s+defined\\s+as|is\\s+the)";
+  const clauseRe=new RegExp(`(${SYM})(?:\\s+and\\s+(${SYM}))?\\s+${VERB}\\s+(?:the\\s+|an?\\s+)?(.+?)(?=,\\s+${SYM}(?:\\s+and\\s+${SYM})?\\s+${VERB}\\b|[.;]|$)`,"gi");
+  const clauses=[]; let m;
+  while((m=clauseRe.exec(s))!==null){
+    let desc=String(m[3]||"").trim()
+      .replace(/\s*\([^)]*\)\s*$/,"")     // trailing balanced "(Table 1)"
+      .replace(/\s*\([^()]*$/,"")          // trailing unbalanced "(Good, Satisfactory etc"
+      .replace(/[,;:\s]+$/,"").trim();
+    clauses.push({sym1:m[1],sym2:m[2]||null,desc,at:m.index});
+  }
+  if(clauses.length<2) return;             // a list -> clearly nomenclature
+  for(const c of clauses){
+    if(!c.desc || c.desc.length<2) continue;
+    if(c.sym2){
+      // "X and Y  <a> and <b> <rest>" -> X = "<a> <rest>", Y = "<b> <rest>".
+      const sp=c.desc.match(/^(\S+)\s+and\s+(\S+)\s+(.+)$/);
+      const d1=sp?(sp[1]+" "+sp[3]).trim():c.desc;
+      const d2=sp?(sp[2]+" "+sp[3]).trim():c.desc;
+      const p2=s.indexOf(c.sym2,c.at);
+      if(abbrLooksScientificShort(c.sym1)) add(c.sym1,d1,si,"scientific-reverse",{definitionType:abbrScientificDefinitionType(c.sym1,d1),shortStart:c.at,shortEnd:c.at+c.sym1.length,semanticDefinition:true});
+      if(abbrLooksScientificShort(c.sym2)) add(c.sym2,d2,si,"scientific-reverse",{definitionType:abbrScientificDefinitionType(c.sym2,d2),shortStart:p2>=0?p2:c.at,shortEnd:(p2>=0?p2:c.at)+c.sym2.length,semanticDefinition:true});
+    }else if(abbrLooksScientificShort(c.sym1)){
+      add(c.sym1,c.desc,si,"scientific-reverse",{definitionType:abbrScientificDefinitionType(c.sym1,c.desc),shortStart:c.at,shortEnd:c.at+c.sym1.length,semanticDefinition:true});
+    }
+  }
+}
 function collectReverseDefs(sent,si,add){
   // Table notes, abbreviation lists, and publisher-formatted notes may prefix a
   // definition with symbols/superscripts such as *, †, ‡, €, ᵃ, or a). The
@@ -12329,6 +12376,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
     collectScientificDefs(sent,si,addDefinition);
     collectReverseDefs(sent,si,addDefinition);
     collectScientificReverseDefs(sent,si,addDefinition);
+    collectEquationNomenclatureDefs(sent,si,addDefinition);
   });
 
   // Pass 2: collect occurrences. Conventional all-capital abbreviations retain
