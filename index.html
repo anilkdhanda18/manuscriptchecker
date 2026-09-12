@@ -10819,7 +10819,16 @@ function abbrBuildScopePlanFromStructure(lines){
     }
   }
 
-  const absLine=abbrScopeFindRecordLine(lines,records[absIndex],0);
+  let absLine=abbrScopeFindRecordLine(lines,records[absIndex],0);
+  if(absLine<0 && !absInline){
+    // A removed Abstract heading still anchors its retained prose in Word order.
+    const stop=Math.min(records.length,absIndex+16,keywordIndex>=0?keywordIndex:Infinity,mainIndex>=0?mainIndex:Infinity);
+    for(let j=absIndex+1;j<stop;j++){
+      if(!abbrScopeIsSubstantiveProse(records[j])) continue;
+      absLine=abbrScopeFindRecordLine(lines,records[j],0);
+      if(absLine>=0){absInline=true;break;}
+    }
+  }
   let mainLine=mainIndex>=0?abbrScopeFindRecordLine(lines,records[mainIndex],Math.max(0,absLine+1)):-1;
 
   // Mammoth can omit a Word heading from the flattened raw text even though the
@@ -10926,7 +10935,8 @@ function prepareAbbreviationBody(rawText){
     });
   }catch(e){}
 
-  let lines=text.split(/\n/);
+  // Page counters and publisher footers must not become body-start headings.
+  let lines=text.split(/\n/).map(abbrStripPublisherBoilerplateLine);
 
   // Build a structural Abstract/main-text plan before removing front matter.
   // Word hierarchy is primary; generalized text heuristics are only fallback.
@@ -10958,7 +10968,16 @@ function prepareAbbreviationBody(rawText){
       for(let i=0;i<Math.min(records.length,220);i++){
         const r=records[i],s=abbrScopeText(r);
         if(abbrScopeMajorHeadingStrength(r)>=70 && !abbrScopeIsFrontMatterText(s)){
-          const line=abbrScopeFindRecordLine(lines,r,0);
+          let line=abbrScopeFindRecordLine(lines,r,0);
+          if(line<0 && abbrScopeIsKnownBodyHeading(s)){
+            // Recover a removed body heading from its first retained paragraph.
+            for(let j=i+1;j<Math.min(records.length,i+16);j++){
+              if(abbrScopeIsHeading(records[j])) break;
+              if(!abbrScopeIsSubstantiveProse(records[j])) continue;
+              line=abbrScopeFindRecordLine(lines,records[j],0);
+              break;
+            }
+          }
           if(line>=0){firstBody=line;break;}
         }
       }
@@ -10981,7 +11000,6 @@ function prepareAbbreviationBody(rawText){
 
   // Metadata/structural lines that may still occur later.
   lines=lines.map(line=>{
-    line=abbrStripPublisherBoilerplateLine(line);
     const s=line.replace(/\s+/g," ").trim();
     if(s===ABBR_ABSTRACT_MAIN_BOUNDARY) return line;
     if(!s) return line;
@@ -14862,7 +14880,7 @@ async function extractDocxStructuredReferences(buf){
     if(ln!=="p") continue;
     const txt=fteXmlText(el).replace(/\s+/g," ").trim();
     if(!txt) continue;
-    if(afterRef.test(txt)){ finish(); break; }
+    if(afterRef.test(txt)||fteFigureSectionBoundary(txt,ftePStyle(el))){ finish(); break; }
     const style=ftePStyle(el)||"",bibStyle=isBibliographyStyle(style);
     const paraRuns=refWordFormattedRuns(el);
 
@@ -14880,6 +14898,11 @@ async function extractDocxStructuredReferences(buf){
       }
     }
 
+    // A wrapped DOI can resemble a literal reference number. Word list metadata
+    // still takes precedence over this conservative continuation check.
+    if(listNum==null && cur && refIsNumericDoiContinuation(cur.raw,txt)){
+      cur.raw=cur.raw.trimEnd()+txt; cur.runs=(cur.runs||[]).concat(paraRuns); continue;
+    }
     let literal=null,rest=txt;
     const lm=txt.match(/^\s*(?:\[(\d{1,4})\]|\((\d{1,4})\)|(\d{1,4})[.)])\s*(.*)$/);
     if(lm){ literal=parseInt(lm[1]||lm[2]||lm[3],10); rest=lm[4].trim(); }
@@ -15765,17 +15788,20 @@ function fteNearbyIndex(blocks,i,pred,maxDist=2){
   return best;
 }
 
-function fteNearbyFigureObjectIndex(blocks,i,maxDist=6){
+function fteNearbyFigureObjectIndex(blocks,i,maxDist=6,captionBounded=false){
   const candidates=[];
   for(let j=Math.max(0,i-maxDist);j<=Math.min(blocks.length-1,i+maxDist);j++){
     if(j===i) continue;
     const b=blocks[j];
     if(!b || b.type!=="p" || !b.hasDrawing) continue;
+    if(captionBounded && blocks.slice(Math.min(i,j)+1,Math.max(i,j)).some(x=>fteFigureCaption(x.text))) continue;
     const distance=Math.abs(j-i);
     const imageEvidence=(b.imageCount||0)>0 || b.hasImage;
     // Real image-bearing paragraphs outrank decorative lines/shapes. Within the
     // same evidence tier, use local structural proximity only.
-    const score=(imageEvidence?100:20)-distance*5+(j<i?2:0);
+    // Collected figures may use legacy Word drawings; prefer local pairing
+    // without crossing another numbered caption to reach a newer image format.
+    const score=(captionBounded?20:(imageEvidence?100:20))-distance*5+(j<i?2:0);
     candidates.push({j,distance,score,imageEvidence});
   }
   candidates.sort((a,b)=>b.score-a.score || a.distance-b.distance || a.j-b.j);
@@ -15785,6 +15811,12 @@ function fteRefStart(blocks){
   const candidates=[];
   blocks.forEach((b,i)=>{ if(b.type==="p" && b.text && isReferenceHeading(b.text) && i>blocks.length*0.25) candidates.push(i); });
   return candidates.length?candidates[candidates.length-1]:blocks.length;
+}
+function fteFigureSectionBoundary(text,style=""){
+  const t=String(text||"").trim();
+  if(/^(?:\d+(?:\.\d+)*\.?\s*)?figures?(?:\s+(?:captions?|legends?))?\s*[:.]?$/i.test(t)) return true;
+  const label=fteFigureCaption(t);
+  return !!label && fteCaptionEvidence(t,label,"figure",style).score>=40;
 }
 function fteNormalizeGeneratedListText(text){
   return String(text||"")
@@ -16774,6 +16806,14 @@ function refStripTerminalPublisherMeta(s){
   return x;
 }
 
+function refIsNumericDoiContinuation(previous,line){
+  const before=String(previous||"").trimEnd(),next=String(line||"").trim();
+  // Require a compact numeric suffix, not a spaced label or author-led entry.
+  if(!/^(?:\d{5,}\.?|\d+[./_-]\d[\w./()-]*)$/.test(next) || !/[./_-]$/.test(before)) return false;
+  const tail=before.match(/\b10\.\s*\d{4,9}\s*\/\s*[^\s<>"']*$/i);
+  return !!tail && !!refNormalizeDoiCandidate(tail[0]+next);
+}
+
 /* Author parser revision: supports surname+initials, initials+surname, complex surnames and corporate authors. */
 function refSplitList(text){
   const t=text.replace(/\r/g,"").trim();
@@ -16808,6 +16848,7 @@ function refSplitList(text){
     let cur={num,raw:lines[0]};
     for(let i=1;i<lines.length;i++){
       const l=lines[i];
+      if(refIsNumericDoiContinuation(cur.raw,l)){cur.raw=cur.raw.trimEnd()+l;continue;}
       if(refStartsAuthor(l) && (independentlyStartsReference(l,cur.raw) || complete(cur.raw))){
         out.push({...cur,raw:cur.raw.replace(/\s+/g," ").trim()});
         cur={num:null,raw:l};
@@ -16861,6 +16902,7 @@ function refSplitList(text){
   if(explicit.length>=2){
     const entries=[]; let cur=null;
     for(const l of rawLines){
+      if(cur && refIsNumericDoiContinuation(cur.raw,l)){cur.raw=cur.raw.trimEnd()+l;continue;}
       const hit=leadNum(l);
       if(hit){
         if(cur) entries.push({...cur,raw:cur.raw.replace(/\s+/g," ").trim()});
@@ -16885,6 +16927,7 @@ function refSplitList(text){
   for(const l of rawLines){
     const begins=refStartsAuthor(l);
     if(!cur){ cur=l; continue; }
+    if(refIsNumericDoiContinuation(cur,l)){cur=cur.trimEnd()+l;continue;}
     if(begins && (independentlyStartsReference(l,cur) || complete(cur))){
       merged.push(cur.replace(/\s+/g," ").trim());
       cur=l;
@@ -22396,7 +22439,7 @@ function refSplitManuscript(text){
   // gather refs text from a heading line to the next end-boundary heading (or doc end)
   const gather=(fromLine)=>{
     let endLine=lines.length;
-    for(let j=fromLine;j<lines.length;j++){ if(AFTER_REF.test(lines[j])){ endLine=j; break; } }
+    for(let j=fromLine;j<lines.length;j++){ if(AFTER_REF.test(lines[j])||fteFigureSectionBoundary(lines[j])){ endLine=j; break; } }
     return lines.slice(fromLine,endLine).join("\n").trim();
   };
 
@@ -24503,19 +24546,28 @@ fteAnalyze=function(blocks){
   if(!blocks||!blocks.length) return {reliable:false,issues,figures:[],tables:[],equations:[],citations:{figure:[],table:[],equation:[]},unverified:0};
   const refStart=fteRefStart(blocks),active=blocks.slice(0,refStart);
   const generatedLists=fteGeneratedFigureTableListInfo(active);
+  const figureLists=fteGeneratedFigureTableListInfo(blocks);
+  let figureStart=blocks.findIndex((b,i)=>i>refStart && b.type==="p" && !fteIsGeneratedFigureTableListParagraph(b,i,figureLists) && fteFigureSectionBoundary(b.text,b.style));
+  if(figureStart>=0 && fteFigureCaption(blocks[figureStart].text)){
+    // Without a section heading, the first image can precede its caption.
+    const firstObject=fteNearbyFigureObjectIndex(blocks,figureStart,6,true);
+    if(firstObject!=null && firstObject>refStart) figureStart=Math.min(figureStart,firstObject);
+  }
+  const inFigureScope=i=>i<refStart || (figureStart>=0 && i>=figureStart);
   const figCandidates=[],tabCandidates=[],captionBlocks=new Set(),eqBlocks=new Set();
 
-  active.forEach((b,i)=>{
+  blocks.forEach((b,i)=>{
+    if(!inFigureScope(i)) return;
     if(b.type!=="p"||!b.text) return;
-    if(fteIsGeneratedFigureTableListParagraph(b,i,generatedLists)) return;
+    if(fteIsGeneratedFigureTableListParagraph(b,i,i<refStart?generatedLists:figureLists)) return;
     const fc=fteFigureCaption(b.text),tc=fteTableCaption(b.text);
     if(fc){
-      const near=fteNearbyFigureObjectIndex(active,i,6);
+      const near=i<refStart?fteNearbyFigureObjectIndex(active,i,6):(b.hasDrawing?i:fteNearbyFigureObjectIndex(blocks,i,6,true));
       const styled=/(?:caption|figure)/i.test(b.style||"")||b.seqCaptionType==="figure";
       const ev=fteCaptionEvidence(b.text,fc,"figure",b.style||"",near==null?99:Math.abs(near-i),b);
       if(styled||near!=null||ev.score>=40) figCandidates.push({i,b,label:fc,draw:near,ev});
     }
-    if(tc){
+    if(tc && i<refStart){
       const near=fteNearbyIndex(active,i,x=>x.type==="table"&&!x.isEquationLayout,4);
       const styled=/(?:caption|table)/i.test(b.style||"")||b.seqCaptionType==="table";
       const ev=fteCaptionEvidence(b.text,tc,"table",b.style||"",near==null?99:Math.abs(near-i),b);
@@ -24524,12 +24576,12 @@ fteAnalyze=function(blocks){
   });
 
   const figures=[],usedFigCaps=new Set();
-  const drawingIndices=active.map((b,i)=>b.type==="p"&&b.hasDrawing&&!fteIsGeneratedFigureTableListParagraph(b,i,generatedLists)?i:null).filter(i=>i!=null);
+  const drawingIndices=blocks.map((b,i)=>inFigureScope(i)&&b.type==="p"&&b.hasDrawing&&!fteIsGeneratedFigureTableListParagraph(b,i,i<refStart?generatedLists:figureLists)?i:null).filter(i=>i!=null);
   drawingIndices.forEach(di=>{
     const candidates=figCandidates.filter(c=>c.draw===di&&!usedFigCaps.has(c.i));
     const c=fteChooseCaptionCandidate(candidates,"figure",di); if(!c) return;
     usedFigCaps.add(c.i); captionBlocks.add(c.i);
-    figures.push({kind:"figure",id:c.label.id,panel:c.label.panel,pos:active[di].pos,caption:c.b.text,context:c.b.text,placementReliable:true,physicalAnchor:active[di].containerAnchor||active[di].physicalAnchor||`drawing:${di}`,captionIndex:c.i,objectResolved:true,confidence:.99});
+    figures.push({kind:"figure",id:c.label.id,panel:c.label.panel,pos:blocks[di].pos,caption:c.b.text,context:c.b.text,placementReliable:true,physicalAnchor:blocks[di].containerAnchor||blocks[di].physicalAnchor||`drawing:${di}`,captionIndex:c.i,objectResolved:true,confidence:.99});
   });
 
   // A high-confidence caption or SEQ Figure field is sufficient evidence of a
@@ -24540,6 +24592,7 @@ fteAnalyze=function(blocks){
     if(!strong) return;
     usedFigCaps.add(c.i); captionBlocks.add(c.i);
     figures.push({kind:"figure",id:c.label.id,panel:c.label.panel,pos:c.b.pos,caption:c.b.text,context:c.b.text,placementReliable:false,physicalAnchor:c.b.physicalAnchor||`caption:${c.i}`,captionIndex:c.i,objectResolved:false,confidence:.78});
+    if(c.i>=refStart) fteIssue(issues,"figure",c.label.id,"FIGURE_STRUCTURAL_MATCH_REVIEW",`${fteDisplay("figure",c.label.id)} has a caption after the references, but its image or drawing could not be associated reliably.`,"Verify that the figure is included and matches this caption. End-of-manuscript placement is supported.",c.b.text,"warn");
   });
 
   const tables=[],usedTabCaps=new Set();
