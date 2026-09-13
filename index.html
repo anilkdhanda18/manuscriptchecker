@@ -6828,7 +6828,6 @@ table.ledger tbody>tr:last-child>td{
     <h2 class="help-row">Units &amp; notation report <button type="button" class="info-help" id="unit-report-info" aria-label="Explain the units report" aria-expanded="false" title="Explain this report">i</button></h2><div class="section-help" id="unit-report-help" hidden><b>Purpose:</b> this module checks internal consistency of repeated units and their associated numerical precision. It does <b>not</b> force SI notation and does not compare unrelated units. Affiliations and references are excluded.</div>
     <p class="sub" id="unit-report-sub"></p>
     <div id="unit-summary"></div>
-    <div id="unit-findings" hidden></div>
     <div id="unit-ledger-wrap"></div>
     <p class="disclaimer">This check focuses on internal unit consistency. References and affiliations are excluded. The checker looks for meaningful inconsistencies in repeated unit notation or numerical precision; harmless exponent typography such as m2, m^2, and m² is treated as equivalent. Superscript numbers are classified from Word structure and context before unit analysis so confirmed citation or note numbers do not become part of a unit. Ambiguous superscripts are handled conservatively. The checker does not require SI notation and does not compare unrelated units.</p>
     <div class="report-actions">
@@ -7417,6 +7416,7 @@ function unitPrecisionConsistency(qs){
 }
 function unitFindHeaderUnit(header){
   header=(header||"").replace(/\u00A0/g," ").trim(); if(!header)return null;
+  if(tableCellStartsNumber(header)||tableCellIsMissing(header)||tableHeaderIsPH(header))return null;
   const pars=[...header.matchAll(/\(([^()]{1,45})\)/g)].map(m=>m[1]);
   for(let i=pars.length-1;i>=0;i--){const p=unitParseExpression(pars[i]);if(p?.valid)return {parsed:p,raw:pars[i],parameter:header.replace(/\([^()]*\)/g," ").replace(/\s+/g," ").trim()||"Table column"};}
   const words=header.split(/\s+/).filter(Boolean);
@@ -7426,32 +7426,37 @@ function unitFindHeaderUnit(header){
 function unitAnalyzeTables(tables){
   const qs=[];
   (tables||[]).forEach(t=>{
-    if(!t.rows||t.rows.length<2)return; const max=Math.max(...t.rows.map(r=>r.length));
-    for(let c=0;c<max;c++){
-      let hi=null,headerRow=0;
-      for(let r=0;r<Math.min(3,t.rows.length);r++){const h=unitFindHeaderUnit(t.rows[r][c]||"");if(h){hi=h;headerRow=r;break;}}
-      if(!hi)continue;
-      for(let r=headerRow+1;r<t.rows.length;r++){
+    if(!t.rows||t.rows.length<2)return;
+    const {headers,headerPaths,dataStart}=tableHeaderInfo(t);
+    for(let c=0;c<headers.length;c++){
+      const header=headers[c];
+      if(!header||tableHeaderIsPH(header))continue;
+      const path=headerPaths[c];
+      let hi=null,unitPart=-1;
+      for(let h=path.length-1;h>=0;h--){hi=unitFindHeaderUnit(path[h]);if(hi){unitPart=h;break;}}
+      const parameter=hi?path.map((part,h)=>h===unitPart?(hi.parameter==="Table column"?"":hi.parameter):part).filter(Boolean).join(" / ")||"Table column":header;
+      for(let r=dataStart;r<t.rows.length;r++){
+        if(t.dataCells?.[r]?.[c]===false)continue;
         const cell=(t.rows[r][c]||"").trim();if(!cell)continue;
-        const explicit=unitExtractQuantities(cell,`Table ${t.index}, ${hi.parameter}`);
+        const explicit=unitExtractQuantities(cell,`Table ${t.index}, ${parameter}`);
         if(explicit.length){
           explicit.forEach(q=>{
-            q.parameter=hi.parameter;
+            q.parameter=parameter;
             q.parameterConfidence=.99;
-            q.context=`Table ${t.index}, ${hi.parameter}`;
-            q.snippet=`Table ${t.index}, row ${r+1}, ${hi.parameter}: ${cell}`;
+            q.context=`Table ${t.index}, ${parameter}`;
+            q.snippet=`Table ${t.index}, row ${r+1}, ${parameter}: ${cell}`;
             qs.push(q);
           });
-        }else if(/^[<>≤≥~≈]?\s*[-+]?\d+(?:\.\d+)?\s*$/.test(cell)){
+        }else if(hi&&/^[<>≤≥~≈]?\s*[-+]?\d+(?:\.\d+)?\s*$/.test(cell)){
           qs.push({
             value:cell,
             rawUnit:hi.raw,
             parsed:hi.parsed,
-            parameter:hi.parameter,
+            parameter,
             parameterConfidence:.99,
-            context:`Table ${t.index}, ${hi.parameter}`,
+            context:`Table ${t.index}, ${parameter}`,
             external:false,
-            snippet:`Table ${t.index}, row ${r+1}, ${hi.parameter}: ${cell}`,
+            snippet:`Table ${t.index}, row ${r+1}, ${parameter}: ${cell}`,
             space:" ",
             inherited:true
           });
@@ -7567,6 +7572,12 @@ function unitInstancePanelHtml(r,rowIndex){
   const instances=(r.instances||[]).filter(q=>q&&q.parsed?.valid);
   const sections=[];
   const status=String(r.status||"").toLowerCase();
+  if(r.reportIssue){
+    const f=reportFindingData(r.reportIssue);
+    sections.push(`<div class="unit-instance-section unit-finding-detail"><p><b>${f.severityLabel}:</b> ${escapeHtml(f.msg)}</p>${f.suggestion?`<p><b>Recommendation:</b> ${escapeHtml(f.suggestion)}</p>`:""}</div>`);
+  }
+  if(r.reportIssue?.snippet && !instances.length)
+    sections.push(`<div class="unit-instance-example">${escapeHtml(r.reportIssue.snippet)}</div>`);
 
   if(status.includes("precision")){
     const byDp=new Map();
@@ -7585,7 +7596,7 @@ function unitInstancePanelHtml(r,rowIndex){
     });
   }
 
-  return `<tr class="unit-instance-row" id="unit-instance-row-${rowIndex}" hidden><td colspan="6"><div class="unit-instance-panel"><p class="unit-instance-panel-title">Manuscript instances</p><p class="unit-instance-panel-note">The reported value and unit are highlighted so you can compare the inconsistent forms in their original manuscript context.</p>${sections.join("")||'<div class="unit-instance-example">No manuscript context available for this group.</div>'}</div></td></tr>`;
+  return `<tr class="unit-instance-row" id="unit-instance-row-${rowIndex}" hidden><td colspan="6"><div class="unit-instance-panel"><p class="unit-instance-panel-title">Manuscript instances</p><p class="unit-instance-panel-note">${r.reportIssue&&!instances.length?"Review the manuscript excerpts used for this finding.":"The reported value and unit are highlighted so you can compare the inconsistent forms in their original manuscript context."}</p>${sections.join("")||'<div class="unit-instance-example">No manuscript context available for this group.</div>'}</div></td></tr>`;
 }
 function bindUnitInstanceToggles(){
   document.querySelectorAll("#unit-ledger-wrap .unit-view-instances").forEach(btn=>{
@@ -7599,12 +7610,58 @@ function bindUnitInstanceToggles(){
     });
   });
 }
+// Reference and unit findings are separate from the ledger's field/group states.
+// Keep their original severity and text, and treat manuscript excerpts as text.
+function reportFindingData(issue,parsed=[]){
+  const severity=issue.level||issue.severity;
+  const level=severity==="err"?"err":severity==="info"?"info":"warn";
+  const priority=level==="err"?"critical":level==="info"?"style":"review";
+  return {
+    level,priority,
+    severityLabel:level==="err"?"Critical error":level==="info"?"Editorial note":"Review item",
+    label:issue.label||issue.parameter||humanIssueCode(issue.code)||"Finding",
+    msg:issue.msg||"",
+    location:issue.context||"",
+    excerpt:issue.snippet||parsed[issue.idx]?.raw||"",
+    suggestion:issue.suggestion||""
+  };
+}
+function reportFindingsText(issues,title,parsed=[]){
+  const lines=[`${title.toUpperCase()} (${issues.length})`];
+  if(!issues.length)lines.push("No findings reported.");
+  issues.forEach(issue=>{
+    const f=reportFindingData(issue,parsed);
+    lines.push("",`[${f.severityLabel}] ${f.label}: ${f.msg}`);
+    if(f.location)lines.push(`Location: ${f.location}`);
+    if(f.excerpt)lines.push(`Context: ${f.excerpt}`);
+    if(f.suggestion)lines.push(`Recommendation: ${f.suggestion}`);
+  });
+  return lines.join("\n");
+}
+// Attach findings only when the existing group and its evidence identify one row.
+// Manuscript-wide or ambiguous findings retain their own ledger row.
+function unitReportRows(res){
+  const rows=res.ledger.map(r=>({...r,reportFindings:[]})),extra=[];
+  for(const issue of res.issues||[]){
+    const snippets=String(issue.snippet||"").split(" | ").filter(Boolean);
+    const candidates=rows.filter(r=>{
+      if(issue.code==="UNIT_PRECISION_INCONSISTENT"){
+        if(r.parameter!==issue.parameter||r.context!==issue.context||!r.status.includes("precision"))return false;
+      }else if(issue.code==="UNIT_FORMAT_INCONSISTENT"){
+        if(!r.status.includes("format"))return false;
+      }else return false;
+      return snippets.length>0 && snippets.every(s=>(r.instances||[]).some(q=>unitShortContext(q)===s));
+    });
+    if(candidates.length===1)candidates[0].reportFindings.push(issue);
+    else extra.push({parameter:issue.parameter||"Unit check",context:issue.context||"Manuscript",raws:new Map(),precisions:new Map(),instances:[],status:/SPACING/.test(issue.code||"")?"mixed spacing":"review",reportIssue:issue});
+  }
+  return rows.flatMap(r=>r.reportFindings.length?r.reportFindings.map(issue=>({...r,reportIssue:issue})):r).concat(extra);
+}
 function renderUnitReport(res){
   LAST_UNIT=res;
 
-  // The Unit ledger is the single detailed review surface. Summary counts are
-  // derived from ledger groups rather than repeating the same findings in
-  // separate format and precision sections.
+  // Ledger counts describe groups; findings also include checks such as spacing.
+  const issues=res.issues||[];
   const counts={
     format:res.ledger.filter(r=>/format/i.test(String(r.status||""))).length,
     precision:res.ledger.filter(r=>/precision/i.test(String(r.status||""))).length,
@@ -7612,36 +7669,33 @@ function renderUnitReport(res){
     uncompared:res.ledger.filter(r=>/not compared/i.test(String(r.status||""))).length
   };
 
-  $("unit-report-sub").textContent=counts.review
-    ?`${res.recognized} unit-bearing quantities detected · ${counts.review} context-aware group${counts.review===1?"":"s"} to review`
-    :counts.uncompared
+  $("unit-report-sub").textContent=issues.length
+    ?`${res.recognized} unit-bearing quantities detected · ${issues.length} finding${issues.length===1?"":"s"} to review · ${counts.review} context-aware group${counts.review===1?"":"s"} with mixed format or decimal places`
+    :counts.review
+      ?`${res.recognized} unit-bearing quantities detected · ${counts.review} context-aware group${counts.review===1?"":"s"} to review`
+      :counts.uncompared
       ?`${res.recognized} unit-bearing quantities detected · precision compared only where parameter/context could be resolved confidently`
       :`${res.recognized} unit-bearing quantities detected · context-aware unit formats and decimal places are internally consistent`;
 
   $("unit-summary").innerHTML=`<div class="scorecard"><div class="score ${counts.format?"warn":"ok"}"><div class="n">${counts.format}</div><div class="k">Mixed format</div></div><div class="score ${counts.precision?"warn":"ok"}"><div class="n">${counts.precision}</div><div class="k">Mixed decimal places</div></div><div class="score ok"><div class="n">${res.ledger.length}</div><div class="k">Unit groups</div></div></div>`;
 
-  // Detailed Unit-format consistency and Same-unit numerical precision sections
-  // were intentionally removed because the same cases are already consolidated
-  // in the ledger below.
-  $("unit-findings").innerHTML="";
-  $("unit-findings").hidden=true;
-
   const decimalPlacesLabel=(d,n)=>`${d} decimal ${Number(d)===1?"place":"places"} (${n} ${Number(n)===1?"instance":"instances"})`;
-  const rows=res.ledger.map((r,rowIndex)=>{
+  const rows=unitReportRows(res).map((r,rowIndex)=>{
     // Show notation only in Observed format. Occurrence counts are intentionally
     // kept in Decimal places, where they refer to the scalar values included
     // in the precision comparison. This avoids conflicting denominators when
     // ranges, uncertainty expressions, or scientific notation are present.
-    const obs=[...r.raws.keys()].join("; ");
+    const obs=[...r.raws.keys()].join("; ")||"See finding";
     const precisionEntries=[...r.precisions.entries()].sort((a,b)=>a[0]-b[0]);
     const prec=precisionEntries.length
       ?precisionEntries.map(([d,n])=>`<span class="unit-precision-entry">${escapeHtml(decimalPlacesLabel(d,n))}</span>`).join("")
       :"n/a";
     const cls=unitStatusClass(r.status);
     const action=unitStatusAction(r.status,r);
-    const review=/mixed/i.test(String(r.status||""));
+    const finding=r.reportIssue?reportFindingData(r.reportIssue):null;
+    const review=!!finding||/mixed/i.test(String(r.status||""));
     const viewBtn=review?`<button type="button" class="unit-view-instances" data-target="unit-instance-row-${rowIndex}" aria-expanded="false" aria-controls="unit-instance-row-${rowIndex}">View instances</button>`:"";
-    const main=`<tr${review?` class="unit-ledger-review-row" data-unit-review="1" data-unit-review-index="${rowIndex}"`:""}><td>${escapeHtml(r.parameter)}</td><td>${escapeHtml(r.context)}</td><td>${escapeHtml(obs)}</td><td class="unit-decimal-places">${prec}</td><td><span class="yn ${cls}">${escapeHtml(r.status)}</span></td><td class="unit-action">${escapeHtml(action)}${viewBtn}</td></tr>`;
+    const main=`<tr${review?` class="unit-ledger-review-row" data-unit-review="1" data-unit-review-index="${rowIndex}" data-unit-priority="${finding?.priority||"review"}"`:""}><td>${escapeHtml(r.parameter)}</td><td>${escapeHtml(r.context)}</td><td>${escapeHtml(obs)}</td><td class="unit-decimal-places">${prec}</td><td><span class="yn ${finding&&r.status==="review"?"na":cls}">${escapeHtml(r.status)}</span></td><td class="unit-action">${escapeHtml(action)}${viewBtn}</td></tr>`;
     return main+(review?unitInstancePanelHtml(r,rowIndex):"");
   }).join("");
   $("unit-ledger-wrap").innerHTML=`<p class="sec-label">Unit ledger <button type="button" class="info-help" id="unit-ledger-info" aria-label="Explain the Unit Ledger" aria-expanded="false" title="What do these columns mean?">i</button></p>
@@ -7652,7 +7706,7 @@ function renderUnitReport(res){
       <b>Observed format</b><span>The unit notation exactly as written in the manuscript. If more than one notation is used for the same unit, the different forms are listed here. Occurrence counts are shown under <b>Decimal places</b> to avoid conflicting totals.</span>
       <b>Decimal places</b><span>How many digits are reported after the decimal point for scalar values representing the same parameter in a compatible scientific context and the same unit scale. Values sharing a unit but describing different roles, such as operational duration and reaction time, are not compared.</span>
       <b>Status</b><span><b>consistent</b> means one pattern is followed within the inferred parameter/context. <b>mixed precision</b> means contextually comparable values use different decimal-place patterns. <b>mixed format</b> means equivalent units are written in different notation styles. <b>not compared</b> means the local scientific context was not identified confidently enough for a precision judgement.</span>
-      <b>Action</b><span>Provides a concise next step. For rows requiring review, select <b>View instances</b> to inspect the actual manuscript occurrences before making any change.</span>
+      <b>Action</b><span>Provides a concise next step. Select <b>Open details</b> to see the full finding, recommendation, and manuscript evidence. Findings spanning several contexts, including spacing checks, have their own ledger row.</span>
     </div>
   </div>
   <div class="ledger-scroll"><table class="ledger"><thead><tr><th>Parameter / context</th><th>Location</th><th>Observed format</th><th>Decimal places</th><th>Status</th><th>Action to consider</th></tr></thead><tbody>${rows||'<tr><td colspan="6">No unit-bearing quantities detected.</td></tr>'}</tbody></table></div>`;
@@ -7676,8 +7730,13 @@ function unitReportText(res){
     `Groups with mixed decimal places: ${counts.precision}` ,"",
     "Scope: internal consistency of repeated unit notation and same-parameter/same-unit decimal places. Affiliations and references excluded. No SI-conformance or dimensional-mismatch enforcement.",""
   ];
-  L.push("UNIT LEDGER","Parameter / context | Location | Observed format | Decimal places | Status | Action to consider");
-  res.ledger.forEach(r=>L.push(`${r.parameter} | ${r.context} | ${[...r.raws.keys()].join("; ")} | ${[...r.precisions.entries()].sort((a,b)=>a[0]-b[0]).map(([d,n])=>`${d} decimal ${Number(d)===1?"place":"places"} (${n} ${Number(n)===1?"instance":"instances"})`).join("; ")||"n/a"} | ${r.status} | ${unitStatusAction(r.status,r)}`));
+  L.push("UNIT LEDGER","Parameter / context | Location | Observed format | Decimal places | Status | Finding / action to consider");
+  unitReportRows(res).forEach(r=>{
+    const f=r.reportIssue?reportFindingData(r.reportIssue):null;
+    L.push(`${r.parameter} | ${r.context} | ${[...r.raws.keys()].join("; ")||"See finding"} | ${[...r.precisions.entries()].sort((a,b)=>a[0]-b[0]).map(([d,n])=>`${d} decimal ${Number(d)===1?"place":"places"} (${n} ${Number(n)===1?"instance":"instances"})`).join("; ")||"n/a"} | ${f?f.severityLabel+": ":""}${r.status} | ${f?f.msg:unitStatusAction(r.status,r)}`);
+    if(f?.suggestion)L.push(`  Recommendation: ${f.suggestion}`);
+    if(f?.excerpt)L.push(`  Context: ${f.excerpt}`);
+  });
   return L.join("\n");
 }
 
@@ -16446,6 +16505,42 @@ function fteReportText(res){
 }
 
 /* ---------- File reading ---------- */
+function extractNumericTable(tbl,index){
+  const htmlRows=[...tbl.querySelectorAll("tr")].filter(tr=>tr.closest("table")===tbl),grid=htmlRows.map(()=>[]);
+  const htmlCells=htmlRows.map(tr=>[...tr.children].filter(td=>td.matches("td,th")));
+  htmlRows.forEach((tr,r)=>{
+    let c=0;
+    for(const td of htmlCells[r]){
+      while(grid[r][c])c++;
+      const width=Math.max(1,Math.min(1000,td.colSpan||1));
+      const rowSpan=Number.parseInt(td.getAttribute("rowspan"),10)===0?0:td.rowSpan;
+      let height=1;
+      while(r+height<htmlRows.length&&htmlRows[r+height].parentElement===tr.parentElement&&(rowSpan===0||height<rowSpan))height++;
+      const content=td.querySelector("table")?td.cloneNode(true):td;
+      if(content!==td)content.querySelectorAll("table").forEach(t=>t.remove());
+      const raw=(content.textContent||"").replace(/\s+/g," ").trim();
+      const text=typeof numberTextWithoutCitationMarkers==="function"?numberTextWithoutCitationMarkers(raw).replace(/\s+/g," ").trim():raw;
+      const cell={text,row:r,col:c,width};
+      for(let y=r;y<r+height;y++)for(let x=c;x<c+width;x++){
+        if(grid[y][x])cell.ambiguous=grid[y][x].ambiguous=true;
+        else grid[y][x]=cell;
+      }
+      c+=width;
+    }
+  });
+  const width=Math.max(0,...grid.map(row=>row.length));
+  const table={index,rows:grid.map(row=>Array.from({length:width},(_,c)=>row[c]?.text||""))};
+  table.headerFlags=htmlRows.map((tr,r)=>tr.parentElement.tagName==="THEAD"||(htmlCells[r].length>0&&htmlCells[r].every(td=>td.tagName==="TH")));
+  Object.assign(table,tableHeaderInfo(table));
+  table.headers=table.headers.map((header,c)=>grid.slice(0,table.dataStart).some(row=>row[c]?.ambiguous)?"":header);
+  // A merged measurement is read once, and only if its column label is unambiguous.
+  table.dataCells=grid.map((row,r)=>Array.from({length:width},(_,c)=>{
+    const cell=row[c];
+    return !!cell&&!cell.ambiguous&&cell.row===r&&cell.col===c&&!table.headerFlags[r]&&
+      new Set(table.headers.slice(c,c+cell.width)).size===1;
+  }));
+  return table;
+}
 async function readFile(file){
   const name=file.name.toLowerCase();
   if(!name.endsWith(".docx")){
@@ -16542,14 +16637,8 @@ async function readFile(file){
     // Abbreviation definitions are extracted separately from raw Word XML only
     // when they occur inside a recognised Abbreviations/Acronyms/Nomenclature section.
     box.querySelectorAll("table").forEach((tbl,tableIndex)=>{
-      const rows=[...tbl.querySelectorAll("tr")].map(tr=>[...tr.querySelectorAll("td,th")].map(td=>{
-        const raw=(td.textContent||"").replace(/\s+/g," ").trim();
-        return typeof numberTextWithoutCitationMarkers==="function"
-          ? numberTextWithoutCitationMarkers(raw).replace(/\s+/g," ").trim()
-          : raw;
-      }));
-      const numericRows=rows.filter(r=>r.some(c=>c));
-      if(numericRows.length>=2) DOCX_NUMERIC_TABLES.push({index:tableIndex+1,rows:numericRows});
+      const table=extractNumericTable(tbl,tableIndex+1);
+      if(table.rows.filter(r=>r.some(Boolean)).length>=2)DOCX_NUMERIC_TABLES.push(table);
     });
     box.querySelectorAll("table").forEach(t=>t.remove());   // drop Word tables entirely
 
@@ -23031,12 +23120,24 @@ function precisionBodyCheck(text){
   return out;
 }
 
-function tableHeader(rows,col){
-  for(let r=0;r<Math.min(3,rows.length);r++){
-    const t=(rows[r][col]||"").replace(/\s+/g," ").trim();
-    if(t) return t;
-  }
-  return `column ${col+1}`;
+function tableCellStartsNumber(text){
+  return /^(?:[([]\s*)?[<>≤≥~≈]?\s*[+−-]?(?:\d|\.\d)/.test(String(text||"").trim());
+}
+function tableCellIsMissing(text){
+  return /^(?:[-−–—]+|n\s*[/.,]?\s*[ad]\.?|not\s+(?:detected|reported|available))$/i.test(String(text||"").trim());
+}
+function tableHeaderIsPH(header){
+  // pH names a parameter; in "Inductance (pH)", pH remains a unit symbol.
+  return /\bpH\b/i.test(String(header||"").replace(/\([^()]*\)|\[[^\[\]]*\]/g," "));
+}
+function tableHeaderInfo(table){
+  if(Array.isArray(table.headers)&&Number.isInteger(table.dataStart))return {headers:table.headers,headerPaths:table.headerPaths||table.headers.map(h=>[h]),dataStart:table.dataStart};
+  const rows=table.rows||[];
+  let dataStart=rows.findIndex((row,r)=>!table.headerFlags?.[r]&&(row.some(tableCellStartsNumber)||(row.some(tableCellIsMissing)&&!row.slice(1).some(cell=>unitFindHeaderUnit(cell)))));
+  if(dataStart<0)dataStart=rows.length;
+  const width=Math.max(0,...rows.map(row=>row.length));
+  const headerPaths=Array.from({length:width},(_,c)=>[...new Set(rows.slice(0,dataStart).map(row=>String(row[c]||"").replace(/\s+/g," ").trim()).filter(t=>t&&!tableCellIsMissing(t)))]);
+  return {headers:headerPaths.map(path=>path.join(" / ")),headerPaths,dataStart};
 }
 function tableScalar(cell){
   const t=(cell||"").trim(); if(!t) return null;
@@ -23080,13 +23181,15 @@ function precisionTableCheck(tables){
     // threshold tables are exact/external values. Do not force decimal harmonisation.
     if(tableLooksLikeThresholdMatrix(rows)) return;
 
-    const maxCols=Math.max(...rows.map(r=>r.length));
-    for(let c=0;c<maxCols;c++){
-      const header=tableHeader(rows,c);
+    const {headers,dataStart}=tableHeaderInfo(tbl);
+    for(let c=0;c<headers.length;c++){
+      const header=headers[c];
+      if(!header)continue;
       if(/\b(?:sl\.?\s*no|serial|ref\.?|reference|year|date|id|sample\s*id|site\s*id|stp\s*id|number|no\.?|rank|n\s*=|count)\b/i.test(header)) continue;
 
       const vals=[];
-      for(let r=1;r<rows.length;r++){
+      for(let r=dataStart;r<rows.length;r++){
+        if(tbl.dataCells?.[r]?.[c]===false)continue;
         const x=tableScalar(rows[r][c]);
         if(x) vals.push({...x,row:r+1,rowIndex:r});
       }
@@ -23632,7 +23735,7 @@ function combinedReportText(){
   const fileName=currentFile?.name||"manuscript.docx";
   const title=($("title")?.value||"").trim();
   const priority={critical:0,review:0,style:0};
-  ["report","num-report","unit-report","eng-report","fte-report"].forEach(id=>{
+  ["report","ref-report","num-report","unit-report","eng-report","fte-report"].forEach(id=>{
     const c=mcReportPriorityCounts(id);
     priority.critical+=c.critical; priority.review+=c.review; priority.style+=c.style;
   });
@@ -23685,9 +23788,11 @@ function downloadCombinedReport(){
 
 function mcReportPriorityCounts(reportId){
   const report=$(reportId); const out={critical:0,review:0,style:0,total:0};
-  if(reportId==="unit-report" && LAST_UNIT){
-    const n=(LAST_UNIT.ledger||[]).filter(r=>/mixed/i.test(String(r.status||""))).length;
-    return {critical:0,review:n,style:0,total:n};
+  if(reportId==="unit-report"){
+    if(!LAST_UNIT)return out;
+    const rows=[...document.querySelectorAll('#unit-ledger-wrap tr[data-unit-review="1"]')];
+    rows.forEach(r=>{const p=r.dataset.unitPriority||"review";if(Object.prototype.hasOwnProperty.call(out,p))out[p]++;out.total++;});
+    return out;
   }
   if(reportId==="num-report"){
     const rows=[...document.querySelectorAll('#num-findings tr[data-num-review="1"]')];
@@ -23716,7 +23821,7 @@ function mcModuleSummary(tab,title,detected,reportId,extraAttention,attentionNou
   return `<button type="button" class="overview-module" data-overview-tab="${tab}"><div class="overview-module-title"><span>${escapeHtml(title)}</span><span aria-hidden="true">→</span></div><div class="overview-module-meta">${escapeHtml(detected||"Check completed")}</div><span class="overview-module-attn ${att?"":"overview-module-clean"}">${escapeHtml(attention)}</span></button>`;
 }
 function renderManuscriptOverview(){
-  const ids=["report","num-report","unit-report","eng-report","fte-report"];
+  const ids=["report","ref-report","num-report","unit-report","eng-report","fte-report"];
   const total={critical:0,review:0,style:0};
   ids.forEach(id=>{const c=mcReportPriorityCounts(id);total.critical+=c.critical;total.review+=c.review;total.style+=c.style;});
   const p=$("overview-priorities");
@@ -27724,8 +27829,8 @@ fteAnalyze=function(blocks){
   function updateIssueNav(group){const report=$u(GROUP_REPORT[group]),nav=report?.querySelector(".mc-issue-nav");if(!nav)return;const arr=visibleIssues(group);let idx=Math.min(UX_NAV_INDEX[group]||0,Math.max(0,arr.length-1));UX_NAV_INDEX[group]=idx;nav.querySelector(".mc-issue-position").textContent=arr.length?`${idx+1} of ${arr.length}`:"0 issues";nav.querySelector('[data-nav="prev"]').disabled=!arr.length||idx<=0;nav.querySelector('[data-nav="next"]').disabled=!arr.length||idx>=arr.length-1}
   function moveIssue(group,delta){const arr=visibleIssues(group);if(!arr.length)return;let idx=Math.max(0,Math.min(arr.length-1,(UX_NAV_INDEX[group]||0)+delta));UX_NAV_INDEX[group]=idx;updateIssueNav(group);arr[idx].scrollIntoView({behavior:"smooth",block:"center"})}
 
-  function countGroup(group){if(group==="ref")return typeof mcReferenceMissingFieldCount==="function"?mcReferenceMissingFieldCount():0;if(group==="unit")return (LAST_UNIT?.ledger||[]).filter(r=>/mixed/i.test(String(r.status||""))).length;if(group==="num")return document.querySelectorAll('#num-findings tbody tr[data-num-review="1"]').length;return allIssues(group).filter(i=>!i.classList.contains("mc-not-issue")&&!i.classList.contains("mc-reviewed")).length}
-  function totalGroupFindings(group){if(group==="ref")return typeof mcReferenceMissingFieldCount==="function"?mcReferenceMissingFieldCount():0;if(group==="unit")return (LAST_UNIT?.ledger||[]).filter(r=>/mixed/i.test(String(r.status||""))).length;if(group==="num")return document.querySelectorAll('#num-findings tbody tr[data-num-review="1"]').length;return allIssues(group).length}
+  function countGroup(group){if(group==="unit")return mcReportPriorityCounts("unit-report").total;if(group==="num")return document.querySelectorAll('#num-findings tbody tr[data-num-review="1"]').length;const issues=allIssues(group);if(group==="ref"&&!issues.length)return totalGroupFindings(group);return issues.filter(i=>!i.classList.contains("mc-not-issue")&&!i.classList.contains("mc-reviewed")).length}
+  function totalGroupFindings(group){if(group==="unit")return mcReportPriorityCounts("unit-report").total;if(group==="num")return document.querySelectorAll('#num-findings tbody tr[data-num-review="1"]').length;const issues=allIssues(group);if(issues.length)return issues.length;if(group==="ref")return typeof mcReferenceMissingFieldCount==="function"?mcReferenceMissingFieldCount():0;return 0}
   function updateTabs(){
     let total=0; document.querySelectorAll('#results-tabs .rtab').forEach(tab=>{const g=tab.dataset.tab;if(g==="overview")return;const n=countGroup(g);total+=n;let c=tab.querySelector(".rtab-count");if(!c){c=document.createElement("span");c.className="rtab-count";tab.appendChild(c)}c.textContent=n?String(n):"✓";tab.classList.toggle("has-attention",n>0);tab.classList.toggle("is-clean",n===0)}); const over=document.querySelector('#results-tabs .rtab[data-tab="overview"]');if(over){let c=over.querySelector(".rtab-count");if(!c){c=document.createElement("span");c.className="rtab-count";over.appendChild(c)}c.textContent=total?String(total):"✓";over.classList.toggle("has-attention",total>0);over.classList.toggle("is-clean",total===0)}
   }
@@ -27741,14 +27846,14 @@ fteAnalyze=function(blocks){
     let diag=null;try{diag=window.mcGetAbbreviationScopeDiagnostics?.()}catch(_e){} const labels=diag?.scopes?.map(x=>x.label)||scopeLabels(); const structure=labels.length?`<ol class="mc-structure-list">${labels.map(x=>`<li>${escapeHtml(x)}</li>`).join("")}</ol>`:'<p class="mc-structure-list">No independent chapter structure was used for abbreviation checking. The manuscript was assessed at document level.</p>';
     host.innerHTML=`<div class="mc-manuscript-card"><div class="mc-manuscript-card-head"><div><h3>Document analysed</h3><p>${escapeHtml(summaryType())}${chapters?` · ${chapters} major chapter${chapters===1?"":"s"}`:""}</p></div><span class="priority-tag style">Structure detected</span></div><div class="mc-manuscript-stats"><span>${refs??0} references</span><span>${figs??0} figures</span><span>${tabs??0} tables</span><span>${eqs??0} equations</span><span>${abbr??0} abbreviations/notations</span></div><details class="mc-structure"><summary>Detected document structure</summary>${structure}</details><details class="mc-processing-summary"><summary>Processing completed</summary>Read document → abbreviations → references → numbers &amp; units → writing → figures/tables/equations → report prepared.</details></div>`;
     const active=Object.keys(GROUP_REPORT).reduce((n,g)=>n+countGroup(g),0); const lede=$u("overview-lede"); if(lede)lede.textContent=active?`${active} item${active===1?"":"s"} may need your attention. Open the sections below to review the findings and manuscript instances.`:"No issues requiring attention were detected. You can still inspect each section and its ledger for completeness.";
-    const remCounts={critical:0,review:0,style:0}; allIssues().forEach(i=>{if(i.classList.contains("mc-not-issue")||i.classList.contains("mc-reviewed"))return;const p=priorityOf(i);if(remCounts[p]!==undefined)remCounts[p]++}); remCounts.review+=countGroup("unit"); document.querySelectorAll('#num-findings tbody tr[data-num-review="1"]').forEach(r=>{const p=r.dataset.numPriority||"review";if(remCounts[p]!==undefined)remCounts[p]++});
+    const remCounts={critical:0,review:0,style:0}; allIssues().forEach(i=>{if(i.classList.contains("mc-not-issue")||i.classList.contains("mc-reviewed"))return;const p=priorityOf(i);if(remCounts[p]!==undefined)remCounts[p]++}); const unitCounts=mcReportPriorityCounts("unit-report");Object.keys(remCounts).forEach(p=>remCounts[p]+=unitCounts[p]); document.querySelectorAll('#num-findings tbody tr[data-num-review="1"]').forEach(r=>{const p=r.dataset.numPriority||"review";if(remCounts[p]!==undefined)remCounts[p]++});
     document.querySelectorAll(".overview-priority-card").forEach((card,i)=>{const key=["critical","review","style"][i];const n=card.querySelector(".n");if(n)n.textContent=String(remCounts[key]||0);if(!card.querySelector(".mc-card-action"))card.insertAdjacentHTML("beforeend",'<span class="mc-card-action">Review these →</span>');card.tabIndex=0;card.setAttribute("role","button")});
     document.querySelectorAll(".overview-module[data-overview-tab]").forEach(card=>{const g=card.dataset.overviewTab,att=card.querySelector(".overview-module-attn"),n=countGroup(g);if(att){att.textContent=n?`${n} finding${n===1?"":"s"} to review`:totalGroupFindings(g)>0?"All findings reviewed":"No findings requiring attention";att.classList.toggle("overview-module-clean",n===0)}});
     document.querySelectorAll(".overview-module").forEach(card=>{if(!card.querySelector(".mc-card-action"))card.insertAdjacentHTML("beforeend",'<span class="mc-card-action">Open details</span>')});
     const cards=[...document.querySelectorAll(".overview-priority-card")];cards.forEach((c,i)=>{const p=["critical","review","style"][i];const go=()=>jumpToPriority(p);c.onclick=go;c.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();go()}}});
     mcPlaceCombinedExportAtOverviewBottom();
   }
-  function jumpToPriority(p){const ar=document.querySelector(`#abbr-reporting-table tbody tr[data-abbr-review="1"][data-abbr-priorities~="${p}"]`);if(ar){showTab("abbr");setTimeout(()=>ar.scrollIntoView({behavior:"smooth",block:"center"}),60);return}for(const g of Object.keys(GROUP_REPORT)){if(g==="abbr")continue;if(allIssues(g).some(i=>priorityOf(i)===p&&!i.classList.contains("mc-not-issue"))){showTab(g);setTimeout(()=>{const bar=$u(GROUP_REPORT[g])?.querySelector(".mc-review-toolbar"),b=bar?.querySelector(`[data-filter="${p}"]`);b?.click();visibleIssues(g)[0]?.scrollIntoView({behavior:"smooth",block:"center"})},60);return}}const nr=document.querySelector(`#num-findings tbody tr[data-num-review="1"][data-num-priority="${p}"]`);if(nr){showTab("num");setTimeout(()=>nr.scrollIntoView({behavior:"smooth",block:"center"}),60);return}if(p==="review"&&countGroup("unit")>0){showTab("unit");setTimeout(()=>document.querySelector('#unit-ledger-wrap tbody tr[data-unit-review="1"]')?.scrollIntoView({behavior:"smooth",block:"center"}),60)}}
+  function jumpToPriority(p){const ar=document.querySelector(`#abbr-reporting-table tbody tr[data-abbr-review="1"][data-abbr-priorities~="${p}"]`);if(ar){showTab("abbr");setTimeout(()=>ar.scrollIntoView({behavior:"smooth",block:"center"}),60);return}for(const g of Object.keys(GROUP_REPORT)){if(g==="abbr")continue;if(allIssues(g).some(i=>priorityOf(i)===p&&!i.classList.contains("mc-not-issue"))){showTab(g);setTimeout(()=>{const bar=$u(GROUP_REPORT[g])?.querySelector(".mc-review-toolbar"),b=bar?.querySelector(`[data-filter="${p}"]`);b?.click();visibleIssues(g)[0]?.scrollIntoView({behavior:"smooth",block:"center"})},60);return}}const nr=document.querySelector(`#num-findings tbody tr[data-num-review="1"][data-num-priority="${p}"]`);if(nr){showTab("num");setTimeout(()=>nr.scrollIntoView({behavior:"smooth",block:"center"}),60);return}const ur=document.querySelector(`#unit-ledger-wrap tr[data-unit-review="1"][data-unit-priority="${p}"]`);if(ur){showTab("unit");setTimeout(()=>ur.scrollIntoView({behavior:"smooth",block:"center"}),60)}}
   function startReviewing(){const arCrit=document.querySelector('#abbr-reporting-table tbody tr[data-abbr-review="1"][data-abbr-priorities~="critical"]');if(arCrit){showTab("abbr");setTimeout(()=>arCrit.scrollIntoView({behavior:"smooth",block:"center"}),50);return}const crit=allIssues().find(i=>groupFor(i)!=="abbr"&&priorityOf(i)==="critical"&&!i.classList.contains("mc-not-issue"));const first=crit||allIssues().find(i=>groupFor(i)!=="abbr"&&!i.classList.contains("mc-not-issue"));if(first){const g=groupFor(first);showTab(g);setTimeout(()=>first.scrollIntoView({behavior:"smooth",block:"center"}),50);return}const ar=document.querySelector('#abbr-reporting-table tbody tr[data-abbr-review="1"]');if(ar){showTab("abbr");setTimeout(()=>ar.scrollIntoView({behavior:"smooth",block:"center"}),50);return}const nr=document.querySelector('#num-findings tbody tr[data-num-review="1"]');if(nr){showTab("num");setTimeout(()=>nr.scrollIntoView({behavior:"smooth",block:"center"}),50);return}if(countGroup("unit")>0){showTab("unit");setTimeout(()=>document.querySelector('#unit-ledger-wrap tbody tr[data-unit-review="1"]')?.scrollIntoView({behavior:"smooth",block:"center"}),50)}}
 
   function ensureFloatingNav(){if($u("mc-floating-nav"))return;const d=document.createElement("div");d.className="mc-floating-nav";d.id="mc-floating-nav";d.innerHTML='<button type="button" id="mc-back-overview" hidden>← Overview</button><button type="button" id="mc-back-top" hidden>↑ Back to top</button>';document.body.appendChild(d);$u("mc-back-overview")?.addEventListener("click",()=>{showTab("overview");$u("results-tabs")?.scrollIntoView({behavior:"smooth",block:"start"})});$u("mc-back-top")?.addEventListener("click",()=>window.scrollTo({top:0,behavior:"smooth"}));window.addEventListener("scroll",updateFloating,{passive:true})}
@@ -29178,6 +29283,7 @@ fteAnalyze=function(blocks){
     const p=String(row?.parameter||"this parameter/context").replace(/\s*·\s*.+$/," ").trim();
     if(status==="consistent")return "No action needed.";
     if(status==="not compared")return "No precision comparison was made because the reporting context could not be identified confidently.";
+    if(status.includes("mixed spacing"))return "Use one spacing convention consistently for this unit.";
     if(status.includes("format")&&status.includes("precision"))return `Use one unit notation consistently and check whether ${p} values should use consistent decimal places.`;
     if(status.includes("mixed format"))return "Use one unit notation consistently.";
     if(status.includes("mixed precision"))return `Check whether ${p} values should use consistent decimal places.`;
@@ -30587,7 +30693,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
     if(!actions.length && btn.matches(".unit-view-instances")){
       const el=qs(".unit-action",row);
       if(el){
-        const clone=el.cloneNode(true);
+        const clone=(qs(".std-note",el)||el).cloneNode(true);
         qsa("button",clone).forEach(x=>x.remove());
         actions=[mcInspectorNormalizeAction(clone.textContent)].filter(Boolean);
       }
@@ -32369,6 +32475,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       if(p._styleReviewReason)L.push(`  Style review: ${p._styleReviewReason}`);
       if(p.referenceDelimiterReview)L.push(`  Formatting review: ${p.referenceDelimiterReview.recommendation}`);
     });
+    L.push('',reportFindingsText(res.issues||[],'Reference findings',res.parsed));
     return L.join('\n');
   };
 
