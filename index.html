@@ -12911,12 +12911,12 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
           // List-only declaration applies.
           const already=errors.some(e=>
             norm(e?.abbr||"")===norm(disp) &&
-            /Not defined at first use in the main text/i.test(String(e?.msg||""))
+            (e?.abstractOnlyDefinition || /Not defined at first use in the main text/i.test(String(e?.msg||"")))
           );
           if(!already){
             errors.push({
               abbr:disp,
-              msg:`Not defined at first use in the main text. ${disp} is defined in the Abstract, but no main-text first-use definition was detected.`,
+              msg:`${disp} is defined in the abstract but not in the main text. Define it again at its first occurrence in the main text.`,
               snip:mainUseHtml,
               contexts,
               independentMainScope:true,
@@ -13644,6 +13644,7 @@ function abbrPlainHtml(x){
 function abbrIssueStatusLabel(msg,priority,it=null,row=null){
   msg=String(msg||"");
   let m;
+  if(it?.abstractOnlyDefinition)return "Not defined at first use in the main text";
   if(/List of Abbreviations not detected/i.test(msg)) return "List of Abbreviations not detected";
   if(/used in (?:Table|Figure) .*without a local definition|local (?:table|figure) definition/i.test(msg)) return "Local definition review";
 
@@ -13726,6 +13727,7 @@ function abbrLocalStructuralScope(it,msg,type){
 function abbrFindingDescriptor(it,row,label=""){
   const msg=String(it?.msg||"").replace(/\s+/g," ").trim();
   const local=String(it?.localScopeLabel||"").replace(/\s+/g," ").trim();
+  if(it?.abstractOnlyDefinition)return "the main text";
 
   // Local structural scopes are the clearest descriptors.
   if(local && /^(?:Table|Figure)\b/i.test(local)) return local;
@@ -13806,6 +13808,7 @@ function abbrRecommendationUsesThesisContext(){
 function abbrRecommendationForIssue(it,priority,row=null){
   const a=String(it?.abbr||row?.base||"abbreviation").trim();
   const msg=String(it?.msg||"");
+  if(it?.abstractOnlyDefinition)return msg;
   const expansion=abbrRecommendationExpansion(row,it,a);
   const thesisContext=abbrRecommendationUsesThesisContext();
   let m;
