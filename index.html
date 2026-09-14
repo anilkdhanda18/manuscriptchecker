@@ -474,6 +474,9 @@ if(document.readyState==="loading"){
     .report-subnav-label{display:none}
   }
   .result-group[hidden]{display:none}
+  /* Hide check descriptions and limitations across report tabs. */
+  .result-group details.rules,
+  .result-group details.mc-note{display:none!important}
   .std-note{margin-top:16px;font-size:13px;color:var(--muted)}
   .std-note code{font-family:var(--mono);background:var(--paper);border:1px solid var(--hair);border-radius:4px;padding:1px 6px;font-size:12px;color:var(--pencil);margin:0 2px;display:inline-block}
   .disclaimer{font-size:12.5px;color:var(--faint);margin-top:26px;border-top:1px solid var(--hair);padding-top:16px;line-height:1.6}
@@ -1209,6 +1212,7 @@ if(document.readyState==="loading"){
   color:#174f78;
 }
 .eng-threshold-note .eng-advanced-settings-link{
+  background:transparent;border:0;padding:0;font:inherit;cursor:pointer;
   color:#174f78;
   font-weight:800;
   text-decoration:underline;
@@ -1217,6 +1221,12 @@ if(document.readyState==="loading"){
 .eng-threshold-note .eng-advanced-settings-link:hover{
   color:#0f3f63;
 }
+#eng-readability-dialog{width:min(680px,calc(100% - 32px));max-height:calc(100vh - 32px);box-sizing:border-box;overflow:auto;margin:auto;padding:24px;border:1px solid var(--hair);border-radius:14px;background:#fff;color:var(--ink);box-shadow:0 18px 60px rgba(19,28,42,.2)}
+#eng-readability-dialog::backdrop{background:rgba(19,28,42,.46)}
+#eng-readability-dialog h2{margin:0 0 10px}
+#eng-readability-dialog .readability-grid{margin-top:18px}
+#eng-readability-error{color:var(--err)}
+@media print{#eng-readability-dialog{display:none!important}}
 @media(max-width:760px){
   .eng-reporting-table{min-width:760px}
 }
@@ -6648,7 +6658,8 @@ table.ledger tbody>tr:last-child>td{
         </details>
     
         <details class="adv" id="mc-csl-reference-settings">
-          <summary>Target reference style (optional)</summary>
+          <summary>Add one correctly formatted reference (optional)</summary>
+          <div hidden>
           <p class="hint">Use the CSL library to validate reference formatting against a selected journal or citation style. Core field detection remains independent of CSL rules. Import your CSL ZIP once, select a style, and Manuscript Check will load only that style when needed. Complex CSL branches that cannot be interpreted confidently are left unvalidated rather than guessed.</p>
 
           <div class="mc-csl-style-picker">
@@ -6673,11 +6684,10 @@ table.ledger tbody>tr:last-child>td{
 
           <div class="mc-csl-profile" id="csl-style-profile" hidden aria-live="polite"></div>
 
-          <details class="mc-csl-manual-fallback">
-            <summary>Use one formatted reference instead</summary>
-            <p class="hint">If you do not want to import the CSL library, paste one correctly formatted reference from your target journal. This remains a lightweight fallback and is used only when no active CSL style is available.</p>
-            <textarea id="ref-style" style="min-height:70px" placeholder="e.g. Marcano, D. C., Kosynkin, D. V., & Tour, J. M. (2010). Improved synthesis of graphene oxide. ACS Nano, 4(8), 4806–4814. https://doi.org/10.1021/nn1006368" aria-label="Reference style example"></textarea>
-          </details>
+          </div>
+
+          <p class="hint" id="ref-style-help">Paste one complete reference in the format required by your target journal.</p>
+          <textarea id="ref-style" style="min-height:70px" placeholder="e.g. Marcano, D. C., Kosynkin, D. V., & Tour, J. M. (2010). Improved synthesis of graphene oxide. ACS Nano, 4(8), 4806–4814. https://doi.org/10.1021/nn1006368" aria-label="Reference style example" aria-describedby="ref-style-help"></textarea>
         </details>
     
           </div>
@@ -6929,6 +6939,33 @@ table.ledger tbody>tr:last-child>td{
       <div id="mc-help-content"></div>
     </div>
   </div>
+
+  <dialog id="eng-readability-dialog" aria-labelledby="eng-readability-title" aria-describedby="eng-readability-description">
+    <form id="eng-readability-form">
+      <h2 id="eng-readability-title">Readability limits</h2>
+      <p id="eng-readability-description">Apply new sentence and paragraph limits to the current manuscript.</p>
+      <div class="readability-grid">
+        <div class="limit-control">
+          <div class="limit-label-row"><label class="limit-label" for="eng-edit-sentence-max">Sentence maximum</label></div>
+          <div class="limit-input-row"><input class="limit-input" id="eng-edit-sentence-max" type="number" inputmode="numeric" min="10" max="100" step="1" required autofocus aria-describedby="eng-readability-ranges"><span class="limit-unit">words</span></div>
+        </div>
+        <div class="limit-control">
+          <div class="limit-label-row"><label class="limit-label" for="eng-edit-paragraph-min">Paragraph minimum</label></div>
+          <div class="limit-input-row"><input class="limit-input" id="eng-edit-paragraph-min" type="number" inputmode="numeric" min="20" max="1000" step="1" required aria-describedby="eng-readability-ranges"><span class="limit-unit">words</span></div>
+        </div>
+        <div class="limit-control">
+          <div class="limit-label-row"><label class="limit-label" for="eng-edit-paragraph-max">Paragraph maximum</label></div>
+          <div class="limit-input-row"><input class="limit-input" id="eng-edit-paragraph-max" type="number" inputmode="numeric" min="20" max="1000" step="1" required aria-describedby="eng-readability-ranges"><span class="limit-unit">words</span></div>
+        </div>
+      </div>
+      <p class="readability-foot" id="eng-readability-ranges">Sentence maximum: 10–100 words. Paragraph limits: 20–1000 words; maximum must be greater than minimum. Existing section exclusions still apply.</p>
+      <p id="eng-readability-error" role="alert" hidden></p>
+      <div class="mc-modal-actions">
+        <button type="button" class="btn btn-ghost" id="eng-readability-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary">Apply limits</button>
+      </div>
+    </form>
+  </dialog>
 
   <footer>
     <div class="credit">
@@ -14557,6 +14594,7 @@ let DOCX_STRUCTURED_REFERENCES=null;
 let LAST_FTE=null;
 let LAST_UNIT=null;
 let LAST_ENG=null;
+let ENG_LAST_TEXT=null;
 let LAST_NUM=null;
 
 
@@ -23630,9 +23668,10 @@ $("run").onclick=async()=>{
         refResult.detect={heading:detectHeading,method:detectMethod,confidence:detectConfidence,citeStyle:detectedCiteStyle};
         if(!refResult.count){ showRefNote("A references section was found, but no reference entries could be parsed from it."); LAST_REF_OUT=null; }
         else {
+          const styleEx=$("ref-style").value.trim();
           let cslTarget=null;
           try{
-            if(typeof window.mcCslGetActiveTarget==="function") cslTarget=await window.mcCslGetActiveTarget();
+            if(!styleEx && typeof window.mcCslGetActiveTarget==="function") cslTarget=await window.mcCslGetActiveTarget();
           }catch(cslErr){
             console.warn("CSL target style could not be loaded:",cslErr);
           }
@@ -23649,9 +23688,8 @@ $("run").onclick=async()=>{
               supportedChecks:cslTarget.template.supportedChecks||[]
             };
           }else{
-            const selectedMeta=typeof window.mcCslGetSelectedMeta==="function"?window.mcCslGetSelectedMeta():null;
+            const selectedMeta=!styleEx && typeof window.mcCslGetSelectedMeta==="function"?window.mcCslGetSelectedMeta():null;
             if(selectedMeta) refResult.cslStylePending={title:selectedMeta.title,slug:selectedMeta.slug};
-            const styleEx=$("ref-style").value.trim();
             if(styleEx){
               applyTemplateChecks(refResult, inferTemplate(styleEx));
               refResult.manualStyleExampleApplied=true;
@@ -23684,6 +23722,7 @@ $("run").onclick=async()=>{
     // General grammar/spelling/punctuation/tense/person/passive-voice editing is intentionally excluded.
     try{
       status("Checking readability and terminology consistency…");
+      ENG_LAST_TEXT=text;
       const engResult=engAnalyze(text,sentenceLimit,paragraphLimits);
       renderEnglishReport(engResult);
     }catch(e){
@@ -23713,6 +23752,7 @@ $("run").onclick=async()=>{
 };
 
 $("clear").onclick=()=>{
+  ENG_LAST_TEXT=null;
   currentFile=null; fileInput.value=""; chip.style.display="none"; mcSetUploadPromptState(false);
   if(window.mcResetWinkCache) window.mcResetWinkCache();
   if(window.mcResetAbbreviationScopeCache) window.mcResetAbbreviationScopeCache();
@@ -27777,7 +27817,7 @@ fteAnalyze=function(blocks){
     function box(titleTxt,help){const d=document.createElement("section");d.className="mc-settings-group";d.innerHTML=`<h3>${titleTxt}</h3><p class="mc-group-help">${help}</p>`;body.appendChild(d);return d}
     const wr=box("Writing","Readability thresholds for eligible narrative prose."); if(read)wr.appendChild(read);
     const ab=box("Abbreviations","Use this section only if your journal, discipline, or organisation treats certain abbreviations as standard and does not require them to be defined in the manuscript. Add such terms here so Manuscript Check will not flag them as undefined. Leave this section unchanged if no additional standard abbreviations are required."); if(adv[0])ab.appendChild(adv[0]);
-    const rf=box("References","Choose a target journal or citation style from the CSL library when you want style-specific reference checks. Import the CSL ZIP once and Manuscript Check will keep it locally in the browser when supported. The universal reference parser remains responsible for field detection; CSL is used only for formatting validation. You can still paste one formatted reference as a fallback."); if(adv[1])rf.appendChild(adv[1]);
+    const rf=box("References","Reference checks run automatically. You can optionally provide one correctly formatted reference from your target journal to guide formatting checks."); if(adv[1])rf.appendChild(adv[1]);
     const minLabel=body.querySelector('label[for="paragraph-min"]'); if(minLabel)minLabel.textContent="Short paragraph threshold";
     const maxLabel=body.querySelector('label[for="paragraph-max"]'); if(maxLabel)maxLabel.textContent="Long paragraph threshold";
     $u("mc-reset-defaults")?.addEventListener("click",resetDefaults);
@@ -28021,7 +28061,7 @@ fteAnalyze=function(blocks){
     });
 
     const empty=`<tr><td colspan="4"><span class="verdict clean">No sentence-length, paragraph-length, or terminology-consistency items require review.</span></td></tr>`;
-    const help=`<p class="sec-label">Readability &amp; terminology ledger <button type="button" class="info-help" id="eng-ledger-info" aria-label="Explain the readability and terminology ledger" aria-expanded="false" title="What do these columns mean?">i</button></p><p class="std-note eng-threshold-note"><b>Note:</b> Default thresholds are <b>35 words per sentence</b> and <b>100–300 words per paragraph</b>. These thresholds can be customised in <a class="eng-advanced-settings-link" href="#advanced-settings">Advanced check settings</a>.</p><div class="ledger-help" id="eng-ledger-help" hidden><div class="ledger-help-grid"><b>Check</b><span>The readability or terminology rule being assessed.</span><b>Location</b><span>The manuscript area in which the finding was detected.</span><b>Finding</b><span>A concise description of what was detected, including counts where useful.</span><b>Recommendation</b><span>A concise next step. Use <b>View instances</b> to inspect the manuscript context.</span></div></div>`;
+    const help=`<p class="sec-label">Readability &amp; terminology ledger <button type="button" class="info-help" id="eng-ledger-info" aria-label="Explain the readability and terminology ledger" aria-expanded="false" title="What do these columns mean?">i</button></p><p class="std-note eng-threshold-note"><b>Note:</b> Current limits are <b>${sentenceLimit} words per sentence</b> and <b>${paragraphMin}–${paragraphMax} words per paragraph</b>. These limits can be customised in <button type="button" class="eng-advanced-settings-link" aria-haspopup="dialog" aria-controls="eng-readability-dialog">Advanced check settings</button>.</p><div class="ledger-help" id="eng-ledger-help" hidden><div class="ledger-help-grid"><b>Check</b><span>The readability or terminology rule being assessed.</span><b>Location</b><span>The manuscript area in which the finding was detected.</span><b>Finding</b><span>A concise description of what was detected, including counts where useful.</span><b>Recommendation</b><span>A concise next step. Use <b>View instances</b> to inspect the manuscript context.</span></div></div>`;
 
     const legacy=[...sentenceIssues,...paraIssues,...termIssues].map(engLegacyIssue).join("");
     $("eng-findings").innerHTML=`${help}<div class="ledger-scroll"><table class="ledger eng-reporting-table"><thead><tr><th>Check</th><th>Location</th><th>Finding</th><th>Recommendation</th></tr></thead><tbody>${rows.join("")||empty}</tbody></table></div><div class="eng-ledger-legacy" aria-hidden="true">${legacy}</div>`;
@@ -28342,19 +28382,67 @@ fteAnalyze=function(blocks){
 
 <script id="mc-readability-settings-link-v1">
 (function(){
+  const dialog=document.getElementById("eng-readability-dialog");
+  const form=document.getElementById("eng-readability-form");
+  const error=document.getElementById("eng-readability-error");
+  const ids=["sentence-max","paragraph-min","paragraph-max"];
+  const sources=ids.map(id=>document.getElementById(id));
+  const fields=ids.map(id=>document.getElementById("eng-edit-"+id));
+
   document.addEventListener("click",function(ev){
-    const link=ev.target.closest?.(".eng-advanced-settings-link");
-    if(!link) return;
-    const details=document.getElementById("advanced-settings");
-    if(!details) return;
+    if(!ev.target.closest?.(".eng-advanced-settings-link")) return;
     ev.preventDefault();
-    details.open=true;
-    details.scrollIntoView({behavior:"smooth",block:"start"});
-    const summary=details.querySelector("summary");
-    if(summary){
-      summary.setAttribute("tabindex","-1");
-      setTimeout(()=>summary.focus({preventScroll:true}),350);
+    fields.forEach((field,i)=>{field.value=sources[i].value;field.setCustomValidity("");field.removeAttribute("aria-invalid");});
+    error.hidden=true;
+    dialog.showModal();
+  });
+  document.getElementById("eng-readability-cancel").addEventListener("click",()=>dialog.close());
+  dialog.addEventListener("close",()=>document.querySelector(".eng-advanced-settings-link")?.focus({preventScroll:true}));
+  form.addEventListener("input",()=>{
+    fields[2].setCustomValidity("");
+    fields[2].removeAttribute("aria-invalid");
+    error.hidden=true;
+  });
+  form.addEventListener("submit",function(ev){
+    ev.preventDefault();
+    if(!form.reportValidity()) return;
+    const limits=engValidateParagraphLimits(fields[1].value,fields[2].value);
+    if(!limits.valid){
+      fields[2].setCustomValidity(limits.error);
+      fields[2].setAttribute("aria-invalid","true");
+      fields[2].reportValidity();
+      return;
     }
+    if(document.getElementById("run").disabled){
+      error.textContent="Wait for the manuscript check to finish, then apply the new limits.";
+      error.hidden=false;
+      return;
+    }
+    if(ENG_LAST_TEXT===null){
+      error.textContent="Check a manuscript before applying new readability limits.";
+      error.hidden=false;
+      return;
+    }
+    const sentenceLimit=fields[0].valueAsNumber;
+    const previousMin=ENG_CURRENT_PARAGRAPH_MIN,previousMax=ENG_CURRENT_PARAGRAPH_MAX;
+    let result;
+    try{
+      result=engAnalyze(ENG_LAST_TEXT,sentenceLimit,limits);
+    }catch(err){
+      console.error("Readability limits could not be applied:",err);
+      error.textContent="Could not refresh the readability report. Your settings have not been changed. Please try again.";
+      error.hidden=false;
+      return;
+    }finally{
+      ENG_CURRENT_PARAGRAPH_MIN=previousMin;
+      ENG_CURRENT_PARAGRAPH_MAX=previousMax;
+    }
+    fields.forEach((field,i)=>{sources[i].value=field.value;});
+    engReadSentenceLimit();
+    engReadParagraphLimits();
+    renderEnglishReport(result);
+    renderManuscriptOverview();
+    dialog.close();
   });
 })();
 </script>
