@@ -7136,13 +7136,21 @@ function unitParseExpression(raw,opts={}){
   if(work==="%") return {raw:raw.trim(),valid:true,recognized:true,normalized:"%",dim:{},dimKey:"dimensionless",scale:.01,scaleKey:unitScaleKey(.01),offset:0,notationFamily:"single",analyte:null,flags,components:[{canonical:"%",exp:1}]};
   work=work.replace(/·|⋅|×/g," ").replace(/\//g," / ").replace(/\s+/g," ").trim();
   const toks=work.split(" ").filter(Boolean); if(!toks.length)return null;
-  let denom=false,dim={},scale=1,analyte=null,components=[],numericDiv=1,physical=0,unknown=[];
+  let denom=false,dim={},scale=1,analyte=null,components=[],numericDiv=1,physical=0,unknown=[],expectAnalyte=false;
   for(let i=0;i<toks.length;i++){
     let t=toks[i].replace(/^[()\[\]]+|[()\[\],;]+$/g,""); if(!t)continue;
+    const aq=t.toUpperCase().replace(/[₀-₉]/g,c=>({"₀":"0","₁":"1","₂":"2","₃":"3","₄":"4","₅":"5","₆":"6","₇":"7","₈":"8","₉":"9"}[c]));
+    if(expectAnalyte){
+      if(!UNIT_ANALYTES.has(aq)){unknown.push(t);break;}
+      analyte=analyte||aq;expectAnalyte=false;continue;
+    }
     if(t==="/"){denom=true;continue;}
     if(/^\d+(?:\.\d+)?$/.test(t) && denom){numericDiv*=+t;continue;}
-    if(/^as$/i.test(t)){continue;}
-    const aq=t.toUpperCase().replace(/[₀-₉]/g,c=>({"₀":"0","₁":"1","₂":"2","₃":"3","₄":"4","₅":"5","₆":"6","₇":"7","₈":"8","₉":"9"}[c]));
+    // "as" belongs to a unit only when it introduces a recognised analyte.
+    if(/^as$/i.test(t)){
+      if(!physical){unknown.push(t);break;}
+      expectAnalyte=true;continue;
+    }
     if(physical>0 && UNIT_ANALYTES.has(aq)){analyte=analyte||aq;continue;}
     let comp=unitParseComponent(t);
     if(!comp && UNIT_NONSTANDARD[t]){comp=unitParseComponent(UNIT_NONSTANDARD[t]);flags.nonstandardToken=t;}
@@ -7151,7 +7159,7 @@ function unitParseExpression(raw,opts={}){
     unitAddDim(dim,comp.dim,exp); scale*=Math.pow(comp.scale,exp);
     components.push({canonical:comp.canonical,exp,raw:t});
   }
-  if(unknown.length||physical===0)return opts.allowUnknown?{raw:raw.trim(),valid:false,recognized:false,unknown:unknown[0]||raw.trim(),flags}:null;
+  if(unknown.length||physical===0||expectAnalyte)return opts.allowUnknown?{raw:raw.trim(),valid:false,recognized:false,unknown:unknown[0]||raw.trim(),flags}:null;
   if(numericDiv!==1)scale/=numericDiv;
   const normalized=components.map(c=>c.exp===1?c.canonical:`${c.canonical}^${c.exp}`).join(" ");
   const notationFamily=(raw.includes("/")?"solidus":raw.includes("·")||raw.includes("⋅")?"negative_exponent_dot":/[⁻−]|\^-/.test(raw)?"negative_exponent_space":"product_space");
@@ -7162,13 +7170,44 @@ function unitIsChemicalLike(s){return /^(?:H2O|H2|CH4|CO2|O2|NH4\+?|NH3|NO[23][�
 function unitStrongUnknown(s){s=(s||"").trim();return !!s&&!unitIsChemicalLike(s)&&(s.includes("/")||/[µμ°%²³⁻]/.test(s)||/^[a-z]{1,4}$/.test(s));}
 function unitCandidatePrefixes(rest){
   rest=(rest||"").replace(/^[\s]+/,"");
-  const cut=rest.split(/(?=[,;!?])|\.(?=\s+[A-Z]|$)/)[0].slice(0,90);
+  // Keep uppercase VS (volatile solids), but stop at the prose word vs/versus.
+  const versus=[...rest.matchAll(/\b(?:vs\.?|versus)(?=\s|$)/gi)].find(m=>{
+    if(!/^VS\.?$/.test(m[0]))return true;
+    // A sentence-final "g VS." still names volatile solids. In a voltage
+    // expression, uppercase VS/VS. instead introduces the comparison reference.
+    return unitParseExpression(rest.slice(0,m.index))?.dimKey===unitDimKey(UNIT_REGISTRY.V.dim);
+  });
+  if(versus)rest=rest.slice(0,versus.index);
+  const cut=rest.split(/(?=[,;:!?])|\.(?=\s+[A-Z]|$)/)[0].slice(0,90);
   const parts=cut.split(/\s+/).filter(Boolean).slice(0,8),out=[];
-  for(let n=parts.length;n>=1;n--)out.push(parts.slice(0,n).join(" ").replace(/[)\]]+$/g,""));
-  return out;
+  for(let n=1;n<=parts.length;n++){
+    const candidate=parts.slice(0,n).join(" "),closers=[];
+    let end=candidate.length,stop=false,valid=true;
+    for(let i=0;i<candidate.length;i++){
+      const ch=candidate[i];
+      if(ch==="("||ch==="[")closers.push(ch==="("?")":"]");
+      else if(ch===")"||ch==="]"){
+        // An unmatched closer ends the surrounding sentence phrase. Balanced
+        // groups such as mL/(g VS) remain part of the complete unit expression.
+        if(!closers.length){end=i;stop=true;break;}
+        if(closers.pop()!==ch){valid=false;stop=true;break;}
+      }
+    }
+    const prefix=candidate.slice(0,end).trim();
+    if(valid&&!closers.length&&prefix)out.push(prefix);
+    if(stop)break;
+  }
+  return [...new Set(out)].reverse();
 }
-const UNIT_NUM_CORE='(?:\\d+(?:\\.\\d+)?\\s*[×x]\\s*10\\s*(?:\\^?\\s*[-−]?\\d+|[⁻⁰¹²³⁴⁵⁶⁷⁸⁹]+)|\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)';
-const UNIT_VALUE_RE=new RegExp('(?:[<>≤≥~≈]\\s*)?'+UNIT_NUM_CORE+'(?:\\s*(?:±|[-–—]|\\bto\\b)\\s*'+UNIT_NUM_CORE+')?','g');
+const UNIT_NUM_SIGN='[+−‐‑–—-]';
+const UNIT_NUM_DECIMAL='(?:\\d+(?:\\.\\d+)?|\\.\\d+)';
+const UNIT_NUM_EXPONENT='(?:\\^\\s*'+UNIT_NUM_SIGN+'?\\d+|[⁺⁻]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+)';
+// Read the full scientific value and both range endpoints before considering
+// an isolated signed decimal. Standalone powers require a caret or superscript;
+// flattened text such as 106 must not be guessed to mean 10 to the sixth power.
+const UNIT_NUM_CORE=UNIT_NUM_SIGN+'?(?:'+UNIT_NUM_DECIMAL+'\\s*[×x]\\s*10\\s*(?:'+UNIT_NUM_EXPONENT+'|'+UNIT_NUM_SIGN+'?\\d+)|10\\s*'+UNIT_NUM_EXPONENT+'|'+UNIT_NUM_DECIMAL+'(?:[eE]'+UNIT_NUM_SIGN+'?\\d+)?)';
+const UNIT_VALUE_RE=new RegExp('(?:[<>≤≥~≈]\\s*)?'+UNIT_NUM_CORE+'(?:\\s*(?:±|[−‐‑–—-]|\\bto\\b)\\s*'+UNIT_NUM_CORE+')?','g');
+const UNIT_CELL_VALUE_RE=new RegExp('^'+UNIT_VALUE_RE.source+'$');
 const UNIT_PARAM_PATTERNS=[
   ["BOD",/\bBOD\b/ig],["COD",/\bCOD\b/ig],["TSS",/\bTSS\b/ig],["TDS",/\bTDS\b/ig],["TN",/\bTN\b/ig],["TP",/\bTP\b/ig],["TKN",/\bTKN\b/ig],["TOC",/\bTOC\b/ig],["DOC",/\bDOC\b/ig],["NH4-N",/\bNH\s*4\s*[-–]?\s*N\b/ig],["NO3-N",/\bNO\s*3\s*[-–]?\s*N\b/ig],["NO2-N",/\bNO\s*2\s*[-–]?\s*N\b/ig],["PO4-P",/\bPO\s*4\s*[-–]?\s*P\b/ig],
   ["temperature",/\btemperature\b/ig],["flow",/\b(?:flow|discharge|throughput|capacity)\b/ig],["electrical conductivity",/\b(?:electrical conductivity|conductivity|EC)\b/ig],["pressure",/\bpressure\b/ig],["surface area",/\b(?:specific )?surface area\b/ig],["energy",/\b(?:energy|energy consumption)\b/ig],["power",/\bpower\b/ig],["turbidity",/\bturbidity\b/ig],["dissolved oxygen",/\b(?:dissolved oxygen|DO)\b/ig],["hardness",/\bhardness\b/ig],["alkalinity",/\balkalinity\b/ig],["acidity",/\bacidity\b/ig]
@@ -7194,12 +7233,12 @@ function unitNumericMatchIsEmbedded(text,index,length){
   // Digits immediately attached to letters/symbols are normally powers,
   // subscripts, chemical formulae or identifier fragments, not reported values:
   // m3, cm2, H2, CO2, NH4, PM2.5, Fe3+, etc.
-  if(/[A-Za-zµμΩ]/.test(prev)) return true;
+  if(/[A-Za-zµμΩ0-9.⁰¹²³⁴⁵⁶⁷⁸⁹]/.test(prev)) return true;
 
   // Caret/signed powers such as m^3, s^-1 and 10^-3 must never be re-read as
   // independent measurements by the global number scanner.
   if(/[\^⁺⁻]/.test(prev)) return true;
-  if(/\^\s*[+−-]$/.test(before)) return true;
+  if(/\^\s*[+−‐‑–—-]$/.test(before)) return true;
 
   // A bare numeric divisor inside an already-started unit expression belongs
   // to that expression rather than starting a new measured quantity.
@@ -7299,8 +7338,7 @@ function unitScalarDecimals(v){
   // Precision comparison is limited to simple scalar reported values.
   // Ranges, uncertainty expressions and scientific notation are handled by
   // the dedicated numeric-precision checker.
-  if(/[±×x]|(?:\bto\b)|[–—]|[eE][+-]?\d+/.test(v))return null;
-  const m=v.match(/^[<>≤≥~≈]?\s*[-+]?(\d+)(?:\.(\d+))?\s*$/);
+  const m=v.match(/^[<>≤≥~≈]?\s*[+−‐‑–—-]?(\d+)(?:\.(\d+))?\s*$/);
   return m?(m[2]||"").length:null;
 }
 function unitShortContext(q){
@@ -7371,7 +7409,8 @@ function unitNotationConsistency(qs){
 }
 function unitSpacingConsistency(qs){
   const issues=[];
-  const usable=(qs||[]).filter(q=>q.parsed?.valid&&!q.external);
+  // Header inheritance supplies a unit, not evidence of spacing in the cell.
+  const usable=(qs||[]).filter(q=>q.parsed?.valid&&!q.external&&!q.inherited);
   const groups=new Map();
   usable.forEach(q=>{
     const k=unitConsistencyKey(q)+"|"+unitRawFormatKey(q);
@@ -7475,6 +7514,22 @@ function unitAnalyzeTables(tables){
       for(let r=dataStart;r<t.rows.length;r++){
         if(t.dataCells?.[r]?.[c]===false)continue;
         const cell=(t.rows[r][c]||"").trim();if(!cell)continue;
+        const pair=tableUncertainty(cell,hi);
+        if(pair&&(pair.parsed||hi)){
+          qs.push({
+            value:pair.value,
+            rawUnit:pair.rawUnit||hi.raw,
+            parsed:pair.parsed||hi.parsed,
+            parameter,
+            parameterConfidence:.99,
+            context:`Table ${t.index}, ${parameter}`,
+            external:false,
+            snippet:`Table ${t.index}, row ${r+1}, column ${c+1}, ${parameter}: ${cell}`,
+            space:pair.rawUnit?pair.space:"",
+            inherited:!pair.rawUnit
+          });
+          continue;
+        }
         const explicit=unitExtractQuantities(cell,`Table ${t.index}, ${parameter}`);
         if(explicit.length){
           explicit.forEach(q=>{
@@ -7484,7 +7539,10 @@ function unitAnalyzeTables(tables){
             q.snippet=`Table ${t.index}, row ${r+1}, ${parameter}: ${cell}`;
             qs.push(q);
           });
-        }else if(hi&&/^[<>≤≥~≈]?\s*[-+]?\d+(?:\.\d+)?\s*$/.test(cell)){
+        }else if(hi&&UNIT_CELL_VALUE_RE.test(cell)){
+          // A pH row is dimensionless even when a mixed-parameter table gives
+          // its standard/limit columns a shared concentration-unit heading.
+          if(t.rows[r].slice(0,c).some(label=>/^pH(?:\s+(?:value|range))?\s*[*†‡#$%&]*$/i.test(String(label||"").trim())))continue;
           qs.push({
             value:cell,
             rawUnit:hi.raw,
@@ -23164,7 +23222,7 @@ function numSnip(s,idx,len){
   const a=Math.max(0,idx-45), b=Math.min(s.length,idx+len+45);
   return (a>0?"… ":"")+escapeHtml(s.slice(a,idx))+"<mark>"+escapeHtml(s.slice(idx,idx+len))+"</mark>"+escapeHtml(s.slice(idx+len,b))+(b<s.length?" …":"");
 }
-function nDec(v){ const m=String(v).trim().match(/^[+−-]?(?:\d+)?(?:\.(\d+))?/); return m&&m[1]?m[1].length:0; }
+function nDec(v){ const m=String(v).trim().match(/^[+−‐‑–—-]?(?:\d+)?(?:\.(\d+))?/); return m&&m[1]?m[1].length:0; }
 function nSig(v){
   let s=String(v).trim().replace(/[+−-]/g,"").split(/[eE×]/)[0].replace(/\./g,"");
   s=s.replace(/^0+/,""); return s.length||1;
@@ -23247,7 +23305,7 @@ function precisionBodyCheck(text){
 }
 
 function tableCellStartsNumber(text){
-  return /^(?:[([]\s*)?[<>≤≥~≈]?\s*[+−-]?(?:\d|\.\d)/.test(String(text||"").trim());
+  return /^(?:[([]\s*)?[<>≤≥~≈]?\s*[+−‐‑–—-]?(?:\d|\.\d)/.test(String(text||"").trim());
 }
 function tableCellIsMissing(text){
   return /^(?:[-−–—]+|n\s*[/.,]?\s*[ad]\.?|not\s+(?:detected|reported|available))$/i.test(String(text||"").trim());
@@ -23268,10 +23326,35 @@ function tableHeaderInfo(table){
 function tableScalar(cell){
   const t=(cell||"").trim(); if(!t) return null;
   // Single scalar, optionally followed by a unit/percent. Exclude ranges, ±, inequalities, dates and embedded text.
-  if(/[±<>≤≥]/.test(t)||/\d\s*[–—-]\s*\d/.test(t)) return null;
-  const m=t.match(/^([+−-]?\d+(?:\.\d+)?)(?:\s*([%A-Za-zµμ°℃℉\/·.⁻¹⁻²⁻³\-0-9 ]{0,24}))?$/);
+  if(/[±<>≤≥]/.test(t)||/\d\s*[−‐‑–—-]\s*\d/.test(t)) return null;
+  const m=t.match(/^([+−‐‑–—-]?\d+(?:\.\d+)?)(?:\s*([%A-Za-zµμ°℃℉\/·.⁻¹⁻²⁻³\-0-9 ]{0,24}))?$/);
   if(!m) return null;
+  // An exponent attached to the value is not a unit. Keep scientific values
+  // out of the ordinary scalar decimal comparison, including bare powers of ten.
+  if(/^(?:[⁺⁻⁰¹²³⁴⁵⁶⁷⁸⁹]|[eE][+−‐‑–—-]?\d)/.test(m[2]||""))return null;
   return {raw:m[1],unit:nNormUnit(m[2]||"")};
+}
+function tableUncertainty(cell,headerUnit=null){
+  // Match a complete cell, retaining signs and written precision. Only symbol
+  // footnotes are stripped; letter suffixes may be units and are not guessed.
+  const text=String(cell||"").trim().replace(/\s*[*†‡]+$/,"").trimEnd();
+  if(!text.includes("±"))return null;
+  const number=String.raw`(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+−‐‑–—-]?\d+)?`;
+  const m=text.match(new RegExp(String.raw`^(\(\s*)?([+−‐‑–—-]?${number})\s*±\s*(${number})(\s*\))?(\s*)(.*)$`));
+  if(!m||!!m[1]!==!!m[4])return null;
+  const rawUnit=m[6],parsed=rawUnit?unitParseExpression(rawUnit):null;
+  if(rawUnit&&!parsed?.valid)return null;
+  // A percent after an unwrapped pair in a non-percent column may describe
+  // relative uncertainty; do not compare it with an absolute decimal place.
+  if(rawUnit==="%"&&!m[1]&&headerUnit&&unitConsistencyKey({parsed})!==unitConsistencyKey(headerUnit))return null;
+  const lastPlace=raw=>{
+    const [mantissa,exponent="0"]=raw.split(/[eE]/);
+    const power=Number(exponent.replace(/[−‐‑–—]/g,"-"));
+    return Number.isSafeInteger(power)?power-nDec(mantissa):null;
+  };
+  const meanPlace=lastPlace(m[2]),uncertaintyPlace=lastPlace(m[3]);
+  if(meanPlace===null||uncertaintyPlace===null)return null;
+  return {value:text.slice(0,text.length-rawUnit.length-m[5].length),rawUnit,parsed,space:m[5],meanPlace,uncertaintyPlace};
 }
 function tableLooksLikeThresholdMatrix(rows){
   const sample=(rows||[]).slice(0,6).flat().join(" ").replace(/\s+/g," ");
@@ -23301,7 +23384,7 @@ function precisionVariantSummary(vals,dp,c,rows){
 function precisionTableCheck(tables){
   const out=[];
   (tables||[]).forEach(tbl=>{
-    const rows=tbl.rows||[]; if(rows.length<3) return;
+    const rows=tbl.rows||[]; if(rows.length<2) return;
 
     // Category bands, LB/UB matrices, regulatory limits, and other predefined
     // threshold tables are exact/external values. Do not force decimal harmonisation.
@@ -23314,8 +23397,18 @@ function precisionTableCheck(tables){
       if(/\b(?:sl\.?\s*no|serial|ref\.?|reference|year|date|id|sample\s*id|site\s*id|stp\s*id|number|no\.?|rank|n\s*=|count)\b/i.test(header)) continue;
 
       const vals=[];
+      const headerUnit=unitFindHeaderUnit(header);
       for(let r=dataStart;r<rows.length;r++){
         if(tbl.dataCells?.[r]?.[c]===false)continue;
+        const cell=String(rows[r][c]||"").trim();
+        const pair=tableUncertainty(cell,headerUnit);
+        if(pair&&pair.meanPlace!==pair.uncertaintyPlace){
+          out.push({cat:"uncertainty",
+            msg:`Word table ${tbl.index}, column ${c+1} (${header}): row ${r+1} has a value and variation/uncertainty ending at different decimal places (${pair.value}). Verify the measurement resolution and report both to the same scientifically justified decimal place.`,
+            snippet:`<b>Row ${r+1}, column ${c+1} (${escapeHtml(header)}):</b> <mark>${escapeHtml(cell)}</mark>`
+          });
+        }
+        // Keep uncertainty expressions out of cross-row scalar comparisons.
         const x=tableScalar(rows[r][c]);
         if(x) vals.push({...x,row:r+1,rowIndex:r});
       }
@@ -28590,7 +28683,7 @@ fteAnalyze=function(blocks){
       .trim();
   }
   function compactSup(s){
-    return clean(s).replace(/[−–—]/g,"-").replace(/\s+/g,"");
+    return clean(s).replace(/[−‐‑–—]/g,"-").replace(/\s+/g,"");
   }
   function toUnicodeSup(s){
     const raw=compactSup(s);
@@ -28689,7 +28782,7 @@ fteAnalyze=function(blocks){
       return {role:"chemical_charge",confidence:.995};
 
     // Powers of ten and explicit mathematical contexts.
-    if(/10\s*$/.test(String(left||""))&&/^[+-]?\d{1,3}$/.test(token))
+    if(/(?:^|[^A-Za-z0-9µμΩ])10\s*$/.test(String(left||""))&&/^[+-]?\d{1,3}$/.test(token))
       return {role:"scientific_notation",confidence:.995};
 
     const ub=trailingUnitBase(left);
@@ -28945,7 +29038,7 @@ fteAnalyze=function(blocks){
       // Only purely numeric/list/range superscripts are candidates for the
       // unit-versus-reference ambiguity discussed here. Other scientific
       // superscripts stay untouched.
-      if(!numericCitationSyntax(raw) && !/^[+\-−]?\d{1,4}$/.test(raw)) return;
+      if(!numericCitationSyntax(raw) && !/^[+−‐‑–—-]?\d{1,4}$/.test(raw)) return;
 
       const left=elementTextBefore(sup,box,120);
       const right=elementTextAfter(sup,box,120);
@@ -28984,6 +29077,12 @@ fteAnalyze=function(blocks){
 
       const sci=scientificRole(left,raw,right,{});
       if(sci && sci.role!=="ambiguous"){
+        // textContent discards <sup> formatting. Preserve confirmed powers of
+        // ten before flattening, just as the unit-exponent branch does above.
+        if(sci.role==="scientific_notation"){
+          replaceWithText(sup,toUnicodeSup(raw));
+          return;
+        }
         sup.dataset.mcSuperscriptRole=sci.role;
         return;
       }
