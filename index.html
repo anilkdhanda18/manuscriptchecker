@@ -4461,7 +4461,7 @@ if(document.readyState==="loading"){
 
 <style id="mc-reference-missing-delimiter-review-v1">
 @media screen {
-  .ref-delimiter-review{
+  .ref-delimiter-review, .ref-duplicate-review{
     margin-top:6px;
     padding:6px 8px;
     border-left:2px solid #b28a3a;
@@ -4474,7 +4474,7 @@ if(document.readyState==="loading"){
     color:#755a20;
     font-weight:800;
   }
-  .ref-row-format-review>td:first-child{
+  .ref-row-format-review>td:first-child, .ref-row-duplicate-review>td:first-child{
     box-shadow:inset 3px 0 0 #b28a3a;
   }
 }
@@ -17208,6 +17208,31 @@ function refLooksLikeJournalAbbrevCandidate(text, parsed){
   return false;
 }
 
+function refAuthorSeparatorReview(parsed){
+  if(!parsed?.hasAuthors || parsed.authorType!=="personal") return null;
+  let rest=String(parsed.authorRegion||"").trim();
+  let author=refParsePersonalAuthorAt(rest);
+  const separators=[];
+  for(let count=0;author && count<100;count++){
+    rest=rest.slice(author.length);
+    const sep=rest.match(/^\s*(?:[,;]\s*(?:(?:and\b|&)\s*)?|&\s*|\band\b\s*)/i);
+    if(!sep) break;
+    const candidate=rest.slice(sep[0].length);
+    const next=refParsePersonalAuthorAt(candidate);
+    if(!next || refLooksLikeJournalAbbrevCandidate(candidate,next)) break;
+    // A final conjunction (including an Oxford comma) is a valid separate convention.
+    if(!/\band\b|&/i.test(sep[0])) separators.push(sep[0].includes(";")?";":",");
+    rest=candidate;
+    author=next;
+  }
+  if(!separators.includes(";") || !separators.includes(",")) return null;
+  return {
+    kind:"author-separators",
+    message:"Author separators are inconsistent: both commas and semicolons separate author names.",
+    recommendation:"Use consistent separators between authors, following the required reference style. Keep commas within surname–initial pairs."
+  };
+}
+
 function refGenericCorporateAuthor(text){
   const t=(text||"").trim();
   if(!t) return null;
@@ -20619,9 +20644,27 @@ function refFEDefineMetadataRegion(reg,legacy){
 function refFELocalOffset(region,localIndex){
   return Number(region?.start||0)+Number(localIndex||0);
 }
-function refFEFindLocalValueSpan(region,value){
+function refFEFindLocalValueSpan(region,value,from=0){
   if(!region || value==null) return null;
-  return refFEFindValueSpan(region.raw,String(value),0,region.raw.length);
+  return refFEFindValueSpan(region.raw,String(value),from,region.raw.length);
+}
+
+function refFEPageOnlyJournalTail(meta,expectedYear){
+  // Only the resolved publication-metadata region is passed here. A lone range
+  // supplies pages, not an additional volume; labelled combined volumes and
+  // volume(issue)+pages clusters cannot match this grammar.
+  const match=String(meta||"").replace(/\u00a0/g," ").trim().match(
+    /^[,;:.\s]*(?:\(?\s*((?:19|20)\d{2}[a-z]?)\b\s*\)?[,;:.\s]*)?(?:(pp?|pages?)\.?\s*)?([A-Za-z]?\d{1,8}(?:\s*[-–—]\s*[A-Za-z]?\d{1,8})?)(?:\s*[,;]?\s*\(\s*((?:19|20)\d{2}[a-z]?)\s*\))?[.\s]*$/iu
+  );
+  if(!match || (!match[2] && !/[-–—]/.test(match[3]))) return null;
+  const year=String(expectedYear||match[1]||match[4]||"");
+  if([match[1],match[4]].some(y=>y && y.replace(/[a-z]$/i,"")!==year.replace(/[a-z]$/i,""))) return null;
+  return {
+    family:"locator-without-volume",year,volume:null,issue:null,
+    locator:match[3].replace(/\s*([-–—])\s*/g,"$1"),locatorKind:"pages",hasLocator:true,
+    confidence:match[2]?0.98:0.94,
+    evidence:["complete source-bounded page-only tail","no separate volume token"]
+  };
 }
 
 function refFEOrderedYearFirstJournalTail(meta,expectedYear=null){
@@ -20844,7 +20887,8 @@ function refFEJournalMetadata(reg,legacy){
       localYear={year:pubYear,index:ym.index,length:ym[0].length,score:99};
   }
 
-  const orderedYearFirst=refFEOrderedYearFirstJournalTail(
+  const pageOnly=authoritative?refFEPageOnlyJournalTail(meta,pubYear):null;
+  const orderedYearFirst=pageOnly||refFEOrderedYearFirstJournalTail(
     meta,
     pubYear||localYear?.year||null
   );
@@ -20852,8 +20896,8 @@ function refFEJournalMetadata(reg,legacy){
 
   // A complete ordered tail outranks generic numeric pairing. This prevents
   // YEAR,VOLUME from becoming a false VOLUME,PAGE pair.
-  let volume=orderedYearFirst?.volume||loc?.volume||null;
-  let issue=orderedYearFirst?.issue||loc?.issue||null;
+  let volume=orderedYearFirst?orderedYearFirst.volume:(loc?.volume||null);
+  let issue=orderedYearFirst?orderedYearFirst.issue:(loc?.issue||null);
   let pages=orderedYearFirst?.locatorKind==="pages"
     ?orderedYearFirst.locator:null;
   let articleNumber=orderedYearFirst?.locatorKind==="article"
@@ -20979,6 +21023,19 @@ function refFEJournalMetadata(reg,legacy){
   if(volume && pubYear && String(volume).replace(/\s+/g,"")===pubYear.replace(/[a-z]$/i,""))
     volume=null;
 
+  // Competing fields must refer to separate text spans, even when their numeric
+  // values happen to be identical. Explicit volume labels take priority over a
+  // generic range-as-pages fallback.
+  const volumeSpan=volume?refFEFindLocalValueSpan(region,volume):null;
+  const locatorValue=pages||articleNumber;
+  const locatorSpan=locatorValue?refFEFindLocalValueSpan(region,locatorValue):null;
+  if(volumeSpan && locatorSpan && volumeSpan.start<locatorSpan.end && locatorSpan.start<volumeSpan.end &&
+     !refFEFindLocalValueSpan(region,locatorValue,volumeSpan.end)){
+    if(/\bvol(?:ume)?s?\.?\s*$/i.test(meta.slice(0,volumeSpan.start)) || issue){
+      pages=null;articleNumber=null;locatorKind=null;
+    }else volume=null;
+  }
+
   // A complete YEAR -> VOLUME -> [LOCATOR] tail is intrinsically strong
   // bibliographic evidence. It can safely reconcile the numeric fields even
   // when the source/container text itself has lower lexical confidence.
@@ -20986,9 +21043,12 @@ function refFEJournalMetadata(reg,legacy){
     authoritative || !!(orderedYearFirst && orderedYearFirst.confidence>=0.99);
 
   // Record the reconciled metadata fields and their spans.
-  const recordMeta=(fieldType,value,confidence,rule)=>{
+  const recordMeta=(fieldType,value,confidence,rule,avoid=[])=>{
     if(value==null) return null;
-    const local=refFEFindLocalValueSpan(region,value);
+    let local=refFEFindLocalValueSpan(region,value);
+    let conflict;
+    while(local && (conflict=avoid.find(f=>f && region.start+local.start<f.end && f.start<region.start+local.end)))
+      local=refFEFindLocalValueSpan(region,value,conflict.end-region.start);
     if(!local) return null;
     return refFEAddField(
       reg,fieldType,value,
@@ -21008,17 +21068,17 @@ function refFEJournalMetadata(reg,legacy){
   const inf=recordMeta(
     "issue",issue,
     orderedYearFirst?0.992:(metadataAuthoritative?0.95:0.76),
-    orderedYearFirst?"ordered-year-first-issue":"metadata-issue"
+    orderedYearFirst?"ordered-year-first-issue":"metadata-issue",[vf]
   );
   const pf=recordMeta(
     "pages",pages,
-    orderedYearFirst?0.995:(metadataAuthoritative?0.97:0.80),
-    orderedYearFirst?"ordered-year-first-pages":"metadata-pages"
+    orderedYearFirst?orderedYearFirst.confidence:(metadataAuthoritative?0.97:0.80),
+    orderedYearFirst?"ordered-year-first-pages":"metadata-pages",[vf,inf]
   );
   const af=recordMeta(
     "article_number",articleNumber,
     orderedYearFirst?0.995:(metadataAuthoritative?0.97:0.80),
-    orderedYearFirst?"ordered-year-first-article-number":"metadata-article-number"
+    orderedYearFirst?"ordered-year-first-article-number":"metadata-article-number",[vf,inf]
   );
 
   reg.final.volume=vf?volume:null;
@@ -22107,25 +22167,27 @@ function refFEApplyOrderedRawTail(parsed,reg){
     ?String(parsed.raw||"").slice(yearField.start)
     :stripped;
 
-  const strictTail=refFEOrderedYearFirstJournalTail(tailText,parsed.year||null);
+  const pageOnly=reg.metadataRegion?.confidence>=0.85
+    ?refFEPageOnlyJournalTail(reg.metadataRegion.raw,parsed.year||null):null;
+  const strictTail=pageOnly||refFEOrderedYearFirstJournalTail(tailText,parsed.year||null);
   const recoveredTail=!strictTail
     ?refFERecoverMissingJournalDelimiter(tailText,parsed.year||null)
     :null;
   const tail=strictTail||recoveredTail;
   if(!tail) return parsed;
 
-  const from=yearField?.end||0;
+  const from=pageOnly?reg.metadataRegion.start:(yearField?.end||0);
 
-  const locateAfterYear=value=>{
+  const locateAfterYear=(value,start=from)=>{
     if(value==null) return null;
     const clean=String(value);
-    const direct=refFEFindValueSpan(reg.raw,clean,from,reg.raw.length);
+    const direct=refFEFindValueSpan(reg.raw,clean,start,reg.raw.length);
     if(direct) return direct;
 
     // Allow normalized dash variants for ranges.
     const norm=clean.replace(/[–—]/g,"-");
     const candidates=[...reg.raw.matchAll(/\b[A-Za-z]?\d{1,12}(?:\s*[-–—]\s*[A-Za-z]?\d{1,12})?\b/gu)]
-      .filter(m=>m.index>=from)
+      .filter(m=>m.index>=start)
       .map(m=>({
         start:m.index,
         end:m.index+m[0].length,
@@ -22136,7 +22198,8 @@ function refFEApplyOrderedRawTail(parsed,reg){
   };
 
   const volumeSpan=locateAfterYear(tail.volume);
-  const locatorSpan=tail.locator?locateAfterYear(tail.locator):null;
+  const issueSpan=tail.issue?locateAfterYear(tail.issue,volumeSpan?.end||from):null;
+  const locatorSpan=tail.locator?locateAfterYear(tail.locator,issueSpan?.end||volumeSpan?.end||from):null;
 
   // Rebuild only the mutually dependent publication-metadata fields. Author,
   // year, title, source, DOI and URL evidence remain untouched.
@@ -22155,9 +22218,7 @@ function refFEApplyOrderedRawTail(parsed,reg){
     );
   }
 
-  let issueSpan=null;
   if(tail.issue){
-    issueSpan=locateAfterYear(tail.issue);
     if(issueSpan){
       refFEAddField(
         reg,"issue",tail.issue,
@@ -22176,10 +22237,10 @@ function refFEApplyOrderedRawTail(parsed,reg){
     refFEAddField(
       reg,fieldType,tail.locator,
       locatorSpan.start,locatorSpan.end,
-      tail.malformedDelimiter?0.94:0.995,
+      tail.confidence||0.995,
       tail.malformedDelimiter
         ?["complete raw journal tail","strong locator recovered across missing delimiter",...(tail.evidence||[])]
-        :["complete raw journal tail","locator follows resolved volume"],
+        :["complete raw journal tail",...(tail.evidence||[])],
       {rule:tail.malformedDelimiter?`ordered-raw-tail-${fieldType}-recovered`:`ordered-raw-tail-${fieldType}`,protected:true}
     );
   }
@@ -22945,7 +23006,12 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
   parsed.forEach((p,i)=>{
     const key=p.doi?("doi:"+p.doi.toLowerCase())
       :((p.firstAuthor||"").toLowerCase()+"|"+(p.year||"")+"|"+((p.title||p.raw).slice(0,24).toLowerCase().replace(/[^a-z0-9]/g,"")));
-    if(p.doi || (p.firstAuthor && p.year)){ if(seen.has(key)) issues.push({level:"warn",idx:i,label:lab(p,i),msg:`Looks like a duplicate of entry ${seen.get(key)}.`}); else seen.set(key,lab(p,i)); }
+    if(p.doi || (p.firstAuthor && p.year)){
+      if(seen.has(key)){
+        const first=seen.get(key);
+        issues.push({level:"warn",idx:i,label:lab(p,i),code:"REFERENCE_DUPLICATE",duplicateOf:first,msg:`Looks like a duplicate of entry ${lab(parsed[first],first)}.`});
+      }else seen.set(key,i);
+    }
   });
   if(marker==="bracket"||marker==="number"){
     const nums=parsed.map(p=>p.num).filter(n=>n!=null);
@@ -22984,11 +23050,30 @@ function renderRefReport(res, cross){
     (res.hadBody?"":" · in-text check skipped (no manuscript body detected)");
   // The References tab intentionally shows only the ledger. Validation findings remain internal
   // for field-state calculation but are not rendered as warning/suggestion sections.
-  $("ref-ledger-wrap").innerHTML=refLedger(res.parsed);
+  $("ref-ledger-wrap").innerHTML=refLedger(res.parsed,res.issues);
   bindInfoHelp("ref-report-info","ref-report-help");
   $("ref-report").hidden=false;
   buildReportSubnav("ref-report","ref-subnav");
   setupReferenceLedgerFloatingHeader();
+}
+function refDuplicateNotices(parsed,issues=[]){
+  const groups=new Map(),notices=new Map();
+  for(const issue of issues){
+    const first=issue.duplicateOf,index=issue.idx;
+    if(issue.code!=="REFERENCE_DUPLICATE" || !Number.isInteger(first) || !Number.isInteger(index) || first<0 || index<=first || index>=parsed.length) continue;
+    if(!groups.has(first)) groups.set(first,new Set([first]));
+    groups.get(first).add(index);
+  }
+  const labels=parsed.map((p,i)=>p.num!=null?String(p.num):`#${i+1}`);
+  for(const [first,members] of groups){
+    const indices=[...members].sort((a,b)=>a-b);
+    const names=indices.map(i=>labels.indexOf(labels[i])!==labels.lastIndexOf(labels[i])?`${labels[i]} (entry ${i+1})`:labels[i]);
+    const joined=names.length===2?names.join(" and "):`${names.slice(0,-1).join(", ")}, and ${names[names.length-1]}`;
+    const subject=indices.every(i=>parsed[i].num!=null)?"References":"Reference entries";
+    const message=`${subject} ${joined} appear to be duplicates.`;
+    for(const index of indices) notices.set(index,{group:first,message});
+  }
+  return notices;
 }
 function refLedger(parsed){
   if(!parsed.length) return "";
@@ -23854,7 +23939,9 @@ function mcReferenceMissingFieldCount(){
   if(!wrap) return 0;
   const missing=wrap.querySelectorAll("tbody .yn.n").length;
   const delimiterReviews=wrap.querySelectorAll("tbody .ref-delimiter-review").length;
-  return missing+delimiterReviews;
+  const duplicateGroups=new Set([...wrap.querySelectorAll("tbody .ref-duplicate-review")].map(el=>el.dataset.duplicateGroup));
+  const volumeReviews=wrap.querySelectorAll("tbody [data-missing-volume-review]").length;
+  return missing+delimiterReviews+duplicateGroups.size+volumeReviews;
 }
 function mcModuleSummary(tab,title,detected,reportId,extraAttention,attentionNoun="item"){
   const c=mcReportPriorityCounts(reportId);
@@ -23880,7 +23967,7 @@ function renderManuscriptOverview(){
   const modules=$("overview-modules");
   if(modules) modules.innerHTML=[
     mcModuleSummary("abbr","Abbreviations",LAST?`${LAST.totalAbbr} non-standard abbreviation/notation item${LAST.totalAbbr===1?"":"s"}`:"Abbreviation check completed","report",0),
-    mcModuleSummary("ref","References",refDetected,"ref-report",refMissing,"field"),
+    mcModuleSummary("ref","References",refDetected,"ref-report",refMissing,$("ref-ledger-wrap")?.querySelector(".ref-duplicate-review")?"item":"field"),
     mcModuleSummary("fte","Figures, tables & equations",fteDetected,"fte-report",0),
     mcModuleSummary("num","Numbers & precision","Numeric reporting check completed","num-report",0),
     mcModuleSummary("unit","Units & notation",unitDetected,"unit-report",0),
@@ -32412,7 +32499,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
 
   function doiEffectiveField(p,field){
     if(field==='year') return !!p?.year || !!p?._doiPatternEvidence?.year;
-    if(field==='volume') return !!p?.hasVolume || !!p?._doiPatternEvidence?.volume;
+    if(field==='volume') return !!p?.hasVolume || (p?.referenceFieldRegistry?.orderedJournalTail?.family!=='locator-without-volume' && !!p?._doiPatternEvidence?.volume);
     if(field==='issue') return !!p?.hasIssue || !!p?._doiPatternEvidence?.issue;
     if(field==='locator') return !!p?.hasPages || !!p?._doiPatternEvidence?.locator;
     return false;
@@ -32486,6 +32573,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       p._yearState=doiEffectiveField(p,'year')?'yes':p._yearState;
       p._pagesState=doiEffectiveField(p,'locator')?'yes':stateFromPolicy(policies.locator);
       p._volState=doiEffectiveField(p,'volume')?'yes':stateFromPolicy(policies.volume);
+      if(!doiEffectiveField(p,'volume') && p.referenceFieldRegistry?.orderedJournalTail?.family==='locator-without-volume' && p._volState==='optional') p._volState='review';
       p._issueState=doiEffectiveField(p,'issue')?'yes':stateFromPolicy(policies.issue);
       p._doiState=p.doi?'yes':stateFromPolicy(policies.doi);
       if(!p.hasTitle){
@@ -32510,8 +32598,9 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
   }
 
   // Replace the ledger renderer only at presentation level. Core parsing remains untouched.
-  window.refLedger=function(parsed){
+  window.refLedger=function(parsed,issues=[]){
     if(!parsed?.length) return '';
+    const duplicates=refDuplicateNotices(parsed,issues);
     const cell=st=>st==='yes'?`<span class="yn y">yes</span>`:(st==='no'?`<span class="yn n">no</span>`:(st==='optional'?`<span class="yn opt">optional</span>`:(st==='review'?`<span class="yn rev">review</span>`:`<span class="yn na">n/a</span>`)));
     const body=parsed.map((p,i)=>{
       const label=p.num!=null?`[${p.num}]`:`#${i+1}`;
@@ -32519,10 +32608,13 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       const snip=escapeHtml(p.raw.length>58?p.raw.slice(0,58)+'…':p.raw);
       const styleReview=p._styleReviewReason?`<div class="ref-style-review-detail"><b>Style review:</b> ${escapeHtml(p._styleReviewReason)}</div>`:'';
       const delimiterReview=p.referenceDelimiterReview?`<div class="ref-delimiter-review"><b>Delimiter review:</b> ${escapeHtml(p.referenceDelimiterReview.recommendation)}</div>`:'';
-      const reviewRowClass=[p._styleReviewReason?'ref-row-style-review':'',p.referenceDelimiterReview?'ref-row-format-review':''].filter(Boolean).join(' ');
-      return `<tr class="${reviewRowClass}"><td class="t-abbr">${label}</td><td class="t-long">${tag}${snip}${styleReview}${delimiterReview}</td>`+
+      const duplicate=duplicates.get(i);
+      const duplicateReview=duplicate?`<div class="ref-duplicate-review" data-duplicate-group="${duplicate.group}">${escapeHtml(duplicate.message)}</div>`:'';
+      const volumeReview=p._volState==='review' && p.referenceFieldRegistry?.orderedJournalTail?.family==='locator-without-volume';
+      const reviewRowClass=[p._styleReviewReason?'ref-row-style-review':'',p.referenceDelimiterReview?'ref-row-format-review':'',duplicate?'ref-row-duplicate-review':''].filter(Boolean).join(' ');
+      return `<tr class="${reviewRowClass}"><td class="t-abbr">${label}</td><td class="t-long">${tag}${snip}${styleReview}${delimiterReview}${duplicateReview}</td>`+
         `<td>${cell(p._authorState)}</td><td>${cell(p._yearState)}</td><td>${cell(p._titleState)}</td><td>${cell(p._sourceState)}</td>`+
-        `<td>${cell(p._pagesState)}</td><td>${cell(p._volState)}</td><td>${cell(p._issueState||'na')}</td><td>${cell(p.nonJournal?(p._identifierState||p._doiState):p._doiState)}</td></tr>`;
+        `<td>${cell(p._pagesState)}</td><td${volumeReview?' data-missing-volume-review="1"':''}>${cell(p._volState)}</td><td>${cell(p._issueState||'na')}</td><td>${cell(p.nonJournal?(p._identifierState||p._doiState):p._doiState)}</td></tr>`;
     }).join('');
     const cols=`<colgroup><col style="width:4%"><col style="width:40%"><col style="width:7%"><col style="width:6%"><col style="width:6%"><col style="width:7%"><col style="width:8%"><col style="width:8%"><col style="width:6%"><col style="width:8%"></colgroup>`;
     const head=`<thead><tr><th>Ref</th><th>Entry / type</th><th>Author</th><th>Year</th><th>Title</th><th>Source</th><th>Pages / article no.</th><th>Volume</th><th>Issue</th><th>DOI / Link</th></tr></thead>`;
@@ -32553,6 +32645,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
 
   window.refReportText=function(res,cross){
     applyStyleAwareAssessment(res);
+    const duplicates=refDuplicateNotices(res.parsed,res.issues);
     const L=['REFERENCE LEDGER','',`References: ${res.count}`];
     if(res.titleConvention&&res.titleConvention!=='uncertain')L.push(`Title convention: ${res.titleConvention}`);
     if(res.doiConvention&&res.doiConvention!=='uncertain')L.push(`DOI convention: ${res.doiConvention}`);
@@ -32565,6 +32658,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       L.push(`${label} | ${entry} | ${state(p._authorState)} | ${state(p._yearState)} | ${state(p._titleState)} | ${state(p._sourceState)} | ${state(p._pagesState)} | ${state(p._volState)} | ${state(p._issueState)} | ${state(p.nonJournal?(p._identifierState||p._doiState):p._doiState)}`);
       if(p._styleReviewReason)L.push(`  Style review: ${p._styleReviewReason}`);
       if(p.referenceDelimiterReview)L.push(`  Formatting review: ${p.referenceDelimiterReview.recommendation}`);
+      if(duplicates.has(idx))L.push(`  ${duplicates.get(idx).message}`);
     });
     L.push('',reportFindingsText(res.issues||[],'Reference findings',res.parsed));
     return L.join('\n');
@@ -34469,7 +34563,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
   const v7BaseRefCheck=refCheck;
   refCheck=function(refText,bodyText,presegmentedEntries){
     const res=v7BaseRefCheck(refText,bodyText,presegmentedEntries);
-    for(const p of (res.parsed||[])){
+    for(const [index,p] of (res.parsed||[]).entries()){
       v7RepairSemicolonAuthors(p);
       v7RepairQuotedAuthorTail(p);
       v7RepairMdpiBookLike(p);
@@ -34482,6 +34576,34 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       v7RepairIpccReport(p);
       v7RepairNoDateIndianStandard(p);
       v7RepairBareWebHost(p);
+      // Late source repairs can expose a page-only tail or recycle the year as
+      // volume. Reconcile that same bounded grammar against the final source.
+      const reg=p.referenceFieldRegistry;
+      if(reg && p.type==='journal article' && !p.nonJournal && p.hasSource && p.sourceRegion){
+        const source=refFEFindValueSpan(p.raw,p.sourceRegion,refFEField(reg,'author')?.end||0,p.raw.length);
+        if(source){
+          const end=refSBEarliestIdentifierStart(reg,source.end);
+          const tail=p.raw.slice(source.end,end);
+          if(refFEPageOnlyJournalTail(tail,p.year)){
+            reg.metadataRegion={start:source.end,end,raw:tail,confidence:0.98,evidence:'after resolved source/container'};
+            reg.fields=reg.fields.filter(f=>f.fieldType!=='source');
+            reg.protectedSpans=reg.protectedSpans.filter(f=>f.fieldType!=='source');
+            refFEAddField(reg,'source',p.sourceRegion,source.start,source.end,0.98,['resolved source before page-only tail'],{rule:'source-span',protected:true});
+            refFEApplyOrderedRawTail(p,reg);
+            p._volState='review';p._pagesState='yes';
+          }
+        }
+      }
+      const authorReview=refAuthorSeparatorReview(p);
+      if(authorReview){
+        const previous=p.referenceDelimiterReview;
+        p.referenceDelimiterReview={...authorReview,...previous,
+          message:[previous?.message,authorReview.message].filter(Boolean).join(' '),
+          recommendation:[previous?.recommendation,authorReview.recommendation].filter(Boolean).join(' ')
+        };
+        res.issues.push({level:'warn',idx:index,label:p.num!=null?`[${p.num}]`:`#${index+1}`,
+          code:'REFERENCE_AUTHOR_SEPARATOR_REVIEW',msg:authorReview.message,suggestion:authorReview.recommendation,referenceFormatting:true});
+      }
     }
     if(Array.isArray(res.issues))res.issues=res.issues.filter(x=>{
       const p=Number.isInteger(x?.idx)?res.parsed[x.idx]:null;if(!p)return true;
