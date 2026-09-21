@@ -7338,8 +7338,84 @@ function unitScalarDecimals(v){
   // Precision comparison is limited to simple scalar reported values.
   // Ranges, uncertainty expressions and scientific notation are handled by
   // the dedicated numeric-precision checker.
-  const m=v.match(/^[<>≤≥~≈]?\s*[+−‐‑–—-]?(\d+)(?:\.(\d+))?\s*$/);
+  const m=v.match(/^[+−‐‑–—-]?(\d+)(?:\.(\d+))?\s*$/);
   return m?(m[2]||"").length:null;
+}
+function unitPrecisionDiffers(values){
+  const scalars=values.map(unitWrittenPrecision).filter(Boolean);
+  if(scalars.length<2||new Set(scalars.map(v=>v.place)).size<2)return false;
+  // Equal significant figures are another valid reporting pattern. Integer
+  // trailing zeros are ambiguous, so they do not establish such a pattern.
+  const sig=scalars.map(v=>v.sig);
+  return sig.some(n=>n===null)||new Set(sig).size>1;
+}
+function unitWrittenPrecision(value){
+  const s=String(value||"").normalize("NFKC").replace(/[−‐‑–—]/g,"-").trim();
+  const m=s.match(/^([+-]?\d+(?:\.\d+)?)(?:\s*(?:[eE]|[×x·⋅]\s*10\s*\^?)\s*([+-]?\d+))?$/);
+  if(!m)return null;
+  const exponent=Number(m[2]||0);
+  if(!Number.isSafeInteger(exponent))return null;
+  return {place:nDec(m[1])-exponent,sig:Number(m[1])===0||(!m[2]&&/^[+-]?\d*0$/.test(m[1]))?null:nSig(m[1])};
+}
+function unitPrecisionLabel(place){return place>=0?`${place} decimal place${place===1?"":"s"}`:`last reported place: 10^${-place}`;}
+function unitPrecisionSource(text){
+  const s=String(text||"");
+  if(/\b(?:regulatory|permissible|allowable|guidelines?|thresholds?|limits?|standards?(?!\s+(?:deviations?|errors?|methods?|hydrogen|electrodes?|addition|calibration|procedures?|protocols?|tests?))|CPCB|NGT|WHO|EPA)\b/i.test(s))
+    return {role:"reference_limit",reason:"Reference limits and classification boundaries retain their specified precision."};
+  if(/\b(?:theoretic(?:al|ally)|thermodynamic|stoichiometric)\b/i.test(s))
+    return {role:"theoretical",reason:"Theoretical or specified values are not treated as a measured-result series."};
+  if(/\b(?:literature|previous(?:ly)?\s+(?:studies|reported)|reported\s+by|according\s+to|investigation\s+by|co[- ]?(?:workers|researchers)|et\s+al\.)/i.test(s))
+    return {role:"literature",reason:"This value comes from another study, so its decimal places were not compared. No action needed for this comparison."};
+  return null;
+}
+function unitPrecisionTableInfo(table){
+  const info=tableHeaderInfo(table),rows=table.rows||[],blocks=typeof DOCX_FTE_BLOCKS!=="undefined"?(DOCX_FTE_BLOCKS||[]):[];
+  const clean=s=>String(s||"").normalize("NFKC").replace(/[−‐‑–—]/g,"-").replace(/\s+/g,"");
+  // Restore headers only when the source table is uniquely verified by its
+  // data cells. Ordinal-only matching is unsafe for layout and merged tables.
+  const matches=blocks.filter(b=>b.type==="table"&&Array.isArray(b.cellMatrix)&&b.cellMatrix.length===rows.length&&
+    rows.slice(info.dataStart).some(row=>row.some(Boolean))&&rows.slice(info.dataStart).every((row,i)=>row.every((cell,c)=>
+      table.dataCells?.[i+info.dataStart]?.[c]===false||!cell||clean(cell)===clean(b.cellMatrix[i+info.dataStart]?.[c]))));
+  const block=matches.length===1?matches[0]:null;
+  const headerPaths=info.headerPaths.map((path,c)=>{
+    if(!info.headers[c]||!block?.abbrSymbolCells)return path;
+    const restored=rows.slice(0,info.dataStart).map((row,r)=>{
+      if(block.abbrSymbolCells[r]?.length!==row.length)return null;
+      const symbol=block.abbrSymbolCells[r][c],originalUnit=unitFindHeaderUnit(row[c]),symbolUnit=unitFindHeaderUnit(symbol);
+      if(originalUnit&&symbolUnit&&unitConsistencyKey(originalUnit)===unitConsistencyKey(symbolUnit))
+        return `${symbolUnit.parameter} (${originalUnit.raw})`;
+      return symbol;
+    });
+    return restored.every(Boolean)?[...new Set(restored)]:path;
+  });
+  const headers=info.headers.map((h,c)=>h?headerPaths[c].join(" / "):h);
+  const preceding=block?blocks[blocks.indexOf(block)-1]:null;
+  const caption=table.caption||table.title||(/^\s*Table\s+[S\d]/i.test(preceding?.text||"")?preceding.text:"");
+  const referenceColumn=headers.findIndex(h=>/^(?:ref\.?|references?|sources?|stud(?:y|ies)|citations?)$/i.test(h.trim()));
+  const parameterColumn=headers.findIndex(h=>/^(?:parameters?|analytes?|indicators?|pollutants?|properties|characteristics|KPI)[*#%$†‡\s]*$/i.test(h.trim()));
+  return {...info,headers,headerPaths,caption,referenceColumn,parameterColumn};
+}
+function unitPrecisionTableCell(table,info,r,c){
+  const row=table.rows[r]||[],header=info.headers[c]||"";
+  const analyte=info.parameterColumn>=0?String(row[info.parameterColumn]||"").trim():"";
+  const source=info.referenceColumn>=0?String(row[info.referenceColumn]||"").trim():"";
+  const current=/^(?:this|present|current)\s+(?:study|work|research)(?:\s*\([^)]*\))?$/i.test(source);
+  const captionSource=unitPrecisionSource(info.caption);
+  const captionDefinesAll=/^\s*(?:Table\s+[S\d.]+\s*[:.\-]?\s*)?(?:regulatory\s+limits|permissible\s+limits|published\s+values|values\s+from\s+(?:the\s+)?literature|theoretical\s+values)\b/i.test(info.caption)&&! /\b(?:compar|measured|this study|present study)/i.test(info.caption);
+  let exclusion=unitPrecisionSource(header)||(!current&&captionDefinesAll?captionSource:null);
+  if(!exclusion&&info.referenceColumn>=0&&!current&&source&&!tableCellIsMissing(source))
+    exclusion={role:"literature",reason:"Values in this row are attributed to another source; their reported precision is retained."};
+  if(!exclusion&&(/\b(?:initial|applied|setpoint|dose|loading|incubation|synthesis|reaction time)\b/i.test(header)||
+    (/\bcapacit(?:y|ies)\b/i.test(header)&&/\b(?:design|installed|rated|nominal|operational)\b/i.test(header))))
+    exclusion={role:"setting",reason:"These values describe the experimental setup, so decimal places were not compared. No action needed for this comparison."};
+  if(!exclusion&&(!header||unitFindHeaderUnit(header)?.parameter==="Table column"))
+    exclusion={role:"unresolved",reason:"The measurement parameter could not be established from this column header."};
+  const scalar=tableScalar(row[c]);
+  if(!exclusion&&scalar&&/^(?:0|100)$/.test(scalar.raw)&&(scalar.unit==="%"||unitFindHeaderUnit(header)?.raw==="%"))
+    exclusion={role:"endpoint",reason:"A percentage endpoint alone does not establish measurement resolution."};
+  return {tableIndex:table.index,rowIndex:r,columnIndex:c,analyte,source,
+    scope:`table:${table.index}:column:${c}${analyte?`:parameter:${analyte}`:""}`,
+    role:exclusion?.role||"result",reason:exclusion?.reason||""};
 }
 function unitShortContext(q){
   const s=(q?.snippet||q?.context||"").replace(/\s+/g," ").trim();
@@ -7366,7 +7442,7 @@ function unitExcludeAffiliations(text){
 }
 function unitNotationConsistency(qs){
   const issues=[];
-  const usable=(qs||[]).filter(q=>q.parsed?.valid&&!q.external);
+  const usable=(qs||[]).filter(q=>q.parsed?.valid);
   const groups=new Map();
   usable.forEach(q=>{
     const k=unitConsistencyKey(q);
@@ -7410,7 +7486,7 @@ function unitNotationConsistency(qs){
 function unitSpacingConsistency(qs){
   const issues=[];
   // Header inheritance supplies a unit, not evidence of spacing in the cell.
-  const usable=(qs||[]).filter(q=>q.parsed?.valid&&!q.external&&!q.inherited);
+  const usable=(qs||[]).filter(q=>q.parsed?.valid&&!q.inherited);
   const groups=new Map();
   usable.forEach(q=>{
     const k=unitConsistencyKey(q)+"|"+unitRawFormatKey(q);
@@ -7430,7 +7506,7 @@ function unitSpacingConsistency(qs){
       code:unit==="%"?"UNIT_PERCENT_SPACING_INCONSISTENT":"UNIT_SPACING_INCONSISTENT",
       severity:"info",
       msg:`Spacing is inconsistent for the same unit "${unit}": ${joined.length} occurrence${joined.length===1?"":"s"} without a space and ${spaced.length} with a space. Examples: ${noEx}; ${spEx}.`,
-      parameter:g[0].parameter||unit,
+      parameter:g.every(q=>q.parameter===g[0].parameter)?g[0].parameter||unit:`Unit spacing · ${unit}`,
       context:"Body/table occurrences",
       snippet:[joined[0],spaced[0]].map(q=>unitShortContext(q)).join(" | "),
       suggestion:dominant==="mixed"?"Choose either spacing convention and use it consistently.":`The manuscript predominantly uses the ${dominant} form for this unit. Use that convention consistently.`
@@ -7503,7 +7579,7 @@ function unitAnalyzeTables(tables){
   const qs=[];
   (tables||[]).forEach(t=>{
     if(!t.rows||t.rows.length<2)return;
-    const {headers,headerPaths,dataStart}=tableHeaderInfo(t);
+    const tableInfo=unitPrecisionTableInfo(t),{headers,headerPaths,dataStart}=tableInfo;
     for(let c=0;c<headers.length;c++){
       const header=headers[c];
       if(!header||tableHeaderIsPH(header))continue;
@@ -7514,6 +7590,7 @@ function unitAnalyzeTables(tables){
       for(let r=dataStart;r<t.rows.length;r++){
         if(t.dataCells?.[r]?.[c]===false)continue;
         const cell=(t.rows[r][c]||"").trim();if(!cell)continue;
+        const precisionTable=unitPrecisionTableCell(t,tableInfo,r,c);
         const pair=tableUncertainty(cell,hi);
         if(pair&&(pair.parsed||hi)){
           qs.push({
@@ -7526,7 +7603,7 @@ function unitAnalyzeTables(tables){
             external:false,
             snippet:`Table ${t.index}, row ${r+1}, column ${c+1}, ${parameter}: ${cell}`,
             space:pair.rawUnit?pair.space:"",
-            inherited:!pair.rawUnit
+            inherited:!pair.rawUnit,precisionTable
           });
           continue;
         }
@@ -7537,6 +7614,7 @@ function unitAnalyzeTables(tables){
             q.parameterConfidence=.99;
             q.context=`Table ${t.index}, ${parameter}`;
             q.snippet=`Table ${t.index}, row ${r+1}, ${parameter}: ${cell}`;
+            q.precisionTable=precisionTable;
             qs.push(q);
           });
         }else if(hi&&UNIT_CELL_VALUE_RE.test(cell)){
@@ -7553,7 +7631,7 @@ function unitAnalyzeTables(tables){
             external:false,
             snippet:`Table ${t.index}, row ${r+1}, ${parameter}: ${cell}`,
             space:" ",
-            inherited:true
+            inherited:true,precisionTable
           });
         }
       }
@@ -7750,7 +7828,9 @@ function unitReportRows(res){
     if(candidates.length===1)candidates[0].reportFindings.push(issue);
     else extra.push({parameter:issue.parameter||"Unit check",context:issue.context||"Manuscript",raws:new Map(),precisions:new Map(),instances:[],status:/SPACING/.test(issue.code||"")?"mixed spacing":"review",reportIssue:issue});
   }
-  return rows.flatMap(r=>r.reportFindings.length?r.reportFindings.map(issue=>({...r,reportIssue:issue})):r).concat(extra);
+  const priority=r=>r.reportIssue?["critical","review","style"].indexOf(reportFindingData(r.reportIssue).priority):/mixed/i.test(String(r.status||""))?1:3;
+  return rows.flatMap(r=>r.reportFindings.length?r.reportFindings.map(issue=>({...r,reportIssue:issue})):r).concat(extra)
+    .sort((a,b)=>priority(a)-priority(b));
 }
 function renderUnitReport(res){
   LAST_UNIT=res;
@@ -7758,10 +7838,10 @@ function renderUnitReport(res){
   // Ledger counts describe groups; findings also include checks such as spacing.
   const issues=res.issues||[];
   const counts={
-    format:res.ledger.filter(r=>/format/i.test(String(r.status||""))).length,
+    format:res.ledger.filter(r=>/mixed format/i.test(String(r.status||""))).length,
     precision:res.ledger.filter(r=>/precision/i.test(String(r.status||""))).length,
     review:res.ledger.filter(r=>/mixed/i.test(String(r.status||""))).length,
-    uncompared:res.ledger.filter(r=>/not compared/i.test(String(r.status||""))).length
+    uncompared:res.ledger.filter(r=>!r.precisionCompared).length
   };
 
   $("unit-report-sub").textContent=issues.length
@@ -7774,7 +7854,7 @@ function renderUnitReport(res){
 
   $("unit-summary").innerHTML=`<div class="scorecard"><div class="score ${counts.format?"warn":"ok"}"><div class="n">${counts.format}</div><div class="k">Mixed format</div></div><div class="score ${counts.precision?"warn":"ok"}"><div class="n">${counts.precision}</div><div class="k">Mixed decimal places</div></div><div class="score ok"><div class="n">${res.ledger.length}</div><div class="k">Unit groups</div></div></div>`;
 
-  const decimalPlacesLabel=(d,n)=>`${d} decimal ${Number(d)===1?"place":"places"} (${n} ${Number(n)===1?"instance":"instances"})`;
+  const decimalPlacesLabel=(d,n)=>`${unitPrecisionLabel(d)} (${n} ${Number(n)===1?"instance":"instances"})`;
   const rows=unitReportRows(res).map((r,rowIndex)=>{
     // Show notation only in Observed format. Occurrence counts are intentionally
     // kept in Decimal places, where they refer to the scalar values included
@@ -7790,7 +7870,7 @@ function renderUnitReport(res){
     const finding=r.reportIssue?reportFindingData(r.reportIssue):null;
     const review=!!finding||/mixed/i.test(String(r.status||""));
     const viewBtn=review?`<button type="button" class="unit-view-instances" data-target="unit-instance-row-${rowIndex}" aria-expanded="false" aria-controls="unit-instance-row-${rowIndex}">View instances</button>`:"";
-    const main=`<tr${review?` class="unit-ledger-review-row" data-unit-review="1" data-unit-review-index="${rowIndex}" data-unit-priority="${finding?.priority||"review"}"`:""}><td>${escapeHtml(r.parameter)}</td><td>${escapeHtml(r.context)}</td><td>${escapeHtml(obs)}</td><td class="unit-decimal-places">${prec}</td><td><span class="yn ${finding&&r.status==="review"?"na":cls}">${escapeHtml(r.status)}</span></td><td class="unit-action">${escapeHtml(action)}${viewBtn}</td></tr>`;
+    const main=`<tr${review?` class="unit-ledger-review-row" data-unit-review="1" data-unit-review-index="${rowIndex}" data-unit-priority="${finding?.priority||"review"}"`:""}><td>${abbrWordSymbolHtml(r.parameter)}</td><td>${escapeHtml(r.context)}</td><td>${escapeHtml(obs)}</td><td class="unit-decimal-places">${prec}</td><td><span class="yn ${finding&&r.status==="review"?"na":cls}">${escapeHtml(r.status)}</span></td><td class="unit-action">${escapeHtml(action)}${viewBtn}</td></tr>`;
     return main+(review?unitInstancePanelHtml(r,rowIndex):"");
   }).join("");
   $("unit-ledger-wrap").innerHTML=`<p class="sec-label">Unit ledger <button type="button" class="info-help" id="unit-ledger-info" aria-label="Explain the Unit Ledger" aria-expanded="false" title="What do these columns mean?">i</button></p>
@@ -7799,9 +7879,9 @@ function renderUnitReport(res){
       <b>Parameter / context</b><span>The scientific quantity and, where needed, its experimental role. Values are grouped by parameter and compatible context rather than by unit alone. Examples include <i>Operational duration</i>, <i>Reaction time · PAA response</i>, <i>Membrane thickness</i>, and <i>PAA concentration</i>.</span>
       <b>Location</b><span>Where the unit was found, such as the manuscript body or a specific Word table.</span>
       <b>Observed format</b><span>The unit notation exactly as written in the manuscript. If more than one notation is used for the same unit, the different forms are listed here. Occurrence counts are shown under <b>Decimal places</b> to avoid conflicting totals.</span>
-      <b>Decimal places</b><span>How many digits are reported after the decimal point for scalar values representing the same parameter in a compatible scientific context and the same unit scale. Values sharing a unit but describing different roles, such as operational duration and reaction time, are not compared.</span>
-      <b>Status</b><span><b>consistent</b> means one pattern is followed within the inferred parameter/context. <b>mixed precision</b> means contextually comparable values use different decimal-place patterns. <b>mixed format</b> means equivalent units are written in different notation styles. <b>not compared</b> means the local scientific context was not identified confidently enough for a precision judgement.</span>
-      <b>Action</b><span>Provides a concise next step. Select <b>Open details</b> to see the full finding, recommendation, and manuscript evidence. Findings spanning several contexts, including spacing checks, have their own ledger row.</span>
+      <b>Decimal places</b><span>The last reported decimal place, accounting for the exponent in scientific notation, for values representing the same parameter in a compatible scientific context and the same unit scale. Values sharing a unit but describing different roles, such as operational duration and reaction time, are not compared.</span>
+      <b>Status</b><span><b>consistent</b> means eligible values follow a common decimal-place or significant-figure pattern. <b>mixed precision</b> is a review prompt, not proof of a scientific error. <b>mixed format</b> means equivalent units use different notation. <b>unit format consistent</b> reports matching unit notation without implying that numerical precision passed. <b>unit recognized</b> identifies a single valid unit occurrence. The Action column explains the scope of the numerical check, including uncertainty pairs, settings, source values, and groups with fewer than two comparable values.</span>
+      <b>Action</b><span>Items needing attention appear first: critical errors, review items, then editorial notes. Other rows follow in their existing order. Select <b>Open details</b> to see the full finding, recommendation, and manuscript evidence. Findings spanning several contexts, including spacing checks, have their own ledger row.</span>
     </div>
   </div>
   <div class="ledger-scroll"><table class="ledger"><thead><tr><th>Parameter / context</th><th>Location</th><th>Observed format</th><th>Decimal places</th><th>Status</th><th>Action to consider</th></tr></thead><tbody>${rows||'<tr><td colspan="6">No unit-bearing quantities detected.</td></tr>'}</tbody></table></div>`;
@@ -7813,7 +7893,7 @@ function renderUnitReport(res){
 }
 function unitReportText(res){
   const counts={
-    format:res.ledger.filter(r=>/format/i.test(String(r.status||""))).length,
+    format:res.ledger.filter(r=>/mixed format/i.test(String(r.status||""))).length,
     precision:res.ledger.filter(r=>/precision/i.test(String(r.status||""))).length,
     review:res.ledger.filter(r=>/mixed/i.test(String(r.status||""))).length
   };
@@ -7828,7 +7908,7 @@ function unitReportText(res){
   L.push("UNIT LEDGER","Parameter / context | Location | Observed format | Decimal places | Status | Finding / action to consider");
   unitReportRows(res).forEach(r=>{
     const f=r.reportIssue?reportFindingData(r.reportIssue):null;
-    L.push(`${r.parameter} | ${r.context} | ${[...r.raws.keys()].join("; ")||"See finding"} | ${[...r.precisions.entries()].sort((a,b)=>a[0]-b[0]).map(([d,n])=>`${d} decimal ${Number(d)===1?"place":"places"} (${n} ${Number(n)===1?"instance":"instances"})`).join("; ")||"n/a"} | ${f?f.severityLabel+": ":""}${r.status} | ${f?f.msg:unitStatusAction(r.status,r)}`);
+    L.push(`${r.parameter} | ${r.context} | ${[...r.raws.keys()].join("; ")||"See finding"} | ${[...r.precisions.entries()].sort((a,b)=>a[0]-b[0]).map(([d,n])=>`${unitPrecisionLabel(d)} (${n} ${Number(n)===1?"instance":"instances"})`).join("; ")||"n/a"} | ${f?f.severityLabel+": ":""}${r.status} | ${f?f.msg:unitStatusAction(r.status,r)}`);
     if(f?.suggestion)L.push(`  Recommendation: ${f.suggestion}`);
     if(f?.excerpt)L.push(`  Context: ${f.excerpt}`);
   });
@@ -10049,7 +10129,24 @@ function abbrWordSymbolMatches(text){
 }
 function abbrWordSymbolHtml(text){
   const escaped=escapeHtml(String(text||""));
-  return escaped.replace(new RegExp(ABBR_WORD_SYMBOL_SOURCE,"gu"),symbol=>symbol.replace(/([_^])\{([^{}]+)\}/g,(_,kind,content)=>`<${kind==="_"?"sub":"sup"}>${content}</${kind==="_"?"sub":"sup"}>`));
+  const stack=[];
+  let html="";
+  // Match balanced groups so nested scripts retain their original hierarchy.
+  // Escape the source first; only these native sub/sup tags become markup.
+  for(let i=0;i<escaped.length;i++){
+    const ch=escaped[i],script=(ch==="_"||ch==="^")&&escaped[i+1]==="{";
+    if(script || ch==="{"){
+      stack.push({prefix:html,start:i,tag:script?(ch==="_"?"sub":"sup"):""});
+      html="";
+      if(script) i++;
+    }else if(ch==="}" && stack.length){
+      const group=stack.pop();
+      html=group.prefix+(group.tag?`<${group.tag}>${html}</${group.tag}>`:`{${html}}`);
+    }else html+=ch;
+  }
+  // Leave incomplete groups as literal text rather than inventing a closure.
+  if(stack.length) html=stack[0].prefix+escaped.slice(stack[0].start);
+  return html;
 }
 function abbrRestoreWordSymbols(rawText){
   let text=String(rawText||""),cursor=0;
@@ -10208,6 +10305,7 @@ function abbrTrimScientificDescriptorContext(raw){
     /\b(?:was|were|is|are)?\s*(?:ascribed|attributed|assigned|linked|correlated)\s+to\s+/gi,
     /\b(?:reduction|increase|decrease|change|variation|difference|improvement|decline)\s+in\s+/gi,
     /\b(?:measurement|determination|calculation|estimation|evaluation|analysis|assessment|quantification)\s+of\s+/gi,
+    /\b(?:show(?:s|ed|ing)?|reveal(?:s|ed|ing)?|indicat(?:e[sd]?|ing)|demonstrat(?:e[sd]?|ing))\s+(?:the\s+|an?\s+)?/gi,
     /\b(?:evaluate|evaluated|measure|measured|determine|determined|calculate|calculated|estimate|estimated|quantify|quantified|assess|assessed|characteri[sz]e|characteri[sz]ed)\s+(?:the\s+)?/gi,
     /\b(?:(?:can|could|may|might|will|would|is|was|were|are)\s+be\s+)?(?:used\s+to\s+)?(?:find\s+out|determine|estimate|calculate|evaluate|measure|obtain|derive)\s+(?:the\s+)?/gi,
     /\bwith\s+(?:an?\s+|the\s+)?/gi,
@@ -10233,7 +10331,7 @@ function abbrTrimScientificDescriptorContext(raw){
   // Remove evaluative words that describe the observed magnitude rather than
   // the parameter name itself. Domain-specific modifiers such as "interfacial"
   // are deliberately retained.
-  s=s.replace(/^(?:(?:significantly|remarkably|considerably|substantially|relatively|slightly|much)\s+)?(?:lower|higher|reduced|increased|decreased|low|high|minimal|maximal|comparable)\s+/i,"").trim();
+  s=s.replace(/^(?:(?:significantly|remarkably|considerably|substantially|relatively|slightly|much)\s+)?(?:lower|higher|reduced|increased|decreased|low|high|minimal|maximal|comparable|consistent)\s+/i,"").trim();
   s=s.replace(/^(?:the|a|an)\s+/i,"").trim();
   return s.replace(/^[,;\s]+|[,;\s]+$/g,"");
 }
@@ -13274,12 +13372,27 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
 function buildSnippet(sentence, disp){
   if(!sentence) return "";
   let s=sentence;
-  if(abbrWordSymbolKey(disp)){
-    const re=abbrScientificFormRegex(disp),match=re.exec(s),idx=match?.index??-1;
-    const start=s.length>200?Math.max(0,idx-80):0;
-    s=(start>0?"… ":"")+s.slice(start,start+200)+(start+200<sentence.length?" …":"");
-    const hit=abbrScientificFormRegex(disp).exec(s);
-    if(hit) return abbrWordSymbolHtml(s.slice(0,hit.index))+"<mark>"+abbrWordSymbolHtml(hit[0])+"</mark>"+abbrWordSymbolHtml(s.slice(hit.index+hit[0].length));
+  if(/[_^]\{/.test(s)){
+    const groups=[];
+    let depth=0,groupStart=0;
+    for(let i=0;i<s.length;i++){
+      if(s[i]==="{" && (depth || /[_^]/.test(s[i-1]||""))){
+        if(!depth) groupStart=i-1;
+        depth++;
+      }else if(s[i]==="}" && depth && --depth===0) groups.push([groupStart,i+1]);
+    }
+    if(depth) groups.push([groupStart,s.length]);
+    const insideScript=pos=>groups.some(([a,b])=>a<pos && pos<b);
+    const escaped=escapeRegExp(disp).replace(/\\-/g,"\\x2d");
+    const re=new RegExp(`(?<![\\p{L}\\p{N}_{}])${escaped}${/[_^]\{/.test(disp)?"":"s?"}(?![\\p{L}\\p{N}_{}])`,"gu");
+    const match=[...s.matchAll(re)].find(m=>!insideScript(m.index) && !insideScript(m.index+m[0].length)),idx=match?.index??-1;
+    let start=s.length>200?Math.max(0,idx-80):0,end=Math.min(s.length,Math.max(start+200,idx+(match?.[0].length||0)));
+    // Preserve complete notation at the edges of a shortened evidence snippet.
+    while(start>0 && (/\S/.test(s[start-1]) || insideScript(start))) start--;
+    while(end<s.length && (/\S/.test(s[end]) || insideScript(end))) end++;
+    const hit=match?match.index-start+(start>0?2:0):-1;
+    s=(start>0?"… ":"")+s.slice(start,end)+(end<sentence.length?" …":"");
+    if(match) return abbrWordSymbolHtml(s.slice(0,hit))+"<mark>"+abbrWordSymbolHtml(match[0])+"</mark>"+abbrWordSymbolHtml(s.slice(hit+match[0].length));
     return abbrWordSymbolHtml(s);
   }
   const re=new RegExp("\\b"+escapeRegExp(disp)+"s?\\b");
@@ -23339,6 +23452,7 @@ function dominantDecimal(vals){
 }
 function shouldFlagMixedPrecision(vals){
   if(vals.length<3) return false;
+  if(!unitPrecisionDiffers(vals))return false;
   const ds=vals.map(nDec), u=[...new Set(ds)]; if(u.length<2) return false;
   const dom=dominantDecimal(vals);
   // Flag strong dominant-pattern outliers, or a spread of at least two decimal places.
@@ -23373,26 +23487,39 @@ function precisionBodyCheck(text){
     // Direct numerical lists sharing one trailing unit, e.g. 12.4, 18.72, 21.358, 15.6 mg/L.
     const listRe=new RegExp(`((?:[+−-]?\\d+(?:\\.\\d+)?\\s*(?:(?:,|;)\\s*(?:and\\s+)?|\\band\\s+|&\\s*)){2,}[+−-]?\\d+(?:\\.\\d+)?)\\s*(${PREC_UNIT})(?![A-Za-zµμ])`,'gi');
     while((m=listRe.exec(s))){
-      if(looksDefinedOrLiterature(s)) continue;
+      const quantity=unitExtractQuantities(s).find(q=>q.index>=m.index&&q.index<m.index+m[0].length);
+      if(!quantity?.precisionComparable)continue;
       const vals=m[1].match(/[+−-]?\d+(?:\.\d+)?/g)||[];
       if(shouldFlagMixedPrecision(vals)){
-        const d=dominantDecimal(vals);
-        precisionIssue(out,"precision",`Directly compared values (${vals.join(", ")} ${m[2]}) use mixed numerical precision. Verify analytical resolution before standardising; the dominant pattern in this group uses ${d.dp} decimal place${d.dp===1?"":"s"}.`,s,m.index,m[0].length);
+        precisionIssue(out,"precision",`Values in this series (${vals.join(", ")} ${m[2]}) use different written precision. Review their analytical resolution and reporting convention; retain scientifically justified differences.`,s,m.index,m[0].length);
       }
     }
 
-    // Comparable percentages listed in the same sentence.
-    const per=[...s.matchAll(/([+−-]?\d+(?:\.\d+)?)\s*%/g)];
-    if(per.length>=3 && !looksDefinedOrLiterature(s)){
-      const vals=per.map(x=>x[1]);
-      if(shouldFlagMixedPrecision(vals)) precisionIssue(out,"percent",`Comparable percentages in this sentence use mixed precision (${vals.map(v=>v+"%").join(", ")}). Verify that they arise from the same analysis and use scientifically justified consistent precision if so.`,s,per[0].index,per[per.length-1].index+per[per.length-1][0].length-per[0].index);
+    // Reuse the unit classifier so uncertainty terms, compositions and different
+    // efficiencies cannot become a percentage series just by sharing a sentence.
+    const percentages=new Map();
+    for(const q of unitExtractQuantities(s).filter(q=>q.rawUnit==="%"&&q.precisionComparable)){
+      const key=window.MC_MEASUREMENT_CONTEXT.precisionGroupKey(q);
+      if(!percentages.has(key))percentages.set(key,[]);
+      percentages.get(key).push(q);
+    }
+    for(const per of percentages.values()){
+      const vals=per.map(q=>q.value);
+      if(shouldFlagMixedPrecision(vals))precisionIssue(out,"percent",`${per[0].parameter} values use different written precision (${vals.map(v=>v+"%").join(", ")}). Review the measurement resolution and retain justified differences.`,s,per[0].index,per.at(-1).index+per.at(-1).value.length+2-per[0].index);
     }
 
-    // Scientific notation: compare significant figures only within a direct same-sentence series.
-    const sci=[...s.matchAll(/([+−-]?\d+(?:\.\d+)?)\s*[×x]\s*10\s*(?:\^\s*)?[−-]?\d+/g)];
-    if(sci.length>=3 && !looksDefinedOrLiterature(s)){
-      const sig=sci.map(x=>nSig(x[1])); const uniq=[...new Set(sig)];
-      if(uniq.length>1 && Math.max(...uniq)-Math.min(...uniq)>=2) precisionIssue(out,"scientific",`Scientific-notation values in the same comparison use substantially different significant figures (${sig.join(", ")}). Verify whether equivalent measurement precision is intended.`,s,sci[0].index,sci[sci.length-1].index+sci[sci.length-1][0].length-sci[0].index);
+    // Scientific values use the same source, parameter and written-place rules
+    // as the unit ledger; matching absolute resolution is a valid pattern.
+    const scientific=new Map();
+    for(const q of unitExtractQuantities(s).filter(q=>q.precisionComparable&&unitScalarDecimals(q.value)===null&&unitWrittenPrecision(q.value))){
+      const key=window.MC_MEASUREMENT_CONTEXT.precisionGroupKey(q);
+      if(!scientific.has(key))scientific.set(key,[]);
+      scientific.get(key).push(q);
+    }
+    for(const group of scientific.values()){
+      const sig=group.map(q=>unitWrittenPrecision(q.value).sig);
+      if(group.length>=3&&unitPrecisionDiffers(group.map(q=>q.value))&&sig.every(n=>n!==null)&&Math.max(...sig)-Math.min(...sig)>=2)
+        precisionIssue(out,"scientific",`Scientific-notation values for ${group[0].parameter} use different written precision. Review the measurement resolution and retain justified differences.`,s,group[0].index,group.at(-1).index+group.at(-1).value.length-group[0].index);
     }
 
     // Obvious calculator-like precision in a measured value with a unit. This is review-only.
@@ -23486,15 +23613,15 @@ function precisionTableCheck(tables){
 
     // Category bands, LB/UB matrices, regulatory limits, and other predefined
     // threshold tables are exact/external values. Do not force decimal harmonisation.
-    if(tableLooksLikeThresholdMatrix(rows)) return;
+    const thresholdMatrix=tableLooksLikeThresholdMatrix(rows);
 
-    const {headers,dataStart}=tableHeaderInfo(tbl);
+    const {headers,dataStart}=tableHeaderInfo(tbl),precisionInfo=unitPrecisionTableInfo(tbl);
     for(let c=0;c<headers.length;c++){
       const header=headers[c];
       if(!header)continue;
       if(/\b(?:sl\.?\s*no|serial|ref\.?|reference|year|date|id|sample\s*id|site\s*id|stp\s*id|number|no\.?|rank|n\s*=|count)\b/i.test(header)) continue;
 
-      const vals=[];
+      const groups=new Map();
       const headerUnit=unitFindHeaderUnit(header);
       for(let r=dataStart;r<rows.length;r++){
         if(tbl.dataCells?.[r]?.[c]===false)continue;
@@ -23508,9 +23635,17 @@ function precisionTableCheck(tables){
         }
         // Keep uncertainty expressions out of cross-row scalar comparisons.
         const x=tableScalar(rows[r][c]);
-        if(x) vals.push({...x,row:r+1,rowIndex:r});
+        const context=unitPrecisionTableCell(tbl,precisionInfo,r,c);
+        if(x&&!context.reason&&!thresholdMatrix){
+          const explicit=cell.slice(x.raw.length).trim(),parsed=explicit?unitParseExpression(explicit):headerUnit?.parsed;
+          if(explicit&&!parsed?.valid)continue;
+          const key=context.scope+"|"+(parsed?unitConsistencyKey({parsed}):"unitless");
+          if(!groups.has(key))groups.set(key,[]);
+          groups.get(key).push({...x,row:r+1,rowIndex:r});
+        }
       }
 
+      for(const vals of groups.values()){
       // Two values are enough when the header clearly identifies a measurement
       // parameter/unit; otherwise require at least three values before inferring a pattern.
       const comparableHeader=/\b(?:pH|BOD|COD|TSS|TDS|TN|TP|FC|DO|EC|temperature|temp\.?|pressure|flow|concentration|removal|efficiency|capacity|rate|yield|voltage|current|conductivity|turbidity)\b/i.test(header)
@@ -23522,33 +23657,16 @@ function precisionTableCheck(tables){
 
       const raw=vals.map(v=>v.raw);
       const dps=[...new Set(raw.map(nDec))].sort((a,b)=>a-b);
-      if(dps.length<2) continue;
+      if(!unitPrecisionDiffers(raw)) continue;
 
       // Do not compare exact integer-only columns. If decimals occur, infer the
       // observed reporting pattern and show the conflicting forms together.
       if(raw.every(v=>nDec(v)===0)) continue;
       if(!shouldFlagMixedPrecision(raw) && vals.length<4) continue;
 
-      const dom=dominantDecimal(raw);
-      const dominantShare=dom.count/raw.length;
       const variants=dps.map(dp=>precisionVariantSummary(vals,dp,c,rows));
       const loc=`Word table ${tbl.index}, column ${c+1} (${header})`;
-
-      let msg;
-      if(dominantShare>=0.60){
-        const conflicts=vals.filter(v=>nDec(v.raw)!==dom.dp);
-        const conflictText=conflicts.slice(0,5).map(v=>{
-          const label=tableRowLabel(rows[v.rowIndex],c);
-          return `${v.raw} at row ${v.row}${label?` [${label}]`:""}`;
-        }).join("; ");
-        const comparison=vals.filter(v=>nDec(v.raw)===dom.dp).slice(0,3).map(v=>{
-          const label=tableRowLabel(rows[v.rowIndex],c);
-          return `${v.raw} at row ${v.row}${label?` [${label}]`:""}`;
-        }).join("; ");
-        msg=`${loc}: inconsistent precision pattern. The dominant reporting pattern uses ${dom.dp} decimal place${dom.dp===1?"":"s"}, but ${conflictText} ${conflicts.length===1?"does":"do"} not follow it. Compare with ${comparison}. Verify the measurement resolution before standardising.`;
-      }else{
-        msg=`${loc}: directly comparable values use more than one precision pattern. ${variants.join(" | ")}. No single pattern clearly dominates, so verify the measurement resolution and choose a consistent scientifically justified format.`;
-      }
+      const msg=`${loc}: values in this comparison use different written precision. ${variants.join(" | ")}. Review their analytical resolution and reporting convention; retain scientifically justified differences.`;
 
       // Show only the relevant cells, not the entire table rows.
       const examples=[];
@@ -23559,6 +23677,7 @@ function precisionTableCheck(tables){
         });
       });
       out.push({cat:"table",msg,snippet:examples.join("<br>")});
+      }
     }
   });
   return out;
@@ -23708,14 +23827,14 @@ function numRecommendationFor(cat,items=[]){
   if(cat==="start") return "Rephrase the sentence so it does not begin with a numeral.";
   if(cat==="uncertainty") return "Match the decimal places of the value and its uncertainty.";
   if(cat==="range") return "Use consistent decimal places for directly comparable range endpoints.";
-  if(cat==="percent") return "Use consistent decimal places for directly comparable percentages, unless different precision is scientifically justified.";
-  if(cat==="table") return "Use consistent decimal places for comparable values within this table column.";
+  if(cat==="percent") return "Review the measurement resolution and reporting convention for these percentages; retain justified differences.";
+  if(cat==="table") return "Review the analytical resolution supporting these table values; do not round them to match a majority pattern.";
   if(cat==="pvalue") return "Use a consistent p-value reporting format throughout the manuscript.";
   if(cat==="scientific") return "Use consistent significant figures for directly comparable values.";
   if(cat==="precision"){
     if(/contains many reported decimal digits/i.test(msg))
       return "Review whether the reported decimal precision is scientifically justified.";
-    return "Use consistent decimal places for directly comparable values, unless different precision is justified.";
+    return "Review the measurement resolution and reporting convention; retain scientifically justified differences.";
   }
   return "Review this numerical reporting pattern.";
 }
@@ -27803,7 +27922,7 @@ fteAnalyze=function(blocks){
 
   function snippet(text,token){
     const s=String(text||"").replace(/\s+/g," ").trim();if(!s)return"";
-    if(abbrWordSymbolKey(token)) return buildSnippet(s,token);
+    if(/[_^]\{/.test(s)) return buildSnippet(s,token);
     const needle=String(token||"").trim();
     const wholeTokenIndex=(hay,term)=>{
       if(!term)return -1;
@@ -29354,13 +29473,10 @@ fteAnalyze=function(blocks){
   function mcClauseWindow(text,start,end){
     const s=String(text||"");
     const leftFloor=Math.max(0,start-230),rightCeil=Math.min(s.length,end+230);
-    let left=start,right=end;
-    const leftChunk=s.slice(leftFloor,start);
-    const lm=Math.max(leftChunk.lastIndexOf(". "),leftChunk.lastIndexOf("; "),leftChunk.lastIndexOf("? "),leftChunk.lastIndexOf("! "),leftChunk.lastIndexOf("\n"));
-    if(lm>=0) left=leftFloor+lm+1; else left=leftFloor;
-    const rightChunk=s.slice(end,rightCeil);
-    const hits=[rightChunk.indexOf(". "),rightChunk.indexOf("; "),rightChunk.indexOf("? "),rightChunk.indexOf("! "),rightChunk.indexOf("\n")].filter(x=>x>=0);
-    if(hits.length) right=end+Math.min(...hits)+1; else right=rightCeil;
+    const boundaries=[...s.slice(leftFloor,rightCeil).matchAll(/[.;?!](?=\s)|\n/g)].map(m=>leftFloor+m.index)
+      .filter(i=>s[i]!=="."||!/(?:\b(?:vs|al|Fig|Eq)|e\.g|i\.e)$/i.test(s.slice(Math.max(0,i-6),i)));
+    const left=(boundaries.filter(i=>i<start).at(-1)??(leftFloor-1))+1;
+    const right=(boundaries.find(i=>i>=end)??(rightCeil-1))+1;
     return {text:mcCleanContextText(s.slice(left,right)),start:left,end:right};
   }
   function mcFindAnalyte(around){
@@ -29483,38 +29599,127 @@ fteAnalyze=function(blocks){
     if(cue)return mcContextResult(cue.key,cue.label,cue.key,cue.ctx,.82,[cue.ctx]);
     return mcContextResult("length_value","Length value · context not resolved","uncertain_length","Context uncertain",.52,[],false);
   }
-  function mcClassifyConcentration(clause,before,after){
-    let analyte=mcFindNearestAnalyte(before.slice(-140),after.slice(0,140));
-    if(!analyte)analyte=mcFindAnalyte(clause);
-    if(analyte){
-      const label=`${analyte.label} concentration`;
-      return mcContextResult(`concentration_${mcNormKey(analyte.label)}`,label,`analyte_${mcNormKey(analyte.label)}`,label,.96,[analyte.label,"concentration"]);
+  function mcConcentrationEntities(text){
+    const out=[];
+    const add=(label,raw,index,governing=false,explicitName=false)=>{
+      const formula=mcChemFormulaInfo(raw);
+      // Formula case and charge carry identity: Co and CO must stay separate.
+      const identity=mcChemAsciiSubscripts(formula.valid?raw:label);
+      out.push({label:formula.valid?mcChemAsciiSubscripts(raw):label,identity,index,end:index+raw.length,governing,explicitName});
+    };
+    for(const [label,re] of ANALYTE_PATTERNS){
+      for(const m of text.matchAll(new RegExp(re.source,"g"+re.flags.replace(/g/g,"")))){
+        // A species name alone does not establish an elemental reporting basis.
+        const name=/^(?:NH4-N|NO3-N|NO2-N|PO4-P)$/.test(label)&&/^[a-z ]+$/i.test(m[0])?m[0].toLowerCase():label;
+        add(name,m[0],m.index,UNIT_ANALYTES.has(m[0].toUpperCase()));
+      }
     }
-    const explicit=clause.match(/\b([A-Za-z][A-Za-z0-9+−⁺⁻-]{1,24})\s+concentration\b/i)||clause.match(/\bconcentration\s+of\s+([A-Za-z][A-Za-z0-9+−⁺⁻-]{1,24})\b/i);
-    if(explicit){
-      const a=explicit[1];
-      return mcContextResult(`concentration_${mcNormKey(a)}`,`${a} concentration`,`analyte_${mcNormKey(a)}`,`${a} concentration`,.90,[a,"concentration"]);
+    for(const m of text.matchAll(/\b[A-Z][A-Za-z0-9₀-₉⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻+−()[\]·⋅-]{0,63}/g)){
+      let raw=m[0];
+      while(/[)\]]$/.test(raw)&&!mcChemFormulaInfo(raw).valid) raw=raw.slice(0,-1);
+      if(mcChemFormulaInfo(raw).valid || /^[A-Z][A-Z0-9-]{1,14}$/.test(raw))
+        add(raw,raw,m.index,/^\s*(?:concentrations?|levels?|content)\b/i.test(text.slice(m.index+raw.length)));
     }
-    return mcContextResult("concentration_value","Concentration · context not resolved","uncertain_concentration","Context uncertain",.58,["concentration-compatible unit"],false);
+    // Preserve a written chemical name when no formula is supplied.
+    for(const m of text.matchAll(/\b(?:[a-z]+[- ]+){0,3}(?:acid|hydroxide|chloride|sulfate|sulphate|nitrate|phosphate|carbonate|acetate|buffered solution)\b/g)){
+      if(!/\b(?:using|with|and|of|for|as|in|from|to|by|prepared|reported|measured|added)\b/.test(m[0])) add(m[0],m[0],m.index);
+    }
+    for(const m of text.matchAll(/\b([A-Za-z][A-Za-z -]{1,90}?)\s*\(([A-Z][A-Z0-9-]{1,14})\)/g)){
+      const full=bestLongForm(m[2],m[1]);
+      if(full) add(m[2],text.slice(m.index+m[0].indexOf(full),m.index+m[0].length),m.index+m[0].indexOf(full),true);
+    }
+    for(const re of [/\b([A-Za-z][A-Za-z0-9+−⁺⁻-]{1,24})\s+concentrations?\b/gi,/\bconcentrations?\s+of\s+([A-Za-z][A-Za-z0-9+−⁺⁻-]{1,24})\b/gi]) for(const m of text.matchAll(re)){
+      const name=m[1];
+      if(!STOPWORDS.has(name.toUpperCase()) && !/^(?:a|initial|final|residual|total|measured|observed|reported|recommended|maximum|minimum|higher|lower|high|low|mean|average|outlier|target|nominal|working|stock|solution|influent|effluent|metal)$/i.test(name))
+        add(name,name,m.index+m[0].indexOf(name),true,true);
+    }
+    return out.sort((a,b)=>a.index-b.index || b.end-a.end);
   }
-  function mcClassifyPercentage(clause){
-    const cue=mcSpecificCue(clause,[
-      ["removal_efficiency","Removal efficiency",/\b(?:removal|degradation)\s+(?:efficiency|rate)|\bremoval\b/i,"removal/degradation"],
+  function mcClassifyConcentration(q,clause,before,after){
+    const unit=escapeRegExp(q.rawUnit||"");
+    const quantity=new RegExp(UNIT_VALUE_RE.source+"\\s*"+unit,"g");
+    // Shared trailing names apply to coordinated values, e.g. 0.5 M and 1 M KOH.
+    const tail=after.replace(new RegExp("^(?:(?:,\\s*(?:and\\s+|or\\s+)?|(?:and|or)\\s+)(?:"+UNIT_VALUE_RE.source+")\\s*"+unit+"\\s*)*"),"");
+    const right=mcConcentrationEntities(tail),left=mcConcentrationEntities(before);
+    let analyte=q.parsed?.analyte?{label:q.parsed.analyte,identity:mcChemAsciiSubscripts(q.parsed.analyte)}:null;
+    if(!analyte) analyte=right.find(a=>/^(?:of\s+)?[([]?\s*$/.test(tail.slice(0,a.index)));
+    if(!analyte){
+      analyte=left.slice().reverse().find(a=>{
+        const link=before.slice(a.end).replace(quantity,"").replace(/[(),:=]/g," ");
+        return /^(?:\s|concentrations?|content|levels?|was|were|is|are|of|at|to|and|or|from|between|initially|finally|measured|determined|recorded|observed|found|varied|ranged|as|the|in|range)+$/i.test(link);
+      });
+    }
+    if(!analyte){
+      const candidates=left.filter(a=>a.governing && !/[-/A-Za-z0-9]$/.test(before.slice(0,a.index)));
+      const supported=candidates.filter(a=>!a.explicitName);
+      const pool=supported.length?supported:candidates,identities=new Set(pool.map(a=>a.identity));
+      if(identities.size===1) analyte=pool[0];
+    }
+    if(!analyte) return mcContextResult("concentration_value","Concentration · context not resolved","uncertain_concentration","Context uncertain",.58,["concentration-compatible unit"],false);
+
+    let role="measured",roleLabel="",comparable=true,reason="";
+    const source=before+" "+tail;
+    const attributed=mcValueSource(before,after,q.rawUnit);
+    if(attributed?.role==="literature"){
+      role="literature";roleLabel="Literature values";comparable=false;
+      reason="This value comes from another study, so its decimal places were not compared. No action needed for this comparison.";
+    }else if(attributed?.role==="reference_limit"){
+      role="standard";roleLabel="Reference limits";comparable=false;
+      reason="Reference limits retain their published precision.";
+    }else{
+      const observed=[...before.matchAll(/\b(initial|final|residual|influent|inlet|effluent|outlet)\b/gi)].pop();
+      if(observed){role=observed[1].toLowerCase().replace("inlet","influent").replace("outlet","effluent");roleLabel=role[0].toUpperCase()+role.slice(1);}
+      const measured=/\bconcentrations?\b/i.test(before) && /\b(?:measured|determined|recorded|detected|observed)\b/i.test(before);
+      if(!measured && /\b(?:electrolyte|buffer(?:ed)?|stock|solutions?|reference electrode|prepared|spiked|dosed|added|addition|acidified|adjusted)\b/i.test(source)){
+        role="preparation";roleLabel="Specified solution / reagent";comparable=false;
+        reason="Specified solution and reagent concentrations may differ intentionally; their decimal places are not compared.";
+      }
+    }
+    const name=`${analyte.label} concentration`;
+    return {...mcContextResult(`concentration_${analyte.identity}`,name,`analyte_${analyte.identity}_${role}`,roleLabel||name,.96,[analyte.label,"concentration attachment",role],comparable),precisionReason:reason};
+  }
+  function mcAttachedCue(before,after,patterns){
+    let best=null,distance=85;
+    for(const [key,label,re,ctx] of patterns){
+      for(const [side,text] of [["before",before],["after",after]]){
+        for(const m of text.matchAll(new RegExp(re.source,re.flags.replace("g","")+"g"))){
+          const bridge=side==="before"?text.slice(m.index+m[0].length):text.slice(0,m.index);
+          if(/\b(?:using|whereas|while|but|with)\b/i.test(bridge)||(side==="after"&&/\b(?:and|for)\b|\d/.test(bridge)))continue;
+          const d=bridge.length+(side==="after"?8:0);
+          if(d<distance){best={key,label,ctx,side,index:m.index};distance=d;}
+        }
+      }
+    }
+    return best;
+  }
+  function mcClassifyPercentage(clause,before,after){
+    const material=after.match(/^\s*([A-Z][A-Za-z0-9]*(?:\/[A-Z][A-Za-z0-9]*)+)\b/);
+    if(material&&material[1].split("/").every(s=>mcChemFormulaInfo(s).valid))
+      return {...mcContextResult(`composition_${material[1]}`,`${material[1]} composition`,"specified_composition","Specified composition",.97,["percentage attached to material"],false),precisionReason:"Specified material compositions are not compared with measured efficiencies."};
+    const cue=mcAttachedCue(before,after,[
+      ["coulombic_efficiency","Coulombic efficiency",/\b(?:coulombic\s+efficiency|CE)\b/i,"coulombic efficiency"],
+      ["energy_recovery","Energy recovery efficiency",/\benergy\s+recovery(?:\s+efficiency)?\b/i,"energy recovery"],
+      ["hydrogen_recovery","Hydrogen recovery",/\b(?:cathodic\s+)?hydrogen\s+recovery\b/i,"hydrogen recovery"],
+      ["removal_efficiency","Removal efficiency",/\b(?:removal|degradation|reduction)(?:\s+(?:efficiency|rate))?\b/i,"removal/degradation"],
       ["rejection_efficiency","Rejection",/\brejection\b/i,"rejection"],
       ["flux_decline","Flux decline",/\bflux\s+(?:declin|loss)|\bdeclined\b/i,"flux decline"],
       ["yield","Yield",/\byield\b/i,"yield"],
       ["recovery","Recovery",/\brecovery\b/i,"recovery"],
       ["loading_composition","Loading / composition",/\b(?:loading|wt\s*%|composition|content)\b/i,"loading/composition"]
     ]);
-    if(cue)return mcContextResult(cue.key,cue.label,cue.key,cue.ctx,.90,[cue.ctx]);
+    if(cue){
+      const prefix=cue.side==="before"?before.slice(0,cue.index):"";
+      const analyte=mcConcentrationEntities(prefix).filter(e=>/^\s*$/.test(prefix.slice(e.end))).pop();
+      return mcContextResult(cue.key+(analyte?`_${analyte.identity}`:""),(analyte?`${analyte.label} `:"")+cue.label,cue.key,cue.ctx,.90,[cue.ctx]);
+    }
     return mcContextResult("percentage_value","Percentage · context not resolved","uncertain_percentage","Context uncertain",.50,[],false);
   }
   function mcClassifyGeneric(q,clause,before,after){
     const family=mcDimFamily(q);
     if(family==="time") return mcClassifyTime(clause,before,after);
     if(family==="length") return mcClassifyLength(clause,before,after);
-    if(family==="concentration") return mcClassifyConcentration(clause,before,after);
-    if(family==="percentage") return mcClassifyPercentage(clause);
+    if(family==="concentration") return mcClassifyConcentration(q,clause,before,after);
+    if(family==="percentage") return mcClassifyPercentage(clause,before,after);
     if(family==="temperature"){
       if(/\b(?:calcined|annealed|heated|pyroly[sz]ed|hydrothermal|synthesi[sz]ed|dried)\b/i.test(clause))
         return mcContextResult("synthesis_temperature","Synthesis / treatment temperature","synthesis_temperature","Synthesis / thermal treatment",.94,["thermal treatment"]);
@@ -29533,10 +29738,29 @@ fteAnalyze=function(blocks){
     if(family==="loading"){
       if(/\b(?:loading|catalyst|membrane)\b/i.test(clause))return mcContextResult("catalyst_loading","Catalyst / membrane loading","loading","Loading",.90,["loading"]);
     }
-    if(family==="voltage")return mcContextResult("voltage","Voltage","electrical","Electrical measurement",.85,["voltage unit"]);
-    if(family==="current")return mcContextResult("current","Current","electrical","Electrical measurement",.85,["current unit"]);
-    if(family==="power")return mcContextResult("power","Power","energy","Energy / power",.82,["power unit"]);
-    if(family==="energy")return mcContextResult("energy","Energy","energy","Energy",.82,["energy unit"]);
+    const electrical={
+      voltage:[
+        ["scan_window","Scan window",/\b(?:scan|potential)\s+(?:window|range|limits?)\b/i,"Specified scan window"],
+        ["applied_voltage","Applied voltage",/\b(?:applied|external)\s+(?:voltage|potential)\b/i,"Specified voltage"],
+        ["anode_potential","Anode potential",/\banod(?:e|ic)\s+potential\b/i,"Anode potential"],
+        ["cathode_potential","Cathode potential",/\bcathod(?:e|ic)\s+potential\b/i,"Cathode potential"],
+        ["open_circuit_voltage","Open-circuit voltage",/\b(?:open[- ]circuit\s+(?:voltage|potential)|OCV|OCP)\b/i,"Open-circuit measurement"],
+        ["redox_peak","Redox peak potential",/\b(?:redox|oxidation|reduction)\s+peaks?\b/i,"Peak potential"],
+        ["overpotential","Overpotential",/\boverpotential\b/i,"Overpotential"]
+      ],
+      current:[["current_density","Current density",/\bcurrent\s+densit(?:y|ies)\b/i,"Current density"],["current","Current",/\bcurrent\b/i,"Current measurement"]],
+      power:[["power_density","Power density",/\bpower\s+densit(?:y|ies)\b/i,"Power density"],["power","Power",/\b(?:measured|output|generated)\s+power\b/i,"Power measurement"]],
+      energy:[
+        ["adsorption_energy","Adsorption energy",/\badsorption\s+energ(?:y|ies)\b/i,"Adsorption energy"],
+        ["binding_energy","Binding energy",/\bbinding\s+energ(?:y|ies)\b/i,"Binding energy"],
+        ["activation_energy","Activation energy",/\bactivation\s+(?:energ(?:y|ies)|barrier)\b/i,"Activation energy"]
+      ]
+    };
+    if(electrical[family]){
+      const cue=mcAttachedCue(before,after,electrical[family]);
+      if(cue)return mcContextResult(cue.key,cue.label,cue.key,cue.ctx,.94,[cue.ctx]);
+      return mcContextResult(family,family[0].toUpperCase()+family.slice(1),"unresolved_role","Scientific role unresolved",.75,[`${family} unit`],false);
+    }
 
     // Preserve strong legacy parameter recognition when available.
     const old=String(q?.parameter||"");
@@ -29549,10 +29773,43 @@ fteAnalyze=function(blocks){
   function mcClassifyMeasurement(text,q){
     const start=Number(q?.index||0),end=mcMeasurementEnd(text,q);
     const clauseObj=mcClauseWindow(text,start,end);
-    const before=mcCleanContextText(String(text||"").slice(Math.max(0,start-170),start));
-    const after=mcCleanContextText(String(text||"").slice(end,Math.min(String(text||"").length,end+170)));
+    const before=mcCleanContextText(String(text||"").slice(clauseObj.start,start));
+    const after=mcCleanContextText(String(text||"").slice(end,clauseObj.end));
     const res=mcClassifyGeneric(q,clauseObj.text,before,after);
-    return {...res,clause:clauseObj.text,family:mcDimFamily(q),sourceStart:start,sourceEnd:end};
+    const paragraphStart=String(text||"").lastIndexOf("\n",Math.max(0,start-1))+1;
+    let source=mcValueSource(before,after,q.rawUnit);
+    if(res.contextKey==="specified_composition"&&source?.role==="reference_limit")source=null;
+    const role=[...before.matchAll(/\b(initial|final|residual|influent|effluent|anodic|cathodic|maximum|minimum|peak)\b/gi)].pop()?.[1]?.toLowerCase();
+    return {...res,clause:clauseObj.text,family:mcDimFamily(q),sourceStart:start,sourceEnd:end,
+      clauseStart:clauseObj.start,clauseEnd:clauseObj.end,precisionScope:`paragraph:${paragraphStart}`,
+      precisionRole:/\b(?:set|adjusted|maintained|held|kept|operated|controlled|fixed)\s+(?:at|to)\s*$/i.test(before)||/\b(?:design|installed|rated|nominal)\s+capacit(?:y|ies)\s*(?:(?:of|was|were|is|are|at)\s*)?$/i.test(before)?"setting":role||"result",precisionSource:source};
+  }
+  function mcValueSource(before,after,rawUnit){
+    // Attribution ends at a change of subject or a comparison. Nearby citations
+    // and words such as "standard" do not alone make a measured value external.
+    const boundary=/\b(?:whereas|while|but|however|although|in\s+contrast(?:\s+to)?)\b/gi;
+    const comparison=/\b(?:compared\s+(?:with|to)|consistent\s+with|in\s+agreement\s+with|similar\s+to)\b/gi;
+    const current=/\b(?:we|our|(?:this|present|current)\s+(?:study|work|research))\b/gi;
+    let b=before.split(boundary).at(-1).split(current).at(-1);
+    const subjectChanges=[...b.matchAll(/(?:\band\s+the\b|,\s*(?:the\s+)?(?:effluent|influent|measured|observed|recorded|experimental)\b)/gi)];
+    for(const change of subjectChanges.reverse()){
+      if(rawUnit&&new RegExp(UNIT_VALUE_RE.source+"\\s*"+escapeRegExp(rawUnit)).test(b.slice(0,change.index))){b=b.slice(change.index+1);break;}
+    }
+    const tail=rawUnit?after.replace(new RegExp("^(?:\\s*(?:,\\s*(?:and\\s+)?|and\\s+)(?:"+UNIT_VALUE_RE.source+")\\s*"+escapeRegExp(rawUnit)+"\\s*)*"),""):after;
+    const a=tail.split(boundary)[0].split(comparison)[0].split(current)[0];
+    const limit=/\b(?:regulatory|permissible|allowable|guidelines?|thresholds?|limits?|standards?(?!\s+(?:deviations?|errors?|methods?|hydrogen|electrodes?|addition|calibration|procedures?|protocols?|tests?)))\b/gi;
+    const cue=[...b.matchAll(limit)].at(-1);
+    if(cue&&b.length-cue.index<140&&!/\b(?:measured|recorded|observed|obtained|achieved|showed|yielded|exceed(?:ed|ing|s)?|breach|complied)\b/i.test(b.slice(cue.index+cue[0].length)))
+      return unitPrecisionSource("regulatory limit");
+    if(/^\s*(?:[,()]\s*)?(?:(?:as\s+)?(?:specified|prescribed|stipulated)\s+by\b|(?:regulatory|permissible|allowable)\s+limit\b)/i.test(a))
+      return unitPrecisionSource("regulatory limit");
+    if(/\b(?:theoretical|thermodynamic|stoichiometric)\b[^,;]{0,100}$/i.test(b))return unitPrecisionSource("theoretical");
+    const literature=/\b(?:according\s+to\s+(?!the\s+(?:standard|method|protocol))|reported\s+by|previous(?:ly)?\s+(?:studies|reported)|(?:in|from)\s+(?:the\s+)?literature|investigation\s+by|et\s+al\.\s*(?:\([^)]*\)\s*)?(?:reported|found|observed|obtained|measured))\b/i;
+    const trailing=a.match(/\b(?:reported\s+by|according\s+to)\b/i);
+    const sharedAttribution=trailing&&trailing.index<160&&!/\b(?:measured|recorded|observed|obtained|achieved|showed|found|is|are|has|had)\b/i.test(a.slice(0,trailing.index));
+    if(literature.test(b)||sharedAttribution||/^\s*\([^)]{1,60}\bet\s+al\./i.test(a))
+      return unitPrecisionSource("literature");
+    return null;
   }
   function mcHeaderContext(parameter,rawUnit){
     const p=mcCleanContextText(parameter||"Table column");
@@ -29583,11 +29840,12 @@ fteAnalyze=function(blocks){
     q.precisionComparable=c.precisionComparable;
     q.contextEvidence=c.evidence;
     q.contextClause=c.clause;
+    q.external=!!c.precisionSource;
     return q;
   }
   function mcApplyTableContext(q){
     if(!q||!q.parsed?.valid)return q;
-    const c=mcHeaderContext(q.parameter,q.rawUnit);
+    const c=mcHeaderContext(q.precisionTable?.analyte?`${q.precisionTable.analyte} · ${q.parameter}`:q.parameter,q.rawUnit);
     q.measurementContext={...c,family:mcDimFamily(q),clause:q.snippet||q.context};
     q.parameter=c.parameter;
     q.parameterKey=c.parameterKey;
@@ -29596,6 +29854,26 @@ fteAnalyze=function(blocks){
     q.parameterConfidence=c.confidence;
     q.precisionComparable=true;
     q.contextEvidence=c.evidence;
+    return q;
+  }
+
+  function mcApplyPrecisionEligibility(q){
+    if(!q?.parsed?.valid)return q;
+    const c=q.measurementContext||{},table=q.precisionTable;
+    let reason=table?.reason||c.precisionSource?.reason||c.precisionReason||"";
+    const setting=c.precisionRole==="setting"||/^(?:scan_window|applied_voltage|synthesis_temperature|synthesis_duration|sampling_time|incubation_time|centrifugation_duration|storage_duration|catalyst_loading|loading_composition)$/.test(q.parameterKey||"");
+    if(!reason&&setting)
+      reason="These values describe the experimental setup or what a material contains, so decimal places were not compared. No action needed for this comparison.";
+    if(!reason&&!unitWrittenPrecision(q.value))
+      reason=String(q.value).includes("±")?"Different results written with ± can use different decimal places. Check the Number report for any warning about these values; otherwise, no action is needed for this check.":/^[<>≤≥~≈]/.test(String(q.value).trim())?"A bound or approximate value does not establish measurement resolution; its unit notation is checked.":/\d\s*(?:[−‐‑–—-]|to)\s*[+−-]?\d/.test(String(q.value))?"Range expressions are retained for range checks in the Number report; they are not treated as individual scalar results.":"This numeric expression is retained; the ledger checks its unit notation without inferring a numerical precision pattern.";
+    if(!reason&&c.family==="percentage"&&/^(?:0|100)$/.test(String(q.value||"").trim()))
+      reason="A percentage endpoint alone does not establish measurement resolution.";
+    if(!reason&&(q.precisionComparable===false||Number(q.parameterConfidence||0)<.72))
+      reason="The specific measurement and its reporting context could not be established confidently.";
+    q.precisionComparable=!reason;
+    q.precisionScope=table?.scope||c.precisionScope||"";
+    q.precisionRole=table?.role||c.precisionSource?.role||(setting?"setting":c.precisionRole)||"result";
+    q.measurementContext={...c,precisionComparable:!reason,precisionReason:reason};
     return q;
   }
 
@@ -29617,9 +29895,10 @@ fteAnalyze=function(blocks){
     const unitKey=unitConsistencyKey(q); if(!unitKey)return null;
     const scope=String(q.context||"").startsWith("Table ")?String(q.context).split(",")[0]:"Body";
     const c=q.measurementContext||{};
-    if(q.precisionComparable!==false && Number(q.parameterConfidence||0)>=.72 && q.parameterKey)
-      return `${scope}|${q.parameterKey}|${q.contextKey||"general"}|${unitKey}`;
-    return `${scope}|uncertain|${c.family||mcDimFamily(q)}|${unitKey}`;
+    const comparisonScope=q.precisionComparable===false&&!q.precisionTable?"":q.precisionScope||"";
+    if(Number(q.parameterConfidence||0)>=.72 && q.parameterKey)
+      return `${scope}|${q.parameterKey}|${q.contextKey||"general"}|${comparisonScope}|${q.precisionConditions||""}|${q.precisionRole||""}|${q.precisionComparable!==false}|${unitKey}`;
+    return `${scope}|uncertain|${c.family||mcDimFamily(q)}|${q.precisionTable?.scope||""}|${q.precisionRole||""}|${q.precisionComparable!==false}|${unitKey}`;
   }
   function mcDisplayContext(q){
     const c=q?.measurementContext||{};
@@ -29632,7 +29911,7 @@ fteAnalyze=function(blocks){
     const issues=[];
     const groups=new Map();
     (qs||[]).filter(q=>q.parsed?.valid&&!q.external&&q.precisionComparable!==false&&Number(q.parameterConfidence||0)>=.72).forEach(q=>{
-      const dp=unitScalarDecimals(q.value); if(dp===null)return;
+      const dp=unitWrittenPrecision(q.value)?.place; if(dp===undefined)return;
       const k=mcPrecisionGroupKey(q); if(!k)return;
       if(!groups.has(k))groups.set(k,[]);
       groups.get(k).push({...q,dp});
@@ -29641,17 +29920,17 @@ fteAnalyze=function(blocks){
       if(g.length<2)return;
       const dpMap=new Map();
       g.forEach(q=>{if(!dpMap.has(q.dp))dpMap.set(q.dp,[]);dpMap.get(q.dp).push(q);});
-      if(dpMap.size<=1)return;
+      if(!unitPrecisionDiffers(g.map(q=>q.value)))return;
       const variants=[...dpMap.entries()].sort((a,b)=>b[1].length-a[1].length);
-      const dominant=variants[0],share=dominant[1].length/g.length,unit=unitRawFormatKey(g[0]);
-      const desc=variants.map(([dp,a])=>`${dp} decimal place${dp===1?"":"s"}: ${a.slice(0,3).map(q=>`${q.value} ${unit}`).join(", ")}${a.length>3?` (+${a.length-3} more)`:""}`).join(" | ");
+      const unit=unitRawFormatKey(g[0]);
+      const desc=variants.map(([dp,a])=>`${unitPrecisionLabel(dp)}: ${a.slice(0,3).map(q=>`${q.value} ${unit}`).join(", ")}${a.length>3?` (+${a.length-3} more)`:""}`).join(" | ");
       issues.push({
         code:"UNIT_PRECISION_INCONSISTENT",severity:"warn",
-        msg:`${mcDisplayContext(g[0])} values reported in the same unit (${unit}) use inconsistent numerical precision. ${desc}.`,
+        msg:`${mcDisplayContext(g[0])} values in this comparison use different written precision (${unit}). ${desc}.`,
         parameter:mcDisplayContext(g[0]),
         context:String(g[0].context||"").startsWith("Table ")?String(g[0].context).split(",")[0]:"Body",
         snippet:variants.slice(0,3).map(x=>unitShortContext(x[1][0])).filter(Boolean).join(" | "),
-        suggestion:share>=.60?`The dominant pattern uses ${dominant[0]} decimal place${dominant[0]===1?"":"s"}. Verify measurement resolution before making the other occurrences consistent.`:"No single precision pattern clearly dominates. Verify measurement resolution and choose one scientifically justified precision for this parameter/context."
+        suggestion:"Review whether these values share an analytical resolution and reporting convention. Retain scientifically justified differences; do not round values to match a majority pattern."
       });
     });
     return issues;
@@ -29666,24 +29945,26 @@ fteAnalyze=function(blocks){
       if(!groups.has(k))groups.set(k,{
         parameter:mcDisplayContext(q),context:scope,raws:new Map(),_formatDisplay:new Map(),normalized:q.parsed.normalized,
         uses:0,precisions:new Map(),instances:[],status:"consistent",precisionComparable:q.precisionComparable!==false&&Number(q.parameterConfidence||0)>=.72,
-        parameterKey:q.parameterKey||"",contextKey:q.contextKey||"",unitKey:unitConsistencyKey(q),contextConfidence:Number(q.parameterConfidence||0)
+        parameterKey:q.parameterKey||"",contextKey:q.contextKey||"",unitKey:unitConsistencyKey(q),contextConfidence:Number(q.parameterConfidence||0),precisionReason:q.measurementContext?.precisionReason||""
       });
       const x=groups.get(k); x.uses++;
       const fmtKey=unitRawFormatKey(q)||String(q.rawUnit||"");
       if(!x._formatDisplay.has(fmtKey))x._formatDisplay.set(fmtKey,String(q.rawUnit||fmtKey));
       const fmtDisplay=x._formatDisplay.get(fmtKey);
       x.raws.set(fmtDisplay,(x.raws.get(fmtDisplay)||0)+1);
-      const dp=unitScalarDecimals(q.value); if(dp!==null)x.precisions.set(dp,(x.precisions.get(dp)||0)+1);
+      const dp=unitWrittenPrecision(q.value)?.place??null; if(dp!==null)x.precisions.set(dp,(x.precisions.get(dp)||0)+1);
       x.instances.push({...q,dp});
       x.contextConfidence=Math.max(x.contextConfidence,Number(q.parameterConfidence||0));
     });
 
     const rows=[...groups.values()];
     rows.forEach(r=>{
-      const rawForms=r.raws.size,precisionForms=r.precisions.size;
-      if(!r.precisionComparable){
+      const rawForms=r.raws.size,precisionForms=unitPrecisionDiffers(r.instances.map(q=>q.value))?2:1;
+      r.precisionCompared=r.precisionComparable&&r.instances.filter(q=>unitWrittenPrecision(q.value)).length>=2;
+      if(!r.precisionCompared){
         if(rawForms>1)r.status="mixed format";
-        else r.status="not compared";
+        else r.status=r.uses>1?"unit format consistent":"unit recognized";
+        if(!r.precisionReason)r.precisionReason="Only one value was found in this group, so decimal places were not compared. No action needed for this comparison.";
       }else if(rawForms>1&&precisionForms>1)r.status="mixed format + precision";
       else if(rawForms>1)r.status="mixed format";
       else if(precisionForms>1)r.status="mixed precision";
@@ -29693,7 +29974,7 @@ fteAnalyze=function(blocks){
     // occur only across different semantic contexts, add one notation-only row
     // rather than contaminating each context-specific precision group.
     const globalFmt=new Map();
-    valid.filter(q=>!q.external).forEach(q=>{
+    valid.forEach(q=>{
       const uk=unitConsistencyKey(q); if(!uk)return;
       if(!globalFmt.has(uk))globalFmt.set(uk,{raws:new Map(),formatDisplay:new Map(),instances:[],normalized:q.parsed.normalized,groupKeys:new Set()});
       const g=globalFmt.get(uk),fmt=unitRawFormatKey(q)||String(q.rawUnit||"");
@@ -29712,18 +29993,18 @@ fteAnalyze=function(blocks){
 
   unitStatusClass=function(s){
     s=String(s||"").toLowerCase();
-    if(s==="not compared")return "opt";
+    if(s==="unit recognized")return "opt";
     return /mixed/.test(s)?"na":"y";
   };
   unitStatusAction=function(status,row){
     status=String(status||"").toLowerCase();
     const p=String(row?.parameter||"this parameter/context").replace(/\s*·\s*.+$/," ").trim();
     if(status==="consistent")return "No action needed.";
-    if(status==="not compared")return "No precision comparison was made because the reporting context could not be identified confidently.";
+    if(status==="unit format consistent"||status==="unit recognized")return row?.precisionReason||"Unit notation checked; no cross-value numerical precision comparison was made.";
     if(status.includes("mixed spacing"))return "Use one spacing convention consistently for this unit.";
-    if(status.includes("format")&&status.includes("precision"))return `Use one unit notation consistently and check whether ${p} values should use consistent decimal places.`;
-    if(status.includes("mixed format"))return "Use one unit notation consistently.";
-    if(status.includes("mixed precision"))return `Check whether ${p} values should use consistent decimal places.`;
+    if(status.includes("format")&&status.includes("precision"))return `Use one unit notation consistently and review the measurement resolution supporting ${p} values.`;
+    if(status.includes("mixed format"))return "Use one unit notation consistently."+(row?.precisionReason?" "+row.precisionReason:"");
+    if(status.includes("mixed precision"))return `Review the measurement resolution and reporting convention for ${p}; retain justified differences.`;
     return "Review this group in context.";
   };
 
@@ -29744,7 +30025,7 @@ fteAnalyze=function(blocks){
   const BASE_INSTANCE_PANEL=unitInstancePanelHtml;
   unitInstancePanelHtml=function(r,rowIndex){
     const html=BASE_INSTANCE_PANEL(r,rowIndex);
-    const reason=r?.notationOnly?"These instances are grouped only to compare unit notation across the manuscript.":r?.precisionComparable!==false?`These values were grouped because they describe ${escapeHtml(String(r.parameter||"the same parameter/context"))}. The reported value and unit are highlighted for comparison.`:"The reporting context could not be resolved confidently, so decimal precision was not compared.";
+    const reason=r?.notationOnly?"These instances are grouped only to compare unit notation across the manuscript.":r?.precisionComparable!==false?`These values were grouped because they describe ${escapeHtml(String(r.parameter||"the same parameter/context"))}. The reported value and unit are highlighted for comparison.`:escapeHtml(r?.precisionReason||"The reporting context could not be resolved confidently, so decimal precision was not compared.");
     return html.replace("The reported value and unit are highlighted so you can compare the inconsistent forms in their original manuscript context.",reason);
   };
 
@@ -29755,6 +30036,7 @@ fteAnalyze=function(blocks){
       return mcClassifyMeasurement(text,q);
     },
     classifyQuantity:mcClassifyMeasurement,
+    applyPrecisionEligibility:mcApplyPrecisionEligibility,
     precisionGroupKey:mcPrecisionGroupKey,
     displayContext:mcDisplayContext
   };
@@ -29780,7 +30062,6 @@ fteAnalyze=function(blocks){
   const BASE_EXTRACT_V2=unitExtractQuantities;
   const BASE_TABLES_V2=unitAnalyzeTables;
   const BASE_LEDGER_V2=unitLedger;
-  const BASE_RENDER_V2=renderUnitReport;
 
   function mc2Clean(s){
     return String(s||"")
@@ -29810,8 +30091,7 @@ fteAnalyze=function(blocks){
   }
   function mc2Unresolved(q){
     const c=q?.measurementContext||{};
-    return q?.precisionComparable===false ||
-      Number(q?.parameterConfidence||0)<.72 ||
+    return Number(q?.parameterConfidence||0)<.72 ||
       !q?.parameterKey ||
       /context\s+(?:not\s+resolved|uncertain)|(?:time|length|concentration|percentage)\s+value\s*·\s*context/i.test(String(q?.parameter||"")) ||
       /^measurement\s*·/i.test(String(q?.parameter||"")) ||
@@ -30076,6 +30356,17 @@ fteAnalyze=function(blocks){
       if(c)mc2Apply(q,c);
     });
     mc2Reinforce(qs);
+    (qs||[]).forEach(window.MC_MEASUREMENT_CONTEXT.applyPrecisionEligibility);
+    const settings=(qs||[]).filter(q=>!q.precisionTable&&q.precisionRole==="setting");
+    for(const q of qs||[]){
+      if(!q.precisionComparable||q.precisionTable)continue;
+      const c=q.measurementContext;
+      const attached=settings.filter(s=>s.index>=c.clauseStart&&s.index<c.clauseEnd&&s!==q);
+      if(!attached.length)continue;
+      q.precisionConditions=[...new Set(attached.map(s=>`${s.parameterKey}:${unitScalarDecimals(s.value)===null?s.value:Number(s.value.replace(/[−‐‑–—]/g,"-"))}:${unitConsistencyKey(s)}`))].sort().join("|");
+      const label=attached.map(s=>`${s.parameter}: ${s.value} ${s.rawUnit}`).join("; ");
+      q.measurementContext={...c,contextLabel:c.contextLabel===c.parameter?label:`${c.contextLabel}; ${label}`};
+    }
     return qs;
   }
 
@@ -30101,7 +30392,7 @@ fteAnalyze=function(blocks){
     const hidden=[];
 
     for(const r of original){
-      const unresolved=!r?.notationOnly && (
+      const unresolved=!r?.notationOnly && !r.precisionReason && (
         r.precisionComparable===false ||
         Number(r.contextConfidence||0)<.72 ||
         /context\s+(?:not\s+resolved|uncertain)/i.test(String(r.parameter||"")) ||
@@ -30151,31 +30442,6 @@ fteAnalyze=function(blocks){
     Object.defineProperty(merged,"mcHiddenUnresolvedCount",{value:hidden.length,writable:true,configurable:true,enumerable:false});
     Object.defineProperty(merged,"mcHiddenUnresolvedRows",{value:hidden,writable:true,configurable:true,enumerable:false});
     return merged;
-  };
-
-  renderUnitReport=function(res){
-    BASE_RENDER_V2(res);
-
-    const hidden=Number(res?.ledger?.mcHiddenUnresolvedCount||0);
-    if(hidden){
-      const sub=document.getElementById("unit-report-sub");
-      if(sub){
-        const suffix=` · ${hidden} low-confidence context group${hidden===1?"":"s"} omitted from the ledger`;
-        if(!sub.textContent.includes("low-confidence context group"))sub.textContent+=suffix;
-      }
-    }
-
-    const help=document.getElementById("unit-ledger-help");
-    if(help){
-      help.innerHTML=help.innerHTML
-        .replace(
-          /<b>Status<\/b><span>[\s\S]*?<\/span>/,
-          `<b>Status</b><span><b>consistent</b> means one pattern is followed within the inferred parameter/context. <b>mixed precision</b> means contextually comparable values use different decimal-place patterns. <b>mixed format</b> means equivalent units are written in different notation styles. Measurements whose scientific context cannot be identified confidently are omitted from this ledger rather than reported as non-actionable “not compared” rows.</span>`
-        );
-      if(!/low-confidence context groups are omitted/i.test(help.textContent||"")){
-        help.insertAdjacentHTML("beforeend",`<b>Low-confidence contexts</b><span>Manuscript Check first applies unit-aware scientific context rules and conservative manuscript-pattern reinforcement. If the parameter still cannot be resolved confidently, that group is hidden from this table. The underlying measurement remains available internally, and a genuine unit-notation inconsistency can still be shown.</span>`);
-      }
-    }
   };
 
   window.MC_MEASUREMENT_CONTEXT_V2={
