@@ -6462,6 +6462,13 @@ table.ledger tbody>tr:last-child>td{
   color:#36547b;
   font-weight:800;
 }
+.ref-source-type-status{margin-top:6px;font-size:12px;font-weight:600;color:#36547b;overflow-wrap:anywhere}
+.ref-source-type-controls{margin-top:6px;max-width:100%;font-size:12px}
+.ref-source-type-controls label,.ref-source-type-controls small{display:block;margin:4px 0}
+.ref-source-type-controls select{width:100%;max-width:320px;min-height:36px;padding:5px;font:inherit;border:1px solid #718096;border-radius:4px;background:#fff;color:#1f2937}
+.ref-source-type-controls select:focus-visible{outline:2px solid #2563eb;outline-offset:2px}
+.ref-source-type-controls small{font-weight:normal;color:#4b5563}
+@media print{.ref-source-type-controls{display:none!important}}
 .ref-row-style-review>td:first-child{
   box-shadow:inset 3px 0 0 #55739b;
 }
@@ -15209,6 +15216,118 @@ function refFormattingHints(runs){
   return {journalHint,volumeHint};
 }
 
+function fteEndNoteRecords(body){
+  const records=[],stack=[];
+  const types={'journal article|17':'journal article','book|6':'book','report|27':'report','thesis|32':'thesis/dissertation','web page|12':'web page','standard|58':'standard'};
+  const text=n=>String(n?.textContent||'').replace(/\s+/g,' ').trim();
+  const read=instruction=>{
+    const match=String(instruction||'').match(/^\s*ADDIN\s+EN\.CITE\s+(<EndNote\b[\s\S]*<\/EndNote>)\s*$/i);
+    if(!match||/<!DOCTYPE|<!ENTITY/i.test(match[1]))return;
+    let xml;
+    try{xml=new DOMParser().parseFromString(match[1],'application/xml');}catch(_){return;}
+    if(xml.getElementsByTagName('parsererror').length||xml.documentElement?.localName!=='EndNote')return;
+    for(const r of xml.getElementsByTagName('record')){
+      const rt=r.getElementsByTagName('ref-type');
+      const type=rt.length===1?types[(rt[0].getAttribute('name')||'').replace(/\s+/g,' ').trim().toLowerCase()+'|'+text(rt[0])]||null:null;
+      records.push({title:text(r.getElementsByTagName('titles')[0]?.getElementsByTagName('title')[0]),year:text(r.getElementsByTagName('dates')[0]?.getElementsByTagName('year')[0]),author:text(r.getElementsByTagName('authors')[0]?.getElementsByTagName('author')[0]),type});
+    }
+  };
+  const walk=n=>{
+    if(!n||n.nodeType!==1)return;
+    const name=n.localName,word=n.namespaceURI===FTE_W_NS;
+    const hidden=word&&name==='r'&&[...n.children].find(x=>x.namespaceURI===FTE_W_NS&&x.localName==='rPr');
+    if(word&&['del','moveFrom','drawing','pict','object','txbxContent'].includes(name)||hidden&&[...hidden.children].some(x=>x.namespaceURI===FTE_W_NS&&['vanish','webHidden','specVanish'].includes(x.localName)&&!/^(?:0|false|off|no)$/i.test(x.getAttributeNS(FTE_W_NS,'val')||x.getAttribute('w:val')||''))){
+      if(stack.length&&['instrText','delInstrText','fldChar'].some(k=>n.getElementsByTagNameNS(FTE_W_NS,k).length))stack[stack.length-1].invalid=true;
+      return;
+    }
+    if(name==='AlternateContent'){
+      const children=[...n.children];
+      walk(children.find(x=>x.localName==='Choice')||children.find(x=>x.localName==='Fallback'));
+      return;
+    }
+    if(word&&name==='fldSimple'){
+      if(stack.length&&!stack[stack.length-1].result)stack[stack.length-1].invalid=true;
+      read(n.getAttributeNS(FTE_W_NS,'instr')||n.getAttribute('w:instr'));
+    }
+    if(word&&name==='fldChar'){
+      const kind=n.getAttributeNS(FTE_W_NS,'fldCharType')||n.getAttribute('w:fldCharType');
+      if(kind==='begin'){
+        if(stack.length&&!stack[stack.length-1].result)stack[stack.length-1].invalid=true;
+        stack.push({instruction:'',result:false,invalid:false});
+      }
+      else if(kind==='separate'&&stack.length)stack[stack.length-1].result=true;
+      else if(kind==='end'&&stack.length){const field=stack.pop();if(!field.invalid)read(field.instruction);}
+    }
+    if(word&&name==='instrText'&&stack.length&&!stack[stack.length-1].result)stack[stack.length-1].instruction+=n.textContent||'';
+    for(const c of n.children)walk(c);
+  };
+  walk(body);
+  return records;
+}
+
+// Embedded records supply a type only, never missing written citation fields.
+// Whole parsed titles, publication years and authors must agree; no fuzzy matching.
+function refEndNoteText(value){
+  return String(value||'').normalize('NFC').replace(/\u00a0/g,' ').replace(/[‘’]/g,"'")
+    .replace(/[“”]/g,'"').replace(/[‐‑‒–—−]/g,'-').replace(/\s+/g,' ').trim()
+    .replace(/[.,;]+$/g,'').replace(/^["']|["']$/g,'').trim().toLowerCase();
+}
+function refEndNoteAuthorMatches(p,author){
+  if(p.hasCorporateAuthor || /^(?:corporate|organisation)$/.test(p.authorType||''))
+    return refEndNoteText(p.authorRegion)===refEndNoteText(author);
+  const first=refParsePersonalAuthorAt(p.authorRegion||'');
+  if(!first)return false;
+  const surname=refEndNoteText(first.surname),record=refEndNoteText(author);
+  let given;
+  if(record.includes(',')){
+    const parts=record.split(',');
+    if(parts.length!==2 || parts[0].trim()!==surname)return false;
+    given=parts[1];
+  }else{
+    if(!record.endsWith(' '+surname))return false;
+    given=record.slice(0,-surname.length).trim();
+  }
+  const visible=refEndNoteText(first.matched);
+  const before=first.kind.startsWith('initials_first')||first.kind==='fullname';
+  const initials=before?visible.slice(0,visible.lastIndexOf(surname)):visible.slice(surname.length);
+  const v=first.kind==='fullname'?initials.match(/\p{L}/u)?.[0]:initials.replace(/[^\p{L}]/gu,'');
+  // Metadata may use full given names or dotted initials. Preserve every stated initial.
+  const tokens=given.match(/\p{L}+/gu)||[];
+  const r=tokens.map(t=>t.length<=2?t:t[0]).join('');
+  return !!v&&!!r&&(v.startsWith(r)||r.startsWith(v));
+}
+function refEndNoteIdentityMatches(p,record){
+  const title=refEndNoteText(record?.title),year=String(record?.year||'').trim();
+  return !!title&&/^\d{4}$/.test(year)&&refEndNoteText(p.title)===title&&
+    String(p.year||'').replace(/[a-z]$/i,'')===year&&refEndNoteAuthorMatches(p,record.author);
+}
+function refEndNoteTypeAllowed(p,hint,hints){
+  if(!hint||!['thesis/dissertation','book','report','web page','standard'].includes(hint.type)||
+    !refEndNoteIdentityMatches(p,hint))return false;
+  // Existing specific written evidence takes precedence over citation-manager labels.
+  if(p.type!=='journal article'&&p.type!=='uncertain non-journal')return false;
+  if(refNJStrongJournalEvidence(p.raw,detectAuthorRegion(p.raw)).strong)return false;
+  if(p.hasSource&&(p.hasVolume||p.hasIssue||p.hasPages))return false;
+  if(hints?.journalHint&&hints?.volumeHint)return false;
+  return true;
+}
+function refAttachEndNoteTypes(entries,records){
+  if(!records.length)return;
+  const parsed=entries.map(e=>refParseEntry(e.raw,{journalHint:e.journalHint,volumeHint:e.volumeHint}));
+  const matches=records.map(record=>parsed.flatMap((p,i)=>refEndNoteIdentityMatches(p,record)?[i]:[]));
+  entries.forEach((entry,i)=>{
+    const indices=records.flatMap((_,j)=>matches[j].includes(i)?[j]:[]);
+    if(!indices.length||indices.some(j=>matches[j].length!==1))return;
+    const candidates=indices.map(j=>records[j]);
+    const types=new Set(candidates.map(r=>r.type));
+    // Repeated copies of one record are normal; different full author identities are not.
+    const authors=new Set(candidates.map(r=>refEndNoteText(r.author)));
+    if(types.size!==1||authors.size!==1||!candidates[0].type)return;
+    const hint={...candidates[0],source:'EndNote'};
+    if(refEndNoteTypeAllowed(parsed[i],hint,entry))entry.referenceTypeHint=hint;
+  });
+}
+
 /* Recover a bibliography directly from Word XML, including automatic list numbers.
    Word often stores "1.", "2.", ... as numbering metadata rather than paragraph text.
    Flattening the DOCX through HTML/textContent can therefore erase the strongest
@@ -15424,6 +15543,8 @@ async function extractDocxStructuredReferences(buf){
   }
   finish();
   if(entries.length<2) return null;
+
+  refAttachEndNoteTypes(entries,fteEndNoteRecords(body));
 
   const numberedEntries=entries.filter(e=>e.num!=null);
   let numberingNormalized=false;
@@ -17314,6 +17435,9 @@ drop.addEventListener("drop",e=>{e.preventDefault();dropDragDepth=0;setDropReady
 window.addEventListener("dragend",()=>{dropDragDepth=0;setDropReady(false);});
 fileInput.onchange=()=>{ if(fileInput.files.length) setFile(fileInput.files[0]); };
 function setFile(f){
+  LAST_REF_OUT=null;
+  $("ref-report").hidden=true;
+  $("ref-ledger-wrap").innerHTML="";
   const name=(f&&f.name||"").toLowerCase();
   if(!name.endsWith(".docx")){
     currentFile=null; DOCX_NUMERIC_TABLES=[]; DOCX_FTE_BLOCKS=[]; DOCX_STRUCTURAL_PARAGRAPHS=[]; DOCX_ABBR_LIST=new Map(); DOCX_ABBR_LIST_FOUND=false; DOCX_ABBR_LIST_SECTIONS=[]; DOCX_STRUCTURED_REFERENCES=null; fileInput.value=""; chip.style.display="none"; mcSetUploadPromptState(false);
@@ -18340,7 +18464,7 @@ function refType(s){
   if(/\b(technical\s+report|tech\.?\s?rep|working\s+paper|white\s+paper|guidance|bulletin|report\s+no|US\s?EPA|USEPA|\bEPA\b|\bWHO\b|\bOECD\b|\bIPCC\b|\bITRC\b|\bUNEP\b|\bFAO\b|\bIEA\b|\bNIST\b)\b/.test(s) && !/10\.\d{4,9}\//.test(s) && !/\b\d{1,4}\s*\(\d{4}[a-z]?\)\s*\d/.test(s) && !_refJTail) return "report";
   const hasUrl=/\bhttps?:\/\/|\bwww\./i.test(s);
   const placeholder=/\bVolume\s+Pages\b|,\s*Journal\s*[.,]?\s*(\[|https?:|www\.|$)/i.test(s);
-  if((hasUrl||placeholder) && !/\b\d{1,4}\s*\(\d{4}[a-z]?\)/.test(s) && !/10\.\d{4,9}\//.test(s)) return "web page";
+  if((hasUrl||placeholder) && !_refJTail && !/\b\d{1,4}\s*\(\d{4}[a-z]?\)/.test(s) && !/10\.\d{4,9}\//.test(s)) return "web page";
 
   // Strong journal-tail evidence takes precedence over publisher/book keywords. This prevents
   // journal titles such as "Angewandte Chemie International Edition" from being misclassified
@@ -18406,12 +18530,16 @@ function refNJNormalizeLinkMarkup(s){
   });
 }
 function refNJClean(s){ return refNJNormalizeLinkMarkup(s||'').replace(/\u00a0/g,' ').replace(/[\u200B-\u200D\uFEFF]/g,'').replace(/\s+/g,' ').trim(); }
+function refNJKnownOrganisation(s){
+  const name=refNJClean(s).replace(/\./g,'').trim();
+  return !!name&&!/\s+\p{L}$/u.test(name)&&name.match(REF_CORP_AUTHOR_RE)?.[0].trim()===name;
+}
 function refNJStripNumber(s){ return refNJClean(s).replace(/^\s*(?:\[\d{1,4}\]|\(\d{1,4}\)|\d{1,4}[.)])\s*/, '').trim(); }
 function refNJUrl(raw){ const m=(raw||'').match(/\bhttps?:\/\/[^\s<>]+|\bwww\.[^\s<>]+/iu); return m?m[0].replace(/[.,;:)\]]+$/,''):null; }
 function refNJIsDoiUrl(url){ return !!url && /(?:dx\.)?doi\.org\//iu.test(url); }
 function refNJIsbn(raw){ const m=(raw||'').match(/\bISBN(?:-1[03])?\s*:?[\s-]*([0-9X][0-9X\s-]{8,22})/iu); return m?m[1].replace(/\s+/g,'').replace(/-+$/,''):null; }
 function refNJPages(raw){
-  const text=raw||'';
+  const text=refNumericMetadataText(raw);
   const explicit=[...text.matchAll(/\bpp?\.?\s*(\d{1,7}\s*[-–—]\s*\d{1,7})\b/giu)];
   if(explicit.length) return explicit[0][1].replace(/\s+/g,' ');
   for(const m of text.matchAll(/\b(\d{1,7})\s*([-–—])\s*(\d{1,7})\b/gu)){
@@ -18487,7 +18615,7 @@ function refNJCorporateAuthor(raw, authorInfo){
     if(authorInfo.authorType!=="corporate") return authorInfo;
     if(y>1){
       const pre=s.slice(0,y).replace(/[.,;:\s]+$/g,'').trim();
-      if(pre.length>=3 && pre.length<=220 && (REF_NJ_ORG_RE.test(pre) || /^(?:WHO|OECD|IPCC|UNEP|UNESCO|FAO|EPA|USEPA|CPCB|ASTM|ISO|IEC)\b/iu.test(pre))){
+      if(pre.length>=3 && pre.length<=220 && (REF_NJ_ORG_RE.test(pre) || refNJKnownOrganisation(pre) || /^(?:WHO|OECD|IPCC|UNEP|UNESCO|FAO|EPA|USEPA|CPCB|ASTM|ISO|IEC)\b/iu.test(pre))){
         return {hasAuthors:true,authorType:'corporate',authorRegion:pre,firstAuthorSurname:pre,authorCount:1,confidence:0.98};
       }
     }
@@ -18496,7 +18624,7 @@ function refNJCorporateAuthor(raw, authorInfo){
   if(y<=1) return null;
   let cand=s.slice(0,y).replace(/[.,;:\s]+$/g,'').trim();
   if(cand.length<3 || cand.length>220) return null;
-  if(REF_NJ_ORG_RE.test(cand) || /^(?:WHO|OECD|IPCC|UNEP|UNESCO|FAO|EPA|USEPA|CPCB|ASTM|ISO|IEC)\b/iu.test(cand)){
+  if(REF_NJ_ORG_RE.test(cand) || refNJKnownOrganisation(cand) || /^(?:WHO|OECD|IPCC|UNEP|UNESCO|FAO|EPA|USEPA|CPCB|ASTM|ISO|IEC)\b/iu.test(cand)){
     return {hasAuthors:true,authorType:'corporate',authorRegion:cand,firstAuthorSurname:cand,authorCount:1,confidence:0.94};
   }
   // Named group/corporate authors such as "Metcalf & Eddy" or "R Core Team"
@@ -18551,12 +18679,14 @@ function refNJFirstSentenceTitle(rest){
   const cand=(m?m[1]:clean).replace(/^[“"‘']|[”"’']$/g,'').replace(/[.,;:\s]+$/g,'').trim();
   return refPlausibleTitle(cand)?cand:null;
 }
-function refNJInstitutionFromTail(raw, corporateAuthor){
-  const clean=refStripDoiUrl(refNJClean(raw));
-  const segs=clean.split(/\s*[.;]\s+|\s*,\s*/).map(x=>x.trim()).filter(Boolean);
+function refNJInstitutionFromTail(raw, corporateAuthor, title=null){
+  let clean=refStripDoiUrl(refNJClean(raw));
+  const titleText=refNJClean(title),titleStart=titleText?clean.indexOf(titleText):-1;
+  if(titleStart>=0)clean=clean.slice(titleStart+titleText.length);
+  const segs=clean.split(/(?<!\b[A-Z])\.\s+|;\s+|,\s*/u).map(x=>x.trim()).filter(Boolean);
   for(let i=segs.length-1;i>=0;i--){
     const c=segs[i].replace(/^(?:[A-Z][\p{L} .'-]{1,50}:\s*)/u,'').trim();
-    if(c.length<=180 && REF_NJ_ORG_RE.test(c) && !/^(?:19|20)\d{2}/.test(c)) return c.replace(/[.,;:]+$/g,'').trim();
+    if(c.length<=180 && (REF_NJ_ORG_RE.test(c)||refNJKnownOrganisation(c)) && !/^(?:19|20)\d{2}/.test(c)) return c.replace(/[.,;:]+$/g,'').trim();
   }
   return corporateAuthor||null;
 }
@@ -18769,6 +18899,7 @@ function refParseNonJournalEntry(raw, detection, baseAuthorInfo){
   const type=detection.type;
   let ai=baseAuthorInfo||detectAuthorRegion(rawTrim);
   let corp=refNJCorporateAuthor(rawTrim,ai);
+  if(corp?.authorType!=='corporate')corp=null;
   if(corp && (!ai?.hasAuthors || ai.authorType==='corporate')) ai=corp;
   if(type==='web page' && !ai?.hasAuthors){
     const ent=refNJLeadingEntityBeforeYear(rawTrim);
@@ -18831,7 +18962,7 @@ function refParseNonJournalEntry(raw, detection, baseAuthorInfo){
     const institutionalPublisher=!publisher?(editorTailImprint||refNJInstitutionalImprint(rawTrim,corporateAuthor)):null;
     let t=stripTail(rest);
     let manualOrg=null;
-    if(type==='manual' && !publisher) manualOrg=refNJInstitutionFromTail(rawTrim,corporateAuthor);
+    if(type==='manual' && !publisher) manualOrg=refNJInstitutionFromTail(rawTrim,corporateAuthor,title);
     const tailSource=publisher||institutionalPublisher||manualOrg;
     if(tailSource){ const idx=t.toLocaleLowerCase().lastIndexOf(tailSource.toLocaleLowerCase()); if(idx>0) t=t.slice(0,idx); }
     t=t.replace(/\bISBN(?:-1[03])?\s*:?\s*[\s-]*[0-9X][0-9X\s-]{8,22}/giu,'');
@@ -18851,7 +18982,7 @@ function refParseNonJournalEntry(raw, detection, baseAuthorInfo){
   } else if(['report','online report','government report','institutional publication','working paper','white paper','policy document','guideline'].includes(type)){
     reportNumber=refNJReportNumber(rawTrim);
     title=refNJFirstSentenceTitle(rest);
-    issuingOrganisation=refNJInstitutionFromTail(rawTrim,corporateAuthor);
+    issuingOrganisation=refNJInstitutionFromTail(rawTrim,corporateAuthor,title);
     sourceRegion=issuingOrganisation;
   } else if(type==='web page'){
     title=refNJFirstSentenceTitle(rest);
@@ -18867,13 +18998,15 @@ function refParseNonJournalEntry(raw, detection, baseAuthorInfo){
   } else if(type==='thesis/dissertation'){
     const tm=rest.match(/^(.+?)(?=\.\s*(?:Ph\.?D\.?|doctoral|doctorate|master'?s|M\.?Tech\.?|M\.?Sc\.?)\s+(?:thesis|dissertation)|[,.;:]\s*(?:Ph\.?D\.?|doctoral|doctorate|master'?s|M\.?Tech\.?|M\.?Sc\.?)\s+(?:thesis|dissertation)|\b(?:thesis|dissertation)\b)/iu);
     title=(tm?tm[1]:refNJFirstSentenceTitle(rest));
-    university=refNJUniversity(rawTrim); sourceRegion=university;
+    const titleStart=title?rawTrim.indexOf(title):-1;
+    const institutionText=titleStart>=0?rawTrim.slice(titleStart+title.length):rawTrim;
+    university=refNJUniversity(institutionText); sourceRegion=university;
   } else if(type==='standard'){
     standardNumber=refNJStandardNumber(rawTrim);
     let t=rawTrim;
     if(standardNumber) t=t.replace(standardNumber,'').replace(/^[.\s:;-]+/,'');
-    title=refNJFirstSentenceTitle(t);
-    issuingOrganisation=refNJInstitutionFromTail(rawTrim,corporateAuthor)||(/\bISO\b/.test(standardNumber||'')?'International Organization for Standardization':null);
+    title=refNJFirstSentenceTitle(standardNumber?t:rest);
+    issuingOrganisation=refNJInstitutionFromTail(rawTrim,corporateAuthor,title)||(/\bISO\b/.test(standardNumber||'')?'International Organization for Standardization':null);
     sourceRegion=issuingOrganisation;
   } else if(type==='dataset'){
     title=refNJFirstSentenceTitle(rest)?.replace(/\s*\[\s*Data\s*set\s*\]\s*$/iu,'')||null;
@@ -18882,7 +19015,7 @@ function refParseNonJournalEntry(raw, detection, baseAuthorInfo){
   } else if(type==='software'){
     title=refNJFirstSentenceTitle(rest)?.replace(/\s*\[\s*Software\s*\]\s*$/iu,'')||null;
     version=refNJVersion(rawTrim);
-    const rm=rawTrim.match(/\b(R\s+Foundation\s+for\s+Statistical\s+Computing|GitHub|CRAN|PyPI|[^.;,]{2,100}\b(?:Foundation|Repository))\b/iu); repository=rm?rm[1]:null; sourceRegion=repository||refNJInstitutionFromTail(rawTrim,corporateAuthor);
+    const rm=rawTrim.match(/\b(R\s+Foundation\s+for\s+Statistical\s+Computing|GitHub|CRAN|PyPI|[^.;,]{2,100}\b(?:Foundation|Repository))\b/iu); repository=rm?rm[1]:null; sourceRegion=repository||refNJInstitutionFromTail(rawTrim,corporateAuthor,title);
   } else if(type==='preprint'){
     title=refNJFirstSentenceTitle(rest);
     const pm=rawTrim.match(/\b(arXiv|bioRxiv|medRxiv|ChemRxiv|SSRN|Research\s+Square|preprints?\.org)\b/iu); sourceRegion=pm?pm[1]:null;
@@ -18895,16 +19028,16 @@ function refParseNonJournalEntry(raw, detection, baseAuthorInfo){
     sourceRegion=segs.length>=2?segs[segs.length-1].replace(/[.,;:]+$/g,'').trim():refNJWebsite(rawTrim,corporateAuthor,url);
   } else if(type==='legislation/regulation'){
     title=refNJFirstSentenceTitle(rest)||rawTrim.replace(/[.;\s]+$/g,'');
-    issuingOrganisation=refNJInstitutionFromTail(rawTrim,corporateAuthor); sourceRegion=issuingOrganisation;
+    issuingOrganisation=refNJInstitutionFromTail(rawTrim,corporateAuthor,title); sourceRegion=issuingOrganisation;
   } else {
-    title=refNJFirstSentenceTitle(rest); sourceRegion=refNJInstitutionFromTail(rawTrim,corporateAuthor)||publisherGuess;
+    title=refNJFirstSentenceTitle(rest); sourceRegion=refNJInstitutionFromTail(rawTrim,corporateAuthor,title)||publisherGuess;
   }
 
   // Independent fallback recovery. Never erase confident fields when another field fails.
   if(!title) title=refNJFirstSentenceTitle(rest);
   if(!publisher) publisher=publisherGuess;
   if(!sourceRegion && ['book','edited book','manual'].includes(type)) sourceRegion=publisher;
-  if(!sourceRegion && type==='manual') sourceRegion=refNJInstitutionFromTail(rawTrim,corporateAuthor);
+  if(!sourceRegion && type==='manual') sourceRegion=refNJInstitutionFromTail(rawTrim,corporateAuthor,title);
   if(!sourceRegion && ['report','online report','government report','institutional publication','working paper','white paper','policy document','guideline','web page'].includes(type)) sourceRegion=issuingOrganisation||corporateAuthor;
 
   const req=REF_NJ_REQUIREMENTS[type]||REF_NJ_REQUIREMENTS['uncertain non-journal'];
@@ -18922,7 +19055,7 @@ function refParseNonJournalEntry(raw, detection, baseAuthorInfo){
 }
 
 function refApplyNonJournalStates(p,doiConvention,issues,i,label){
-  const req=p.requirements||REF_NJ_REQUIREMENTS[p.type]||REF_NJ_REQUIREMENTS['uncertain non-journal'];
+  const req=REF_NJ_REQUIREMENTS[p.type]||p.requirements||REF_NJ_REQUIREMENTS['uncertain non-journal'];
   p._authorState=refNJState(p.hasAuthors,req.author);
   p._yearState=refNJState(!!p.year,req.year);
   p._titleState=refNJState(p.hasTitle,req.title);
@@ -18930,7 +19063,7 @@ function refApplyNonJournalStates(p,doiConvention,issues,i,label){
   p._pagesState=refNJState(p.hasPages,req.pages);
   p._volState=refNJState(p.hasVolume,req.vol);
   p._doiState=p.doi?'yes':refNJState(false,req.doi);
-  p._identifierState=(p.doi||p.url||p.isbn||p.standardNumber||p.reportNumber||p.patentNumber)?'yes':(req.doi==='na'?'na':'optional');
+  p._identifierState=(p.doi||p.url)?'yes':(req.doi==='na'?'na':'optional');
 
   const missing=[];
   const addMissing=(field,state,msg)=>{ if(state==='no'){ missing.push(field); issues.push({level:'warn',idx:i,label,msg}); } };
@@ -18956,6 +19089,8 @@ function refApplyNonJournalStates(p,doiConvention,issues,i,label){
     issues.push({level:'info',idx:i,label,msg}); missing.push('pages');
   }
 }
+
+function refIdentifierState(p){ return p.doi||p.url?'yes':p.nonJournal?(p._identifierState||p._doiState):p._doiState; }
 
 function refNormalizeDoiCandidate(raw){
   let d=String(raw||"")
@@ -19072,6 +19207,17 @@ function refProtectDoiUrl(raw){
   return t;
 }
 
+// Identifiers and complete numeric publication dates cannot supply bibliographic metadata.
+// Blank spans rather than changing the reference text or its character offsets.
+function refNumericMetadataText(raw){
+  return refProtectDoiUrl(raw)
+    .replace(/\bISBN(?:-1[03])?\s*:?\s*(?:97[89][\s-]*)?(?:\d[\s-]*){9}[\dX]\b/giu,m=>" ".repeat(m.length))
+    .replace(/\(\s*(?:(?:19|20)\d{2}[a-z]?\s*(?:,|[-/])\s*(\d{1,2})\s*[-/]\s*(\d{1,2})|(\d{1,2})\s*[-/]\s*(\d{1,2})\s*[-/]\s*(?:19|20)\d{2})\s*\)/giu,(m,a,b,c,d)=>{
+      const x=+(a||c),y=+(b||d);
+      return x>=1&&y>=1&&x<=31&&y<=31&&Math.min(x,y)<=12?" ".repeat(m.length):m;
+    });
+}
+
 /* Build note: DOI-first bibliographic parsing hardened 2026-08-15. DOI forms
    with or without doi:, doi.org, http(s)://doi.org, or dx.doi.org prefixes are
    detected before numeric metadata parsing. DOI and URL spans are protected so
@@ -19094,7 +19240,7 @@ function refProtectDoiUrl(raw){
    still recognised normally. This prevents tails such as
    "Nanoscale Advances 2026." from becoming a false volume 2026. */
 function refVolumeIssueCandidates(raw, sourceRegion, year){
-  const t=refStripDoiUrl(raw||"").replace(/\u00a0/g," ").replace(/\s+/g," ").trim();
+  const t=refNumericMetadataText(raw).replace(/\u00a0/g," ").replace(/\s+/g," ").trim();
   const pubYear=year?String(year).replace(/[a-z]$/i,""):null;
   const out=[];
   const seen=new Set();
@@ -19161,7 +19307,7 @@ function refHasIssue(raw, year, sourceRegion){
   const pubYear=year?String(year).replace(/[a-z]$/i,""):null;
   const cands=refVolumeIssueCandidates(raw,sourceRegion,year);
   if(cands.some(c=>c.issue && !(pubYear && c.issue===pubYear))) return true;
-  const t=refStripDoiUrl(raw||"");
+  const t=refNumericMetadataText(raw);
   return /\b(?:no\.?|iss(?:ue)?\.?)\s*(?:[A-Za-z]?\d+[A-Za-z]?)(?:\s*[-–—/,]\s*[A-Za-z]?\d+[A-Za-z]?)*\b/i.test(t);
 }
 
@@ -19169,7 +19315,7 @@ function refHasVolume(raw, year, sourceRegion){
   // Volume detection must never inspect DOI/URL numeric content. A DOI such as
   // 10.1007/... immediately following a journal name can otherwise be misread
   // as "volume 10" by source-adjacent fallback logic.
-  const t=refStripDoiUrl(raw||"").replace(/\u00a0/g," ").replace(/\s+/g," ").trim();
+  const t=refNumericMetadataText(raw).replace(/\u00a0/g," ").replace(/\s+/g," ").trim();
 
   // General structural recognition first, including combined issue ranges.
   if(refVolumeIssueCandidates(raw,sourceRegion,year).length) return true;
@@ -20271,13 +20417,13 @@ function refSeparateTerminalVolumeFromSource(source,raw,year){
   return {source:base,volume,sourceDbMatch:db.matched?db.type:null};
 }
 
-function refParseEntry(raw){
+function refParseEntry(raw,confirmedJournal=false){
   const rawTrim=raw.trim();
 
   // Additive routing only: intercept entries with strong positive non-journal evidence.
   // All other entries continue through the existing journal parser unchanged.
   const _routingAuthorInfo=detectAuthorRegion(rawTrim);
-  const _nonJournalDetection=refDetectNonJournalType(rawTrim,_routingAuthorInfo);
+  const _nonJournalDetection=confirmedJournal?null:refDetectNonJournalType(rawTrim,_routingAuthorInfo);
   if(_nonJournalDetection && _nonJournalDetection.confidence>=0.68){
     return refParseNonJournalEntry(raw,_nonJournalDetection,_routingAuthorInfo);
   }
@@ -20289,7 +20435,7 @@ function refParseEntry(raw){
   const hasCorporateAuthor=authorInfo.authorType==="corporate";
   const firstAuthor=authorInfo.firstAuthorSurname||null;
 
-  const type=refType(raw);
+  const type=confirmedJournal?'journal article':refType(raw);
   const compactSource=type==="journal article"?refCompactTitlelessSource(raw,authorInfo):null;
   const structured=refParseStructuredFields(raw,authorInfo,type);
   const bookFields=type==="book"?detectBookFields(raw,authorInfo):null;
@@ -20446,15 +20592,15 @@ function refParseEntry(raw){
   // Numeric parentheses after a volume normally indicate an issue, e.g. 50(4).
   // However, in VOLUME (YEAR) styles such as 482 (2021): 228949, the
   // parenthesized value is the publication year and must not be counted as issue.
-  const cleanNoDoi=refStripDoiUrl(raw);
+  const cleanNoDoi=refNumericMetadataText(raw);
   const pubYear=year?String(year).replace(/[a-z]$/i,""):null;
   const numericParenIssue=[...cleanNoDoi.matchAll(/\b(\d{1,6})\s*\(\s*(\d{1,6})\s*\)/g)]
     .some(m=>!(pubYear && m[2]===pubYear));
 
   const hasIssue=!!structured?.issue ||
     numericParenIssue ||
-    /\bno\.?\s*\d+/i.test(raw) ||
-    /\biss(?:ue)?\.?\s*\d+/i.test(raw);
+    /\bno\.?\s*\d+/i.test(cleanNoDoi) ||
+    /\biss(?:ue)?\.?\s*\d+/i.test(cleanNoDoi);
 
   // Pages/Art. means a publication locator, not necessarily a range.
   // A single page, article number, e-location, or page range all qualify.
@@ -20462,7 +20608,7 @@ function refParseEntry(raw){
   let hasArticleNo=structured?.locatorKind==="article";
 
   if(!hasPages){
-    const clean=refStripDoiUrl(raw);
+    const clean=refNumericMetadataText(raw);
     const pageRange=/\b(?:pp?\.?\s*)?\d{1,8}\s*[-–—]\s*\d{1,8}\b/i.test(clean);
     const explicitArticle=/\b(?:article|art\.?|e-location|elocation)\s*(?:no\.?|number|id)?\s*:?\s*[eE]?\d{1,10}\b/i.test(clean);
     const eLocator=/\b[eE]\d{4,10}\b/.test(clean);
@@ -20967,6 +21113,7 @@ function refFEAddCoreSpans(reg,legacy){
   }
 }
 function refFEInferType(raw,legacy){
+  if(refConfirmedSourceType(legacy?.sourceTypeChoice))return {type:legacy.sourceTypeChoice,score:100,confidence:1,evidence:['Confirmed by you'],candidates:[]};
   const s=String(raw||"");
   const scores=new Map();
   const add=(type,score,evidence)=>{
@@ -22761,7 +22908,16 @@ function refFEFinalReconcile(parsed){
    receives the same familiar parsed object, enriched and reconciled. */
 const MC_REF_PARSE_ENTRY_BEFORE_FIELD_ENGINE=refParseEntry;
 refParseEntry=function(raw, hints){
-  const parsed=MC_REF_PARSE_ENTRY_BEFORE_FIELD_ENGINE(raw);
+  const choice=refConfirmedSourceType(hints?.sourceTypeChoice);
+  let parsed=choice&&choice!=='journal article'
+    ?refParseNonJournalEntry(raw,{type:choice,confidence:1,reasons:['Confirmed by you']},detectAuthorRegion(raw))
+    :MC_REF_PARSE_ENTRY_BEFORE_FIELD_ENGINE(raw,choice==='journal article');
+  if(choice)parsed.sourceTypeChoice=choice;
+  const hint=hints?.referenceTypeHint;
+  if(!choice&&refEndNoteTypeAllowed(parsed,hint,hints)){
+    parsed=refParseNonJournalEntry(raw,{type:hint.type,confidence:1,reasons:['Matching embedded EndNote reference type']},detectAuthorRegion(raw));
+    parsed.referenceTypeHint=hint;
+  }
   const reconciled=refFEFinalReconcile(parsed);
   return refApplyFormattingHints(reconciled, raw, hints);
 };
@@ -22833,6 +22989,7 @@ function refJournalFromTailWithDb(beforeVol){
 }
 function refApplyFormattingHints(parsed, raw, hints){
   if(!parsed) return parsed;
+  if(refConfirmedSourceType(parsed.sourceTypeChoice)&&parsed.sourceTypeChoice!=='journal article')return parsed;
   const rawS=String(raw||"");
   const tail=refTailParseRTL(rawS);
   // An italic journal plus a bold volume is the definitive journal-article
@@ -23157,11 +23314,11 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
     const allNumbered=presegmentedEntries.every(e=>e.num!=null);
     style=allNumbered?"numbered":"author–year";
     marker=allNumbered?"number":"none";
-    entries=presegmentedEntries.map(e=>({num:e.num!=null?e.num:null,raw:String(e.raw||"").trim(),journalHint:e.journalHint||null,volumeHint:e.volumeHint||null}));
+    entries=presegmentedEntries.map(e=>({num:e.num!=null?e.num:null,raw:String(e.raw||"").trim(),journalHint:e.journalHint||null,volumeHint:e.volumeHint||null,...(e.referenceTypeHint?{referenceTypeHint:e.referenceTypeHint}:{})}));
   }else{
     ({style,marker,entries}=refSplitList(refText));
   }
-  const parsed=entries.map(e=>({...e, ...refParseEntry(e.raw,{journalHint:e.journalHint||null,volumeHint:e.volumeHint||null})}));
+  const parsed=entries.map(e=>({...e, ...refParseEntry(e.raw,{journalHint:e.journalHint||null,volumeHint:e.volumeHint||null,referenceTypeHint:e.referenceTypeHint})}));
   // Secondary bibliography-level evidence. This never replaces strong local
   // field labels; it only helps interpret repeated single zero-padded locators
   // from the same source/container.
@@ -23478,6 +23635,116 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
   return {style, marker, count:parsed.length, parsed, issues, doiCoverage, doiConvention, titleConvention, cross, hadBody:!!bodyText, segLowConfidence};
 }
 let LAST_REF_OUT=null;
+function refConfirmedSourceType(value){
+  return typeof value==='string'&&(value==='journal article'||Object.hasOwn(REF_NJ_REQUIREMENTS,value)&&!['uncertain non-journal','other non-journal','conference proceedings','newspaper article','magazine article'].includes(value))?value:null;
+}
+function refSourceTypeUncertain(p){
+  if(refConfirmedSourceType(p.sourceTypeChoice))return false;
+  if(p.sourceTypeChoice==='?'||['uncertain non-journal','other non-journal'].includes(p.type))return true;
+  return p.type==='journal article'&&!p.hasSource&&!p.hasVolume&&!p.hasPages&&!p.compactSource&&!p.rscCompact&&
+    !refNJStrongJournalEvidence(p.raw,detectAuthorRegion(p.raw)).strong;
+}
+function refSourceTypeCanConfirm(p){
+  return !!p&&(!!p.sourceTypeChoice||!!p.referenceTypeHint||refSourceTypeUncertain(p));
+}
+function refSourceTypeStatus(p){
+  if(refConfirmedSourceType(p.sourceTypeChoice))return `${refNJTypeLabel(p.type)} — confirmed by you`;
+  if(refSourceTypeUncertain(p))return 'Source type needs review';
+  return p.referenceTypeHint?`${refNJTypeLabel(p.type)} — suggested by embedded reference record`:'';
+}
+function refTypeDependentIssue(issue){
+  return /^REFERENCE_STYLE_(?:EXPECTED|REVIEW)_(?:VOLUME|ISSUE|LOCATOR|DOI)$/.test(issue.code||'')||
+    /^(?:No journal or source name detected\.|(?:Issuing organisation|Degree-granting institution|Repository|Website or responsible organisation|Source or container|Book\/encyclopedia title or container) not detected\.|No page range or article number found\.|No volume or issue number found\.|No DOI, though most references|(?:Volume information|Issue information|DOI|Page range or article number|Chapter\/entry page range|Conference-paper page range|Publication location\/pages) not detected\.|Identified as a |Reference type is uncertain\.)/.test(issue.msg||'');
+}
+function refCheckWithSourceTypes(refs,body,entries,choices={}){
+  const res=refCheck(refs,body,entries);
+  let confirmed=false;
+  for(const [i,original] of res.parsed.entries()){
+    const decision=choices[i];
+    if(!decision||decision.raw!==original.raw||!refSourceTypeCanConfirm(original))continue;
+    if(decision.type==='?'){original.sourceTypeChoice='?';continue;}
+    const type=refConfirmedSourceType(decision.type);
+    if(!type)continue;
+    confirmed=true;
+    const p=type===original.type?{...original}:{...original,...refParseEntry(original.raw,{sourceTypeChoice:type,journalHint:original.journalHint,volumeHint:original.volumeHint})};
+    p.sourceTypeChoice=type;p.type=type;p.nonJournal=type!=='journal article';
+    p.requirements=p.nonJournal?REF_NJ_REQUIREMENTS[type]:null;
+    // A type selection changes requirements, not information written in the citation.
+    // Keep late author repairs when the type-specific parser cannot recover them.
+    if(!p.hasAuthors&&original.hasAuthors)for(const key of ['hasAuthors','hasCorporateAuthor','authorType','authorRegion','authorCount','authorConfidence','firstAuthor'])p[key]=original[key];
+    if(!p.year&&original.year)p.year=original.year;
+    if(!p.hasTitle&&original.hasTitle&&![p.sourceRegion,p.authorRegion].some(value=>value&&refEndNoteText(value)===refEndNoteText(original.title))){p.title=original.title;p.hasTitle=true;}
+    res.parsed[i]=p;
+    res.issues=res.issues.filter(x=>x.idx!==i||!refTypeDependentIssue(x));
+    const issues=[],label=p.num!=null?`[${p.num}]`:`#${i+1}`;
+    if(p.nonJournal)refApplyNonJournalStates(p,res.doiConvention,issues,i,label);
+    else{
+      p._authorState=p.hasAuthors?'yes':'no';p._yearState=p.year?'yes':'no';
+      p._titleState=p.hasTitle?'yes':res.titleConvention==='omitted'?'na':'no';
+      p._sourceState=p.hasSource?'yes':'no';
+      if(!p.hasSource)issues.push({level:'warn',idx:i,label,msg:'No journal or source name detected.'});
+    }
+    for(const issue of issues)if(!res.issues.some(x=>x.idx===i&&x.msg===issue.msg))res.issues.push(issue);
+  }
+  if(confirmed){res.titleConvention=inferTitleConvention(res.parsed);res.doiConvention=inferDoiConvention(res.parsed);}
+  return res;
+}
+function refApplySourceTypeReview(res){
+  res.issues=res.issues.filter(x=>x.code!=='REFERENCE_SOURCE_TYPE_REVIEW');
+  res.parsed.forEach((p,i)=>{
+    if(!refSourceTypeUncertain(p))return;
+    p._authorState=p.hasAuthors?'yes':'no';p._yearState=p.year?'yes':'no';
+    p._titleState=p.hasTitle?'yes':p.rscCompact?'na':'no';
+    for(const [field,found] of [['_sourceState',p.hasSource],['_pagesState',p.hasPages],['_volState',p.hasVolume],['_issueState',p.hasIssue],['_doiState',p.doi],['_identifierState',p.doi||p.url]])p[field]=found?'yes':'review';
+    const label=p.num!=null?`[${p.num}]`:`#${i+1}`;
+    res.issues=res.issues.map(x=>x.idx===i&&refTypeDependentIssue(x)?{...x,level:'info',provisional:true}:x);
+    res.issues.push({level:'info',idx:i,label,code:'REFERENCE_SOURCE_TYPE_REVIEW',msg:'Source type needs review. Check the original publication and confirm its type. Missing source, pages, volume, issue and link requirements remain provisional.'});
+  });
+  return res;
+}
+function refSourceTypeControl(p,i){
+  if(!refSourceTypeCanConfirm(p))return '';
+  const label=p.num!=null?`[${p.num}]`:`#${i+1}`;
+  const types=['journal article',...Object.keys(REF_NJ_REQUIREMENTS).filter(refConfirmedSourceType)];
+  const options=[['','Automatic assessment'],['?','Not sure'],...types.map(type=>[type,refNJTypeLabel(type)])]
+    .map(([value,text])=>`<option value="${escapeHtml(value)}"${(p.sourceTypeChoice||'')===value?' selected':''}>${escapeHtml(text)}</option>`).join('');
+  const help=refSourceTypeUncertain(p)?'Check the original publication. Select its type to update the checks; choose Not sure if you cannot confirm it.':'You can confirm or correct this type after checking the original publication.';
+  return `<div class="ref-source-type-status${refSourceTypeUncertain(p)?' ref-source-type-review':''}">${escapeHtml(refSourceTypeStatus(p))}</div><div class="ref-source-type-controls"><label for="ref-source-type-${i}">Confirm source type</label><select id="ref-source-type-${i}" data-ref-source-type data-ref-index="${i}" aria-label="Source type for reference ${escapeHtml(label)}" aria-describedby="ref-source-type-help-${i}">${options}</select><small id="ref-source-type-help-${i}">${help}</small></div>`;
+}
+function refApplySelectedStyle(res,input){
+  if(input.cslTarget?.template){
+    const target=input.cslTarget;
+    const findings=typeof window.mcCslApplyTemplateChecks==='function'?window.mcCslApplyTemplateChecks(res,target):0;
+    res.cslStyleApplied={title:target.meta?.title||target.profile?.title||'Selected CSL style',slug:target.meta?.slug||'',citationFormat:target.meta?.citation_format||target.profile?.citationFormat||'',findings,supportedChecks:target.template.supportedChecks||[]};
+  }else if(input.styleEx){applyTemplateChecks(res,inferTemplate(input.styleEx));res.manualStyleExampleApplied=true;}
+}
+function refSetSourceType(index,value){
+  const previous=LAST_REF_OUT,p=previous?.res?.parsed?.[index];
+  if(!Number.isInteger(index)||!refSourceTypeCanConfirm(p)||!['','?'].includes(value)&&!refConfirmedSourceType(value))return false;
+  const input=previous.referenceInput||{refs:previous.res.parsed.map(x=>x.raw).join('\n'),body:'',entries:previous.res.parsed.map(x=>({num:x.num,raw:x.raw,journalHint:x.journalHint,volumeHint:x.volumeHint,referenceTypeHint:x.referenceTypeHint})),choices:{},file:currentFile};
+  if(input.file!==currentFile||$("run")?.disabled)return false;
+  const choices={...input.choices};
+  if(value)choices[index]={raw:p.raw,type:value};else delete choices[index];
+  try{
+    const res=refCheckWithSourceTypes(input.refs,input.body,input.entries,choices);
+    res.detect=previous.res.detect;
+    if(previous.res.cslStylePending)res.cslStylePending=previous.res.cslStylePending;
+    refApplySelectedStyle(res,input);
+    LAST_REF_OUT={res,cross:previous.cross,referenceInput:{...input,choices}};
+    renderRefReport(res,previous.cross);
+    renderManuscriptOverview();
+    $("ref-source-type-status").textContent=`Reference ${p.num!=null?p.num:index+1} updated. ${refSourceTypeStatus(res.parsed[index])||'Automatic assessment restored.'}`;
+    $("ref-source-type-"+index)?.focus();
+    return true;
+  }catch(error){
+    LAST_REF_OUT=previous;
+    console.error('Reference type update failed:',error);
+    try{renderRefReport(previous.res,previous.cross);}catch(renderError){console.error('Previous reference report could not be restored:',renderError);}
+    const notice=$("ref-source-type-status");
+    if(notice)notice.textContent='The reference could not be updated. Your previous result has been kept. Please try again.';
+    return false;
+  }
+}
 function renderRefReport(res, cross){
   $("ref-report-sub").textContent =
     `Detected style: ${res.style} · ${res.count} references`+
@@ -23489,6 +23756,11 @@ function renderRefReport(res, cross){
   // The References tab intentionally shows only the ledger. Validation findings remain internal
   // for field-state calculation but are not rendered as warning/suggestion sections.
   $("ref-ledger-wrap").innerHTML=refLedger(res.parsed,res.issues);
+  $("ref-ledger-wrap").insertAdjacentHTML('beforeend','<p id="ref-source-type-status" class="ref-source-type-controls" role="status" aria-live="polite"></p>');
+  $("ref-ledger-wrap").onchange=event=>{
+    const select=event.target.closest?.('select[data-ref-source-type]');
+    if(select&&$("ref-ledger-wrap").contains(select))refSetSourceType(Number(select.dataset.refIndex),select.value);
+  };
   bindInfoHelp("ref-report-info","ref-report-help");
   $("ref-report").hidden=false;
   buildReportSubnav("ref-report","ref-subnav");
@@ -23525,7 +23797,7 @@ function refLedger(parsed){
       :"";
     return `<tr class="${p.referenceDelimiterReview?"ref-row-format-review":""}"><td class="t-abbr">${label}</td><td class="t-long">${tag}${snip}${delimiterReview}</td>`+
       `<td>${cell(p._authorState)}</td><td>${cell(p._yearState)}</td><td>${cell(p._titleState)}</td>`+
-      `<td>${cell(p._sourceState)}</td><td>${cell(p._pagesState)}</td><td>${cell(p._volState)}</td><td>${cell(p.nonJournal?(p._identifierState||p._doiState):p._doiState)}</td></tr>`;
+      `<td>${cell(p._sourceState)}</td><td>${cell(p._pagesState)}</td><td>${cell(p._volState)}</td><td>${cell(refIdentifierState(p))}</td></tr>`;
   }).join("");
   const cols=`<colgroup><col style="width:5%"><col style="width:34.1%"><col style="width:8.7%"><col style="width:8.7%"><col style="width:8.7%"><col style="width:8.7%"><col style="width:8.7%"><col style="width:8.7%"><col style="width:8.7%"></colgroup>`;
   const head=`<thead><tr><th>Ref</th><th>Entry / type</th><th>Author</th><th>Year</th><th>Title</th><th>Source</th><th>Pages</th><th>Vol.</th><th>DOI / Link</th></tr></thead>`;
@@ -23548,7 +23820,7 @@ function refReportText(res, cross){
   res.parsed.forEach((p,i)=>{
     const label=p.num!=null?`[${p.num}]`:`#${i+1}`;
     const entry=(p.type!=="journal article"?`[${p.nonJournal?refNJTypeLabel(p.type):p.type}] `:"")+p.raw.replace(/\s+/g," ").trim();
-    L.push(`${label} | ${entry} | ${state(p._authorState)} | ${state(p._yearState)} | ${state(p._titleState)} | ${state(p._sourceState)} | ${state(p._pagesState)} | ${state(p._volState)} | ${state(p.nonJournal?(p._identifierState||p._doiState):p._doiState)}`);
+    L.push(`${label} | ${entry} | ${state(p._authorState)} | ${state(p._yearState)} | ${state(p._titleState)} | ${state(p._sourceState)} | ${state(p._pagesState)} | ${state(p._volState)} | ${state(refIdentifierState(p))}`);
     if(p.referenceDelimiterReview)
       L.push(`  Formatting review: ${p.referenceDelimiterReview.recommendation}`);
   });
@@ -24184,7 +24456,8 @@ $("run").onclick=async()=>{
     abbrRestoreStructuredDeclarations();
     if(!currentFile){ status("Upload a Microsoft Word .docx manuscript first.",true); btn.disabled=false; return; }
     status("Reading Word file…");
-    text=await readFile(currentFile);
+    const checkedFile=currentFile;
+    text=await readFile(checkedFile);
     if(!text || text.trim().length<20){ status("The .docx file did not contain enough readable manuscript text.",true); btn.disabled=false; return; }
 
     // Fallback for paragraph-based lists that survive Word-to-text conversion.
@@ -24240,7 +24513,10 @@ $("run").onclick=async()=>{
             presegmentedForCheck=DOCX_STRUCTURED_REFERENCES.entries||null;
           }
         }
-        const refResult=refCheck(refsForCheck, bodyForCheck, presegmentedForCheck);
+        const previousInput=LAST_REF_OUT?.referenceInput;
+        const choices=previousInput?.file===checkedFile&&previousInput.refs===refsForCheck&&previousInput.body===bodyForCheck?previousInput.choices:{};
+        const referenceInput={refs:refsForCheck,body:bodyForCheck,entries:presegmentedForCheck,choices,file:checkedFile};
+        const refResult=refCheckWithSourceTypes(refsForCheck, bodyForCheck, presegmentedForCheck,choices);
         refResult.detect={heading:detectHeading,method:detectMethod,confidence:detectConfidence,citeStyle:detectedCiteStyle};
         if(!refResult.count){ showRefNote("A references section was found, but no reference entries could be parsed from it."); LAST_REF_OUT=null; }
         else {
@@ -24252,26 +24528,13 @@ $("run").onclick=async()=>{
             console.warn("CSL target style could not be loaded:",cslErr);
           }
 
-          if(cslTarget?.template){
-            const cslFindingCount=typeof window.mcCslApplyTemplateChecks==="function"
-              ? window.mcCslApplyTemplateChecks(refResult,cslTarget)
-              : 0;
-            refResult.cslStyleApplied={
-              title:cslTarget.meta?.title||cslTarget.profile?.title||"Selected CSL style",
-              slug:cslTarget.meta?.slug||"",
-              citationFormat:cslTarget.meta?.citation_format||cslTarget.profile?.citationFormat||"",
-              findings:cslFindingCount,
-              supportedChecks:cslTarget.template.supportedChecks||[]
-            };
-          }else{
+          referenceInput.cslTarget=cslTarget;referenceInput.styleEx=styleEx;
+          refApplySelectedStyle(refResult,referenceInput);
+          if(!cslTarget?.template){
             const selectedMeta=!styleEx && typeof window.mcCslGetSelectedMeta==="function"?window.mcCslGetSelectedMeta():null;
             if(selectedMeta) refResult.cslStylePending={title:selectedMeta.title,slug:selectedMeta.slug};
-            if(styleEx){
-              applyTemplateChecks(refResult, inferTemplate(styleEx));
-              refResult.manualStyleExampleApplied=true;
-            }
           }
-          LAST_REF_OUT={res:refResult,cross:null}; renderRefReport(refResult,null);
+          LAST_REF_OUT={res:refResult,cross:null,referenceInput}; renderRefReport(refResult,null);
         }
       } else {
         showRefNote("No References or Bibliography section was found, so the reference checks were skipped. Make sure your document has a \"References\" (or \"Bibliography\") heading on its own line before the reference list.");
@@ -24455,7 +24718,8 @@ function mcReferenceMissingFieldCount(){
   const delimiterReviews=wrap.querySelectorAll("tbody .ref-delimiter-review").length;
   const duplicateGroups=new Set([...wrap.querySelectorAll("tbody .ref-duplicate-review")].map(el=>el.dataset.duplicateGroup));
   const volumeReviews=wrap.querySelectorAll("tbody [data-missing-volume-review]").length;
-  return missing+delimiterReviews+duplicateGroups.size+volumeReviews;
+  const typeReviews=wrap.querySelectorAll("tbody .ref-source-type-review").length;
+  return missing+delimiterReviews+duplicateGroups.size+volumeReviews+typeReviews;
 }
 function mcModuleSummary(tab,title,detected,reportId,extraAttention,attentionNoun="item"){
   const c=mcReportPriorityCounts(reportId);
@@ -33316,7 +33580,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
     });
     info.mixedCount=mixedCount;
     res.probableReferenceStyle=info;
-    return res;
+    return refApplySourceTypeReview(res);
   }
 
   // Replace the ledger renderer only at presentation level. Core parsing remains untouched.
@@ -33326,7 +33590,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
     const cell=st=>st==='yes'?`<span class="yn y">yes</span>`:(st==='no'?`<span class="yn n">no</span>`:(st==='optional'?`<span class="yn opt">optional</span>`:(st==='review'?`<span class="yn rev">review</span>`:`<span class="yn na">n/a</span>`)));
     const body=parsed.map((p,i)=>{
       const label=p.num!=null?`[${p.num}]`:`#${i+1}`;
-      const tag=p.type!=='journal article'?`<span class="rtype">${escapeHtml(p.nonJournal?refNJTypeLabel(p.type):p.type)}</span> `:'';
+      const tag=!refSourceTypeCanConfirm(p)&&p.type!=='journal article'?`<span class="rtype">${escapeHtml(p.nonJournal?refNJTypeLabel(p.type):p.type)}</span> `:'';
       const snip=escapeHtml(p.raw.length>58?p.raw.slice(0,58)+'…':p.raw);
       const styleReview=p._styleReviewReason?`<div class="ref-style-review-detail"><b>Style review:</b> ${escapeHtml(p._styleReviewReason)}</div>`:'';
       const delimiterReview=p.referenceDelimiterReview?`<div class="ref-delimiter-review"><b>Delimiter review:</b> ${escapeHtml(p.referenceDelimiterReview.recommendation)}</div>`:'';
@@ -33334,9 +33598,9 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       const duplicateReview=duplicate?`<div class="ref-duplicate-review" data-duplicate-group="${duplicate.group}">${escapeHtml(duplicate.message)}</div>`:'';
       const volumeReview=p._volState==='review' && p.referenceFieldRegistry?.orderedJournalTail?.family==='locator-without-volume';
       const reviewRowClass=[p._styleReviewReason?'ref-row-style-review':'',p.referenceDelimiterReview?'ref-row-format-review':'',duplicate?'ref-row-duplicate-review':''].filter(Boolean).join(' ');
-      return `<tr class="${reviewRowClass}"><td class="t-abbr">${label}</td><td class="t-long">${tag}${snip}${styleReview}${delimiterReview}${duplicateReview}</td>`+
+      return `<tr class="${reviewRowClass}"><td class="t-abbr">${label}</td><td class="t-long">${tag}${snip}${refSourceTypeControl(p,i)}${styleReview}${delimiterReview}${duplicateReview}</td>`+
         `<td>${cell(p._authorState)}</td><td>${cell(p._yearState)}</td><td>${cell(p._titleState)}</td><td>${cell(p._sourceState)}</td>`+
-        `<td>${cell(p._pagesState)}</td><td${volumeReview?' data-missing-volume-review="1"':''}>${cell(p._volState)}</td><td>${cell(p._issueState||'na')}</td><td>${cell(p.nonJournal?(p._identifierState||p._doiState):p._doiState)}</td></tr>`;
+        `<td>${cell(p._pagesState)}</td><td${volumeReview?' data-missing-volume-review="1"':''}>${cell(p._volState)}</td><td>${cell(p._issueState||'na')}</td><td>${cell(refIdentifierState(p))}</td></tr>`;
     }).join('');
     const cols=`<colgroup><col style="width:4%"><col style="width:40%"><col style="width:7%"><col style="width:6%"><col style="width:6%"><col style="width:7%"><col style="width:8%"><col style="width:8%"><col style="width:6%"><col style="width:8%"></colgroup>`;
     const head=`<thead><tr><th>Ref</th><th>Entry / type</th><th>Author</th><th>Year</th><th>Title</th><th>Source</th><th>Pages / article no.</th><th>Volume</th><th>Issue</th><th>DOI / Link</th></tr></thead>`;
@@ -33376,8 +33640,9 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
     const state=st=>st==='yes'?'yes':st==='no'?'no':st==='optional'?'optional':st==='review'?'review':'n/a';
     res.parsed.forEach((p,idx)=>{
       const label=p.num!=null?`[${p.num}]`:`#${idx+1}`;
-      const entry=(p.type!=='journal article'?`[${p.nonJournal?refNJTypeLabel(p.type):p.type}] `:'')+p.raw.replace(/\s+/g,' ').trim();
-      L.push(`${label} | ${entry} | ${state(p._authorState)} | ${state(p._yearState)} | ${state(p._titleState)} | ${state(p._sourceState)} | ${state(p._pagesState)} | ${state(p._volState)} | ${state(p._issueState)} | ${state(p.nonJournal?(p._identifierState||p._doiState):p._doiState)}`);
+      const typeStatus=refSourceTypeStatus(p);
+      const entry=(typeStatus?`[${typeStatus}] `:p.type!=='journal article'?`[${p.nonJournal?refNJTypeLabel(p.type):p.type}] `:'')+p.raw.replace(/\s+/g,' ').trim();
+      L.push(`${label} | ${entry} | ${state(p._authorState)} | ${state(p._yearState)} | ${state(p._titleState)} | ${state(p._sourceState)} | ${state(p._pagesState)} | ${state(p._volState)} | ${state(p._issueState)} | ${state(refIdentifierState(p))}`);
       if(p._styleReviewReason)L.push(`  Style review: ${p._styleReviewReason}`);
       if(p.referenceDelimiterReview)L.push(`  Formatting review: ${p.referenceDelimiterReview.recommendation}`);
       if(duplicates.has(idx))L.push(`  ${duplicates.get(idx).message}`);
@@ -35284,6 +35549,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
   const v7BaseRefCheck=refCheck;
   refCheck=function(refText,bodyText,presegmentedEntries){
     const res=v7BaseRefCheck(refText,bodyText,presegmentedEntries);
+    const finalTypeIssues=[];
     for(const [index,p] of (res.parsed||[]).entries()){
       v7RepairSemicolonAuthors(p);
       v7RepairQuotedAuthorTail(p);
@@ -35297,6 +35563,14 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       v7RepairIpccReport(p);
       v7RepairNoDateIndianStandard(p);
       v7RepairBareWebHost(p);
+      // Late type repairs must update field requirements for every consumer.
+      const url=p.url||(!p.doi?refNJUrl(refNJClean(p.raw)):null);
+      if(url)p.url=/^(?:https?:\/\/|www\.)(?:dx\.)?doi(?:\.org)?(?:\/|$)/i.test(url)&&!refExtractDoi(url)?null:url;
+      if(REF_NJ_REQUIREMENTS[p.type]){
+        p.nonJournal=true;
+        p.requirements=REF_NJ_REQUIREMENTS[p.type];
+        refApplyNonJournalStates(p,res.doiConvention,finalTypeIssues,index,p.num!=null?`[${p.num}]`:`#${index+1}`);
+      }
       // Late source repairs can expose a page-only tail or recycle the year as
       // volume. Reconcile that same bounded grammar against the final source.
       const reg=p.referenceFieldRegistry;
@@ -35332,6 +35606,15 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       if(x.code==='REFERENCE_AUTHOR_LIST_REVIEW'&&p._v7ApaAuthors)return false;
       if(v7SuppressStaleAncillaryIssue(x,p))return false;
       const msg=v7Clean(x.msg||'');
+      if(p.nonJournal&&[
+        [p._authorState,/^No author or (?:responsible organisation detected|organisation detected at the start)/i],
+        [p._yearState,/^No publication year(?: or date)? (?:found|detected)\./i],
+        [p._titleState,/^(?:Title not detected\.|No article title detected)/i],
+        [p._sourceState,/^(?:Issuing organisation|Degree-granting institution|Repository|Website or responsible organisation|Source or container) not detected\.|^No journal or source name detected\./i],
+        [p._pagesState,/^(?:No page range or article number found\.|(?:Page range or article number|Chapter\/entry page range|Conference-paper page range|Publication location\/pages) not detected\.)/i],
+        [p._volState,/^(?:No volume or issue number found\.|Volume information not detected\.)/i],
+        [p._doiState,/^(?:No DOI, though most references in this list include one\.|DOI not detected\.)/i]
+      ].some(([state,re])=>state!=='no'&&state!=='review'&&re.test(msg)))return false;
       if(p.hasAuthors&&/No author or responsible organisation detected|No author or organisation detected at the start/i.test(msg))return false;
       if(p.hasSource&&/Source or container not detected|Website or responsible organisation not detected|No journal or source name detected/i.test(msg))return false;
       if(p.hasTitle&&/^Title not detected\.|^No article title detected/i.test(msg))return false;
@@ -35341,6 +35624,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       if((p._v7MdpiBookChapter||p._v7MdpiBook)&&/^Identified as a book/i.test(msg))return false;
       return true;
     });
+    for(const issue of finalTypeIssues)if(!res.issues.some(x=>x.idx===issue.idx&&x.msg===issue.msg))res.issues.push(issue);
     return res;
   };
 
