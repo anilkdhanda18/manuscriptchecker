@@ -5620,31 +5620,31 @@ if(document.readyState==="loading"){
 
   /* Keep the compact columns genuinely compact. */
   #abbr-reporting-table > thead > tr > th:nth-child(1),
-  #abbr-reporting-table > tbody > tr:not(.abbr-instance-row) > td:nth-child(1),
+  #abbr-reporting-table > tbody > tr > td.t-abbr,
   #abbr-reporting-table > thead > tr > th:nth-child(2),
-  #abbr-reporting-table > tbody > tr:not(.abbr-instance-row) > td:nth-child(2){
+  #abbr-reporting-table > tbody > tr > td.abbr-descriptor-cell{
     padding-left:8px!important;
     padding-right:8px!important;
   }
   #abbr-reporting-table > thead > tr > th:nth-child(3),
-  #abbr-reporting-table > tbody > tr:not(.abbr-instance-row) > td:nth-child(3){
+  #abbr-reporting-table > tbody > tr > td.t-num{
     padding-left:5px!important;
     padding-right:5px!important;
     text-align:center!important;
     white-space:nowrap!important;
   }
   #abbr-reporting-table > thead > tr > th:nth-child(4),
-  #abbr-reporting-table > tbody > tr:not(.abbr-instance-row) > td:nth-child(4){
+  #abbr-reporting-table > tbody > tr > td.abbr-status-cell{
     padding-left:10px!important;
     padding-right:10px!important;
   }
   #abbr-reporting-table > thead > tr > th:nth-child(5),
-  #abbr-reporting-table > tbody > tr:not(.abbr-instance-row) > td:nth-child(5){
+  #abbr-reporting-table > tbody > tr > td.abbr-recommendation{
     padding-left:12px!important;
     padding-right:12px!important;
   }
   #abbr-reporting-table > thead > tr > th:nth-child(6),
-  #abbr-reporting-table > tbody > tr:not(.abbr-instance-row) > td:nth-child(6){
+  #abbr-reporting-table > tbody > tr > td.abbr-details-cell{
     padding-left:6px!important;
     padding-right:6px!important;
   }
@@ -5822,7 +5822,7 @@ button,input,textarea,select{font-family:var(--sans)}
 .abbr-reporting-table td .t-abbr,#abbr-reporting-table td .t-abbr{white-space:nowrap!important}
 /* generic ledgers: keep their scroll wrapper working, never clip the card */
 .ledger-scroll{overflow-x:auto!important;max-width:100%!important}
-table.ledger td,table.ledger th{overflow-wrap:anywhere}
+table.ledger td,table.ledger th{overflow-wrap:normal;word-break:normal;hyphens:none}
 
 /* ---- 5. Entry / hero sheet ---------------------------------------- */
 #input-card{
@@ -6477,6 +6477,7 @@ table.ledger tbody>tr:last-child>td{
 }
 .reference-ledger-table{min-width:860px!important}
 .reference-ledger-key .yn.rev,.reference-ledger-key .yn.opt,.reference-ledger-key .yn.na{text-transform:capitalize}
+.yn.unspecified{color:#64748b;font-weight:normal;white-space:normal;overflow-wrap:anywhere}
 @media(max-width:760px){.reference-ledger-table{min-width:920px!important}}
 
 </style>
@@ -17120,7 +17121,15 @@ function extractNumericTable(tbl,index){
       if(content!==td)content.querySelectorAll("table").forEach(t=>t.remove());
       const raw=(content.textContent||"").replace(/\s+/g," ").trim();
       const text=typeof numberTextWithoutCitationMarkers==="function"?numberTextWithoutCitationMarkers(raw).replace(/\s+/g," ").trim():raw;
-      const cell={text,row:r,col:c,width};
+      // Mammoth often emits Word headings as bold TDs rather than THs.
+      // A bold bullet or one emphasized word is not a bold cell heading.
+      let bold=false;
+      if(content.querySelector("strong,b")){
+        const unbold=content.cloneNode(true);
+        unbold.querySelectorAll("strong,b").forEach(el=>el.remove());
+        bold=!/[\p{L}\p{N}]/u.test(unbold.textContent||"");
+      }
+      const cell={text,row:r,col:c,width,bold};
       for(let y=r;y<r+height;y++)for(let x=c;x<c+width;x++){
         if(grid[y][x])cell.ambiguous=grid[y][x].ambiguous=true;
         else grid[y][x]=cell;
@@ -17131,6 +17140,16 @@ function extractNumericTable(tbl,index){
   const width=Math.max(0,...grid.map(row=>row.length));
   const table={index,rows:grid.map(row=>Array.from({length:width},(_,c)=>row[c]?.text||""))};
   table.headerFlags=htmlRows.map((tr,r)=>tr.parentElement.tagName==="THEAD"||(htmlCells[r].length>0&&htmlCells[r].every(td=>td.tagName==="TH")));
+  table.headerHints=grid.map((row,r)=>{
+    const own=[...new Set(row)].filter(cell=>cell?.row===r&&cell.text&&!tableCellIsMissing(cell.text));
+    return {
+      bold:own.length>0&&own.every(cell=>cell.bold),
+      // Only a merge in an already accepted heading can extend that heading.
+      continuation:row.some((cell,c)=>cell&&(cell.row<r||
+        (grid[r-1]?.[c]?.width>cell.width&&cell.col>=grid[r-1][c].col&&
+          cell.col+cell.width<=grid[r-1][c].col+grid[r-1][c].width)))
+    };
+  });
   Object.assign(table,tableHeaderInfo(table));
   table.headers=table.headers.map((header,c)=>grid.slice(0,table.dataStart).some(row=>row[c]?.ambiguous)?"":header);
   // A merged measurement is read once, and only if its column label is unambiguous.
@@ -23712,6 +23731,7 @@ function refSourceTypeControl(p,i){
   return `<div class="ref-source-type-status${refSourceTypeUncertain(p)?' ref-source-type-review':''}">${escapeHtml(refSourceTypeStatus(p))}</div><div class="ref-source-type-controls"><label for="ref-source-type-${i}">Confirm source type</label><select id="ref-source-type-${i}" data-ref-source-type data-ref-index="${i}" aria-label="Source type for reference ${escapeHtml(label)}" aria-describedby="ref-source-type-help-${i}">${options}</select><small id="ref-source-type-help-${i}">${help}</small></div>`;
 }
 function refApplySelectedStyle(res,input){
+  res.issueStyleExpected=false;
   if(input.cslTarget?.template){
     const target=input.cslTarget;
     const findings=typeof window.mcCslApplyTemplateChecks==='function'?window.mcCslApplyTemplateChecks(res,target):0;
@@ -23841,6 +23861,9 @@ function inferTemplate(ex){
   };
 }
 function applyTemplateChecks(res, tpl){
+  // A user-supplied example is a reason to review applicability, not proof
+  // that every cited article was assigned an issue number.
+  res.issueStyleExpected=tpl.volIssue===true;
   res.parsed.forEach((p,i)=>{
     const L=p.num!=null?`[${p.num}]`:`#${i+1}`, raw=p.raw;
     const parenYear=/\((?:19|20)\d{2}[a-z]?\)/.test(raw);
@@ -23854,7 +23877,7 @@ function applyTemplateChecks(res, tpl){
     const pageRaw=pageField?.raw||"";
     if(tpl.enDashPages && pageRaw && /\d+\s*-\s*\d+/.test(pageRaw) && !/\d+\s*–\s*\d+/.test(pageRaw))
       res.issues.push({level:"info",idx:i,label:L,msg:"Page range uses a hyphen, but your style example uses an en dash (–)."});
-    if(tpl.volIssue && p.hasPages && !/\b\d+\s*\(\s*(?:(?:pt|part|suppl?|supplement|issue|no\.?|special\s+issue)\s*)?[A-Za-z]?\d+[A-Za-z]?(?:\s*(?:[-–—/,]|&|and)\s*[A-Za-z]?\d+[A-Za-z]?)*\s*\)/i.test(raw))
+    if(tpl.volIssue && p.hasVolume && p.hasIssue && p.hasPages && !/\b\d+\s*\(\s*(?:(?:pt|part|suppl?|supplement|issue|no\.?|special\s+issue)\s*)?[A-Za-z]?\d+[A-Za-z]?(?:\s*(?:[-–—/,]|&|and)\s*[A-Za-z]?\d+[A-Za-z]?)*\s*\)/i.test(raw))
       res.issues.push({level:"info",idx:i,label:L,msg:"No volume(issue) grouping like your style example, e.g. 4(8)."});
   });
 }
@@ -23994,9 +24017,41 @@ function tableHeaderIsPH(header){
 }
 function tableHeaderInfo(table){
   if(Array.isArray(table.headers)&&Number.isInteger(table.dataStart))return {headers:table.headers,headerPaths:table.headerPaths||table.headers.map(h=>[h]),dataStart:table.dataStart};
-  const rows=table.rows||[];
-  let dataStart=rows.findIndex((row,r)=>!table.headerFlags?.[r]&&(row.some(tableCellStartsNumber)||(row.some(tableCellIsMissing)&&!row.slice(1).some(cell=>unitFindHeaderUnit(cell)))));
-  if(dataStart<0)dataStart=rows.length;
+  const rows=(table.rows||[]).map(row=>row.map(cell=>String(cell||"").replace(/\s+/g," ").trim()));
+  const explicit=r=>!!table.headerFlags?.[r],hints=r=>table.headerHints?.[r]||{};
+  const numeric=row=>row.some(tableCellStartsNumber)||(row.some(tableCellIsMissing)&&!row.slice(1).some(cell=>unitFindHeaderUnit(cell)));
+  const compact=row=>row.every(cell=>cell.length<=120&&cell.split(/\s+/).length<=12&&!/[•▪◦‣]|\bet\s+al\.|\b\p{L}+\s*\((?:19|20)\d{2}[a-z]?\)/iu.test(cell));
+  const label=cell=>/^(?:(?:pre[- ]?)?treatments?|methods?|materials?|samples?|parameters?|properties|characteristics|conditions?|categories|category|advantages?|limitations?|disadvantages?|references?|ref\.?|sources?|descriptions?|results?|observations?|values?|measurements?|units?|symbols?|abbreviations?|definitions?|meanings?|names?|types?|groups?|years?)\b/i.test(cell);
+  const labels=row=>row.filter(cell=>cell&&label(cell)).length;
+  const years=row=>row.some(tableCellStartsNumber)&&row.every(cell=>!tableCellStartsNumber(cell)||/^(?:19|20|21)\d{2}$/.test(cell));
+  const unitRow=r=>{
+    const row=rows[r],previous=rows[r-1];
+    if(!previous)return false;
+    const changed=row.filter((cell,c)=>cell&&cell!==previous[c]&&!tableCellIsMissing(cell));
+    // Keep separate unit subheadings; a sample named A or K alone is not one.
+    return changed.length>0&&(!row[0]||row[0]===previous[0]||tableCellIsMissing(row[0])||changed.every(cell=>/^\(.*\)$|^\[.*\]$/.test(cell)))&&
+      changed.every(cell=>unitParseExpression(cell.replace(/^\((.*)\)$|^\[(.*)\]$/,"$1$2"))?.valid);
+  };
+  const first=rows.findIndex(row=>row.some(Boolean));
+  let dataStart=Math.max(0,first);
+  if(first>=0){
+    const row=rows[first],boldContrast=hints(first).bold&&rows.slice(first+1).some((_,i)=>!hints(first+i+1).bold);
+    const numericBelow=rows.slice(first+1).some(numeric);
+    const inferred=(!numeric(row)&&(boldContrast||(compact(row)&&(labels(row)>=2||numericBelow))))||
+      (boldContrast&&compact(row)&&labels(row)>0&&years(row));
+    if(explicit(first)||inferred){
+      dataStart=first+1;
+      while(dataStart<rows.length){
+        const r=dataStart,row=rows[r];
+        if(explicit(r)||!row.some(Boolean)||unitRow(r)||
+          (hints(r).continuation&&compact(row)&&(!numeric(row)||(hints(r).bold&&years(row))))){
+          dataStart++;
+        }else break;
+      }
+    }
+  }
+  // Text-only data is still data. Never join every row merely because no
+  // number was found, and never resume header inference after data begins.
   const width=Math.max(0,...rows.map(row=>row.length));
   const headerPaths=Array.from({length:width},(_,c)=>[...new Set(rows.slice(0,dataStart).map(row=>String(row[c]||"").replace(/\s+/g," ").trim()).filter(t=>t&&!tableCellIsMissing(t)))]);
   return {headers:headerPaths.map(path=>path.join(" / ")),headerPaths,dataStart};
@@ -24719,7 +24774,8 @@ function mcReferenceMissingFieldCount(){
   const duplicateGroups=new Set([...wrap.querySelectorAll("tbody .ref-duplicate-review")].map(el=>el.dataset.duplicateGroup));
   const volumeReviews=wrap.querySelectorAll("tbody [data-missing-volume-review]").length;
   const typeReviews=wrap.querySelectorAll("tbody .ref-source-type-review").length;
-  return missing+delimiterReviews+duplicateGroups.size+volumeReviews+typeReviews;
+  const issueReviews=wrap.querySelectorAll("tbody [data-missing-issue-review]").length;
+  return missing+delimiterReviews+duplicateGroups.size+volumeReviews+typeReviews+issueReviews;
 }
 function mcModuleSummary(tab,title,detected,reportId,extraAttention,attentionNoun="item"){
   const c=mcReportPriorityCounts(reportId);
@@ -31180,6 +31236,7 @@ function mcCslMacroMap(doc){
 function mcCslContextForElement(ctx,el){
   const next={
     prefixes:[...(ctx.prefixes||[])],suffixes:[...(ctx.suffixes||[])],
+    issueJournalExcluded:!!ctx.issueJournalExcluded,
     types:[...(ctx.types||[])],fontStyle:ctx.fontStyle||"",fontWeight:ctx.fontWeight||"",textCase:ctx.textCase||"",delimiter:ctx.delimiter||""
   };
   const pre=el.getAttribute?.("prefix")||"",suf=el.getAttribute?.("suffix")||"";
@@ -31191,6 +31248,7 @@ function mcCslContextForElement(ctx,el){
   const local=String(el.localName||el.nodeName||"").toLowerCase();
   if(local==="if"||local==="else-if"){
     const t=(el.getAttribute("type")||"").trim();
+    if(el.getAttribute("match")==="none"&&t.split(/\s+/).includes("article-journal"))next.issueJournalExcluded=true;
     if(t)next.types=[...new Set([...next.types,...t.split(/\s+/).filter(Boolean)])];
   }
   return next;
@@ -31201,6 +31259,7 @@ function mcCslWalk(node,ctx,macros,out,stack=new Set()){
   const next=mcCslContextForElement(ctx,node);
   const makeOcc=(kind,variable,extra={})=>({
     kind,variable,
+    issueJournalExcluded:next.issueJournalExcluded,
     element:local,
     prefixes:[...next.prefixes],suffixes:[...next.suffixes],types:[...next.types],
     fontStyle:node.getAttribute("font-style")||next.fontStyle||"",
@@ -31292,6 +31351,7 @@ function mcCslProfileFromXml(xml,meta={}){
     authorDelimiter:author?.delimiter||root.getAttribute("names-delimiter")||"",
     yearParentheses:yearParen,
     issueParenthesized:issueParen,
+    issueRendered:issueOcc.some(o=>!o.issueJournalExcluded),
     doiStyle,
     doiRendered:doiOcc.length>0,
     pageLabelMode,
@@ -31314,6 +31374,7 @@ function mcCslTemplateFromProfile(profile){
   return {
     yearParen:profile.yearParentheses,
     volIssue:profile.issueParenthesized===true,
+    issueRendered:profile.issueRendered,
     doiStyle:profile.doiStyle,
     pageLabelMode:profile.pageLabelMode,
     authorInitializeWith:profile.authorInitializeWith,
@@ -31478,6 +31539,7 @@ function mcCslDoiForm(raw){
 }
 function mcCslApplyTemplateChecks(res,target){
   const tpl=target?.template||target||{},profile=target?.profile||{},before=res.issues.length;
+  res.issueStyleExpected=tpl.issueRendered===true||(tpl.issueRendered==null&&tpl.volIssue===true);
   for(let i=0;i<res.parsed.length;i++){
     const p=res.parsed[i],L=p.num!=null?`[${p.num}]`:`#${i+1}`,raw=String(p.raw||"");
     if(typeof tpl.yearParen==="boolean"&&p.year){
@@ -32531,91 +32593,90 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
 
 
 
-<!-- Manuscript Check: locked Abbreviations ledger column grid -->
-<style id="mc-abbr-locked-column-grid-v1">
-@media screen {
-  /*
-    One authoritative six-column grid for the Abbreviations ledger.
-    A colgroup is injected by the presentation-only script below. This prevents
-    content, rowspans, expanded findings, or long recommendations from changing
-    the browser's column allocation from row to row.
-  */
-  #abbr-reporting-table{
-    width:100%!important;
-    min-width:0!important;
-    max-width:100%!important;
-    table-layout:fixed!important;
-  }
-
-  /* Reset older header-based width rules. The colgroup below is authoritative. */
-  #abbr-reporting-table > thead > tr > th{
-    width:auto!important;
-    min-width:0!important;
-    max-width:none!important;
-    box-sizing:border-box!important;
-  }
-
-  #abbr-reporting-table > colgroup.mc-abbr-fixed-cols > col:nth-child(1){width:10%!important}
-  #abbr-reporting-table > colgroup.mc-abbr-fixed-cols > col:nth-child(2){width:20%!important}
-  #abbr-reporting-table > colgroup.mc-abbr-fixed-cols > col:nth-child(3){width:5%!important}
-  #abbr-reporting-table > colgroup.mc-abbr-fixed-cols > col:nth-child(4){width:20%!important}
-  #abbr-reporting-table > colgroup.mc-abbr-fixed-cols > col:nth-child(5){width:35%!important}
-  #abbr-reporting-table > colgroup.mc-abbr-fixed-cols > col:nth-child(6){width:10%!important}
-
-  #abbr-reporting-table th,
-  #abbr-reporting-table td{
-    box-sizing:border-box!important;
-    min-width:0!important;
-  }
-
-  #abbr-reporting-table .t-abbr,
-  #abbr-reporting-table .abbr-descriptor-cell,
-  #abbr-reporting-table .abbr-status-cell,
-  #abbr-reporting-table .abbr-recommendation,
-  #abbr-reporting-table .abbr-details-cell{
-    overflow-wrap:anywhere!important;
-    word-break:normal!important;
-  }
-
-  #abbr-reporting-table .abbr-details-cell{
-    padding-left:8px!important;
-    padding-right:8px!important;
-  }
-  #abbr-reporting-table .abbr-details-cell .abbr-group-details{
-    width:100%!important;
-    max-width:100%!important;
-    min-width:0!important;
-    box-sizing:border-box!important;
-    white-space:normal!important;
-  }
-
-  /* The full-width evidence row must never participate in width calculation. */
-  #abbr-reporting-table .abbr-instance-row > td{
-    width:auto!important;
-    max-width:none!important;
-  }
-
-  /* Compact the information-dense left side and spend the recovered width on advice. */
-  #abbr-reporting-table > thead > tr > th:nth-child(-n+3),
-  #abbr-reporting-table > tbody > tr:not(.abbr-instance-row) > td:nth-child(-n+3){
-    padding-left:10px!important;
-    padding-right:10px!important;
-  }
-  #abbr-reporting-table > thead > tr > th:nth-child(3),
-  #abbr-reporting-table > tbody > tr:not(.abbr-instance-row) > td:nth-child(3){
-    text-align:center!important;
-    white-space:nowrap!important;
-  }
-  #abbr-reporting-table > thead > tr > th:nth-child(5),
-  #abbr-reporting-table > tbody > tr:not(.abbr-instance-row) > td:nth-child(5){
-    padding-left:14px!important;
-    padding-right:14px!important;
-  }
+<!-- Manuscript Check: readable columns across all report ledgers -->
+<style id="mc-report-column-layout">
+:root{--mc-report-font-size:14px}
+/* One report text size, including notes, statuses, controls and expanded details.
+   Scientific superscripts and subscripts retain their native notation sizing. */
+#abbr-reporting-table .abbr-details-cell .abbr-group-details,
+.result-group :is(#report,#ref-report,#num-report,#unit-report,#eng-report,#fte-report),
+.result-group :is(#report,#ref-report,#num-report,#unit-report,#eng-report,#fte-report) *:not(sub):not(sup){
+  font-size:var(--mc-report-font-size)!important;
+  overflow-wrap:normal!important;
+  word-break:normal!important;
+  hyphens:none!important;
 }
+/* Center the short reference results; keep the bibliographic entry left aligned. */
+#ref-ledger-wrap .reference-ledger-table :is(th,td):nth-child(n+3){text-align:center!important}
+#ref-ledger-wrap .reference-ledger-table col:nth-child(7),
+#ref-ledger-wrap .reference-ledger-table :is(th,td):nth-child(7){width:7.5rem!important;max-width:7.5rem!important}
+#ref-ledger-wrap .reference-ledger-table th:nth-child(7){white-space:normal!important}
 
-/* Preserve a readable table on smaller screens without enlarging the page itself. */
-@media screen and (max-width:1050px){
-  #abbr-reporting-table{min-width:820px!important}
+@media screen {
+  /* Native table sizing reserves room for complete labels, then wraps prose. */
+  #abbr-reporting-table,
+  .reference-ledger-floating .ledger,
+  .reference-ledger-table,
+  table.ledger{
+    table-layout:auto!important;
+    width:100%!important;
+    min-width:0!important;
+    max-width:none!important;
+  }
+  #abbr-reporting-table > thead > tr > th:nth-child(n),
+  table.ledger > thead > tr > th:nth-child(n){
+    width:auto!important;
+    min-width:0!important;
+    max-width:none!important;
+    white-space:nowrap!important;
+    overflow:visible!important;
+    overflow-wrap:normal!important;
+    word-break:normal!important;
+    hyphens:none!important;
+  }
+  #abbr-reporting-table > colgroup.mc-abbr-fixed-cols > col:nth-child(n),
+  .reference-ledger-table > colgroup > col:nth-child(n),
+  .reference-ledger-floating .ledger > colgroup > col:nth-child(n){width:auto!important}
+
+  /* Wrap between words; never split a word to squeeze it into a column. */
+  #abbr-reporting-table :is(td,td *),
+  table.ledger :is(td,td *){
+    overflow-wrap:normal!important;
+    word-break:normal!important;
+    hyphens:none!important;
+  }
+  #abbr-reporting-table :is(.t-abbr,.abbr-descriptor-cell,.abbr-status-cell,.abbr-recommendation,.abbr-details-cell){overflow-wrap:normal!important}
+  table.ledger :is(.yn,.num-status,.eng-ledger-status,.fte-ledger-status,.unit-precision-entry,.t-abbr,.t-num),
+  table.ledger :is(.unit-view-instances,.num-view-instances,.eng-view-instances,.fte-view-instances),
+  #abbr-reporting-table td :is(.abbr-ledger-status,.abbr-group-name,.abbr-group-name *){
+    white-space:nowrap!important;
+    overflow-wrap:normal!important;
+  }
+  #abbr-reporting-table td.t-abbr,
+  #abbr-reporting-table td.t-num{white-space:nowrap!important}
+  #abbr-reporting-table .abbr-details-cell .abbr-group-details{
+    width:auto!important;
+    max-width:none!important;
+    white-space:nowrap!important;
+    overflow-wrap:normal!important;
+  }
+
+  /* Give descriptions and advice readable widths after compact columns fit. */
+  #abbr-reporting-table td.abbr-descriptor-cell{min-width:12rem!important}
+  #abbr-reporting-table td.abbr-recommendation{min-width:18rem!important}
+  .reference-ledger-table td.t-long{width:100%;min-width:22rem}
+  #unit-ledger-wrap .unit-action{width:40%;min-width:20rem}
+  .num-ledger-table .num-observed{min-width:12rem}
+  .num-ledger-table .num-recommendation{min-width:18rem}
+  .eng-reporting-table tbody tr:not(.eng-instance-row) > td:nth-child(n+3),
+  .fte-reporting-table tbody tr:not(.fte-instance-row) > td:nth-child(5){min-width:18rem}
+
+  /* Keep wider tables inside their existing scrollable report panels. */
+  .ledger-scroll:has(> #abbr-reporting-table),
+  .ledger-scroll{
+    max-width:100%!important;
+    overflow-x:auto!important;
+  }
 }
 
 @media print {
@@ -33486,7 +33547,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
   function doiEffectiveField(p,field){
     if(field==='year') return !!p?.year || !!p?._doiPatternEvidence?.year;
     if(field==='volume') return !!p?.hasVolume || (p?.referenceFieldRegistry?.orderedJournalTail?.family!=='locator-without-volume' && !!p?._doiPatternEvidence?.volume);
-    if(field==='issue') return !!p?.hasIssue || !!p?._doiPatternEvidence?.issue;
+    if(field==='issue') return !!p?.hasIssue;
     if(field==='locator') return !!p?.hasPages || !!p?._doiPatternEvidence?.locator;
     return false;
   }
@@ -33522,12 +33583,13 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       doi:rate(journal,p=>!!p.doi),
       title:rate(journal,p=>!!p.hasTitle)
     };
-    const issueBase=info.family==='apa'?'review':'optional';
     const volumeBase=['apa','harvard','vancouver','ieee'].includes(info.family)?'review':'optional';
     const locatorBase=['apa','harvard','vancouver','ieee'].includes(info.family)?'review':'optional';
     const policies={
       volume:policyFromRate(fieldRates.volume,n,volumeBase),
-      issue:policyFromRate(fieldRates.issue,n,issueBase),
+      // Neither other references nor DOI suffix patterns establish that this
+      // article has an issue. Only a selected style can request a review.
+      issue:res.issueStyleExpected===true?'review':'unspecified',
       locator:policyFromRate(fieldRates.locator,n,locatorBase),
       doi:res.doiConvention==='included'?'required':(res.doiConvention==='mixed'?'review':'optional')
     };
@@ -33560,7 +33622,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       p._pagesState=doiEffectiveField(p,'locator')?'yes':stateFromPolicy(policies.locator);
       p._volState=doiEffectiveField(p,'volume')?'yes':stateFromPolicy(policies.volume);
       if(!doiEffectiveField(p,'volume') && p.referenceFieldRegistry?.orderedJournalTail?.family==='locator-without-volume' && p._volState==='optional') p._volState='review';
-      p._issueState=doiEffectiveField(p,'issue')?'yes':stateFromPolicy(policies.issue);
+      p._issueState=p.hasIssue?'yes':policies.issue;
       p._doiState=p.doi?'yes':stateFromPolicy(policies.doi);
       if(!p.hasTitle){
         p._titleState=res.titleConvention==='omitted'?'na':(res.titleConvention==='mixed'?'review':'no');
@@ -33573,7 +33635,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
         else if(st==='review') res.issues.push({level:'info',idx:i,label:L,code:`REFERENCE_STYLE_REVIEW_${field.toUpperCase()}`,styleAware:true,msg:`${text} not detected. Review whether it is required for this source; legitimate source-specific exceptions can occur.`});
       };
       add(p._volState,'volume','Volume information');
-      add(p._issueState,'issue','Issue information');
+      if(p._issueState==='review')res.issues.push({level:'info',idx:i,label:L,code:'REFERENCE_STYLE_REVIEW_ISSUE',styleAware:true,msg:'Your selected style or example includes issue numbers. Check whether this article has one and include it if applicable.'});
       add(p._pagesState,'locator','Page range or article number');
       add(p._doiState,'doi','DOI');
       if(p._styleReviewReason) res.issues.push({level:'info',idx:i,label:L,code:'REFERENCE_STYLE_PATTERN_REVIEW',styleAware:true,msg:p._styleReviewReason});
@@ -33587,7 +33649,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
   window.refLedger=function(parsed,issues=[]){
     if(!parsed?.length) return '';
     const duplicates=refDuplicateNotices(parsed,issues);
-    const cell=st=>st==='yes'?`<span class="yn y">yes</span>`:(st==='no'?`<span class="yn n">no</span>`:(st==='optional'?`<span class="yn opt">optional</span>`:(st==='review'?`<span class="yn rev">review</span>`:`<span class="yn na">n/a</span>`)));
+    const cell=st=>st==='yes'?`<span class="yn y">yes</span>`:(st==='no'?`<span class="yn n">no</span>`:(st==='optional'?`<span class="yn opt">optional</span>`:(st==='review'?`<span class="yn rev">review</span>`:st==='unspecified'?`<span class="yn unspecified">not specified</span>`:`<span class="yn na">n/a</span>`)));
     const body=parsed.map((p,i)=>{
       const label=p.num!=null?`[${p.num}]`:`#${i+1}`;
       const tag=!refSourceTypeCanConfirm(p)&&p.type!=='journal article'?`<span class="rtype">${escapeHtml(p.nonJournal?refNJTypeLabel(p.type):p.type)}</span> `:'';
@@ -33600,13 +33662,13 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       const reviewRowClass=[p._styleReviewReason?'ref-row-style-review':'',p.referenceDelimiterReview?'ref-row-format-review':'',duplicate?'ref-row-duplicate-review':''].filter(Boolean).join(' ');
       return `<tr class="${reviewRowClass}"><td class="t-abbr">${label}</td><td class="t-long">${tag}${snip}${refSourceTypeControl(p,i)}${styleReview}${delimiterReview}${duplicateReview}</td>`+
         `<td>${cell(p._authorState)}</td><td>${cell(p._yearState)}</td><td>${cell(p._titleState)}</td><td>${cell(p._sourceState)}</td>`+
-        `<td>${cell(p._pagesState)}</td><td${volumeReview?' data-missing-volume-review="1"':''}>${cell(p._volState)}</td><td>${cell(p._issueState||'na')}</td><td>${cell(refIdentifierState(p))}</td></tr>`;
+        `<td>${cell(p._pagesState)}</td><td${volumeReview?' data-missing-volume-review="1"':''}>${cell(p._volState)}</td><td${p._issueState==='review'&&!refSourceTypeUncertain(p)?' data-missing-issue-review="1" title="Your selected style or example includes issue numbers. Check whether this article has one."':''}>${cell(p._issueState||'na')}</td><td>${cell(refIdentifierState(p))}</td></tr>`;
     }).join('');
     const cols=`<colgroup><col style="width:4%"><col style="width:40%"><col style="width:7%"><col style="width:6%"><col style="width:6%"><col style="width:7%"><col style="width:8%"><col style="width:8%"><col style="width:6%"><col style="width:8%"></colgroup>`;
     const head=`<thead><tr><th>Ref</th><th>Entry / type</th><th>Author</th><th>Year</th><th>Title</th><th>Source</th><th>Pages / article no.</th><th>Volume</th><th>Issue</th><th>DOI / Link</th></tr></thead>`;
     return `<div class="reference-ledger-block">
-      <div class="reference-ledger-normal-head"><p class="sec-label">Reference ledger <button type="button" class="info-help inline-auto-help" data-help="Internal bibliography-pattern inference is used to interpret missing fields. yes = confidently detected; no = strongly expected but not detected; review = possibly missing or source-dependent; optional = not consistently required; n/a = not applicable to that reference type. Volume and issue are evaluated separately." aria-label="Explain Reference Ledger" title="Explain this table">i</button></p></div>
-      <div class="reference-ledger-key" aria-label="Reference ledger status key"><span><span class="yn y">Yes</span>: detected</span><span class="reference-ledger-key-sep">•</span><span><span class="yn n">No</span>: strongly expected</span><span class="reference-ledger-key-sep">•</span><span><span class="yn rev">Review</span>: possibly missing</span><span class="reference-ledger-key-sep">•</span><span><span class="yn opt">Optional</span>: not consistently required</span><span class="reference-ledger-key-sep">•</span><span><span class="yn na">N/A</span>: not applicable</span></div>
+      <div class="reference-ledger-normal-head"><p class="sec-label">Reference ledger <button type="button" class="info-help inline-auto-help" data-help="yes = detected in the reference; no = expected information not detected; review = check whether the field applies; optional = not consistently required; n/a = not applicable to that reference type. For journal issues, not specified means no issue number was detected and its availability has not been established. It is not an error. A selected style or example that includes issues prompts review. Other references and DOI patterns do not make an issue number mandatory." aria-label="Explain Reference Ledger" title="Explain this table">i</button></p></div>
+      <div class="reference-ledger-key" aria-label="Reference ledger status key"><span><span class="yn y">Yes</span>: detected</span><span class="reference-ledger-key-sep">•</span><span><span class="yn n">No</span>: strongly expected</span><span class="reference-ledger-key-sep">•</span><span><span class="yn rev">Review</span>: possibly missing</span><span class="reference-ledger-key-sep">•</span><span><span class="yn opt">Optional</span>: not consistently required</span><span class="reference-ledger-key-sep">•</span><span><span class="yn na">N/A</span>: not applicable</span><span class="reference-ledger-key-sep">•</span><span><span class="yn unspecified">Not specified</span>: issue not detected; availability unknown</span></div>
       <div class="reference-ledger-floating" aria-hidden="true"><div class="reference-ledger-floating-title">Reference ledger</div><div class="reference-ledger-floating-scroll"><table class="ledger reference-ledger-table">${cols}${head}</table></div></div>
       <div class="ledger-scroll reference-ledger-scroll"><table class="ledger reference-ledger-table">${cols}${head}<tbody>${body}</tbody></table></div>
     </div>`;
@@ -33637,7 +33699,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
     if(res.doiConvention&&res.doiConvention!=='uncertain')L.push(`DOI convention: ${res.doiConvention}`);
     if(res.cslStyleApplied)L.push(`Target CSL style: ${res.cslStyleApplied.title}`,`CSL formatting findings: ${res.cslStyleApplied.findings||0}`);
     L.push('', 'Ref | Entry / type | Author | Year | Title | Source | Pages/article no. | Volume | Issue | DOI / Link');
-    const state=st=>st==='yes'?'yes':st==='no'?'no':st==='optional'?'optional':st==='review'?'review':'n/a';
+    const state=st=>st==='yes'?'yes':st==='no'?'no':st==='optional'?'optional':st==='review'?'review':st==='unspecified'?'not specified':'n/a';
     res.parsed.forEach((p,idx)=>{
       const label=p.num!=null?`[${p.num}]`:`#${idx+1}`;
       const typeStatus=refSourceTypeStatus(p);
