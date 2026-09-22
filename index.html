@@ -7077,9 +7077,10 @@ const UNIT_REGISTRY={
   CFU:{dim:{Count:1},scale:1,prefix:false,domain:true}, MPN:{dim:{Count:1},scale:1,prefix:false,domain:true}, cells:{dim:{Count:1},scale:1,prefix:false,domain:true},
   NTU:{dim:{NTU:1},scale:1,prefix:false,domain:true}, FNU:{dim:{FNU:1},scale:1,prefix:false,domain:true},
   "%":{dim:{},scale:0.01,prefix:false,accepted:true}, "°":{dim:{},scale:Math.PI/180,prefix:false,accepted:true}, "′":{dim:{},scale:Math.PI/10800,prefix:false,accepted:true}, "″":{dim:{},scale:Math.PI/648000,prefix:false,accepted:true}, ppm:{dim:{},scale:1e-6,prefix:false,domain:true}, ppb:{dim:{},scale:1e-9,prefix:false,domain:true}, ppt:{dim:{},scale:1e-12,prefix:false,domain:true},
-  M:{dim:{N:1,L:-3},scale:1000,prefix:false,domain:true}
+  M:{dim:{N:1,L:-3},scale:1000,prefix:true,domain:true},
+  head:{dim:{Head:1},scale:1,prefix:false,domain:true}
 };
-const UNIT_ANALYTES=new Set(["COD","BOD","TOC","DOC","TSS","TDS","TS","VS","FS","TN","TP","TKN","N","P","NH4-N","NH3-N","NO3-N","NO2-N","PO4-P","CA2+","MG2+","CACO3","CL-","F-","SO4","SO4-S","S","H2S","H2","CH4","O2","CO2"]);
+const UNIT_ANALYTES=new Set(["COD","BOD","TOC","DOC","TSS","TDS","TS","VS","VSS","FS","TN","TP","TKN","N","P","NH4-N","NH3-N","NO3-N","NO2-N","PO4-P","CA2+","MG2+","CACO3","CL-","F-","SO4","SO4-S","S","H2S","H2","CH4","O2","CO2"]);
 const UNIT_NONSTANDARD={sec:"s",secs:"s",hr:"h",hrs:"h",cc:"cm^3",mps:"m/s",kgs:"kg",mgs:"mg",mLs:"mL"};
 const UNIT_NAME_ALIASES={second:"s",seconds:"s",minute:"min",minutes:"min",hour:"h",hours:"h",day:"d",days:"d",metre:"m",metres:"m",meter:"m",meters:"m",litre:"L",litres:"L",liter:"L",liters:"L",gram:"g",grams:"g",kilogram:"kg",kilograms:"kg",kelvin:"K"};
 const UNIT_BAD_CASE={KPa:"kPa",KPA:"kPa",kpa:"kPa",HZ:"Hz",hz:"Hz",PA:"Pa",KW:"kW",mw:"mW"};
@@ -7094,8 +7095,10 @@ function unitDimKey(d){return Object.keys(d||{}).sort().map(k=>`${k}:${d[k]}`).j
 function unitScaleKey(x){if(!isFinite(x)||x<=0)return String(x);return Math.abs(Math.log10(x)-Math.round(Math.log10(x)))<1e-10?`1e${Math.round(Math.log10(x))}`:Number(x.toPrecision(9)).toString();}
 function unitSuperToAscii(s){
   const map={"⁰":"0","¹":"1","²":"2","³":"3","⁴":"4","⁵":"5","⁶":"6","⁷":"7","⁸":"8","⁹":"9","⁻":"-","⁺":"+"};
-  return (s||"").replace(/([A-Za-zµμΩ%°]+)([⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺]+)/g,(m,a,b)=>a+"^"+[...b].map(c=>map[c]||c).join(""))
-    .replace(/([A-Za-zµμΩ]+)[−–](\d+)$/g,"$1^-$2");
+  // Normalize only explicitly marked powers. Plain formula digits (CH4) and
+  // value ranges stay untouched; original text is retained by the extractor.
+  return (s||"").replace(/([A-Za-zµμΩ%°Å]+)(?:\s*\^\s*|\s*(?=[−‐‑‒–—⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹-]))([+−‐‑‒–—⁻⁺-]?[0-9⁰¹²³⁴⁵⁶⁷⁸⁹]+)/g,
+    (_m,a,b)=>a+"^"+[...b].map(c=>map[c]||c).join("").replace(/[−‐‑‒–—]/g,"-"));
 }
 function unitNormalizeMicro(s){return (s||"").replace(/μ/g,"µ");}
 function unitParseSymbol(sym){
@@ -7117,7 +7120,7 @@ function unitParseComponent(tok){
   let exp=1,sym=tok,m=tok.match(/^(.+?)\^([+-]?\d+)$/);
   if(m){sym=m[1];exp=+m[2];}
   else if((m=tok.match(/^([A-Za-zµΩ]+)([23])$/)) && UNIT_REGISTRY[m[1]]){sym=m[1];exp=+m[2];}
-  const u=unitParseSymbol(sym); if(!u)return null;
+  const u=unitParseSymbol(UNIT_NAME_ALIASES[sym.toLowerCase()]||sym); if(!u)return null;
   return {...u,exp};
 }
 function unitParseExpression(raw,opts={}){
@@ -7142,15 +7145,25 @@ function unitParseExpression(raw,opts={}){
   if(work==="°C") return {raw:raw.trim(),valid:true,recognized:true,normalized:"°C",dim:{Th:1},dimKey:"Th:1",scale:1,scaleKey:"1e0",offset:273.15,affine:true,notationFamily:"single",analyte:null,flags,components:[{canonical:"°C",exp:1}],nonstandard:!!aliasCanonical&&!unitName,unitName};
   if(work==="°F") return {raw:raw.trim(),valid:true,recognized:true,normalized:"°F",dim:{Th:1},dimKey:"Th:1",scale:5/9,scaleKey:unitScaleKey(5/9),offset:255.372222,affine:true,notationFamily:"single",analyte:null,flags,components:[{canonical:"°F",exp:1}],domain:true};
   if(work==="%") return {raw:raw.trim(),valid:true,recognized:true,normalized:"%",dim:{},dimKey:"dimensionless",scale:.01,scaleKey:unitScaleKey(.01),offset:0,notationFamily:"single",analyte:null,flags,components:[{canonical:"%",exp:1}]};
-  work=work.replace(/·|⋅|×/g," ").replace(/([/()\[\]])/g," $1 ").replace(/\s+/g," ").trim();
+  // A stated material basis is part of the measurement's identity, not prose
+  // to discard. Accept this bounded grammar only after a mass denominator.
+  const material=work.match(/\s+(?:of\s+(?:the\s+)?|on\s+(?:a\s+)?)(dry|wet)\s+(matter|weight|mass)(?:\s+basis)?$/i);
+  const materialBasis=material?`${material[1].toLowerCase()} ${material[2].toLowerCase()}`:"";
+  if(material)work=work.slice(0,material.index);
+  work=work.replace(/\bper\b/gi,"/").replace(/·|⋅|×/g," ").replace(/([/()\[\]])/g," $1 ").replace(/\s+/g," ").trim();
   // A numeric basis may touch its denominator unit: MPN/100mL.
   const toks=work.split(" ").filter(Boolean).flatMap(t=>{
     const m=t.match(/^(\d+(?:\.\d+)?)([A-Za-zµΩ].*)$/);
     return m?[m[1],m[2]]:[t];
   });
-  let dim={},scale=1,analyte=null,components=[],numericFactors=[],physical=0,pos=0,unknown="";
+  let dim={},scale=1,analyte=null,components=[],annotations=[],numericFactors=[],physical=0,pos=0,unknown="";
   const analyteKey=t=>t.replace(/[₀-₉]/g,c=>String("₀₁₂₃₄₅₆₇₈₉".indexOf(c))).toUpperCase();
   const analyteBasis=c=>c&&(["M:1","L:3","N:1","Count:1"].includes(unitDimKey(c.dim))||(unitDimKey(c.dim)==="L:1"&&Math.abs(c.exp)===3));
+  const annotate=(label,basis,direction)=>{
+    analyte=analyte||label;
+    annotations.push({label,dimKey:unitDimKey(basis.dim),exp:basis.exp*direction});
+    components[components.length-1].annotation=label;
+  };
   function readGroup(sign=1,close=""){
     let denom=false,needFactor=true,lastBasis=null,count=0;
     while(pos<toks.length){
@@ -7172,12 +7185,12 @@ function unitParseExpression(raw,opts={}){
       if(/^as$/i.test(t)){
         const annotation=toks[pos++];
         if(needFactor||!lastBasis||!annotation||!UNIT_ANALYTES.has(analyteKey(annotation)))return false;
-        analyte=analyte||analyteKey(annotation);lastBasis=null;continue;
+        annotate(analyteKey(annotation),lastBasis,direction);lastBasis=null;continue;
       }
       // Symbols are case-sensitive: s is seconds, while S after a mass or
       // volume basis may annotate sulfur. An operator ends that annotation.
       if(!needFactor&&analyteBasis(lastBasis)&&/^[A-Z]/.test(t)&&UNIT_ANALYTES.has(aq)){
-        analyte=analyte||aq;lastBasis=null;continue;
+        annotate(aq,lastBasis,direction);lastBasis=null;continue;
       }
       if(/^\d+(?:\.\d+)?$/.test(t)){
         const factor=Number(t);
@@ -7199,20 +7212,22 @@ function unitParseExpression(raw,opts={}){
       if(!comp){unknown=t;return false;}
       const exp=comp.exp*direction;physical++;count++;
       unitAddDim(dim,comp.dim,exp);scale*=Math.pow(comp.scale,exp);
-      components.push({canonical:comp.canonical,exp,raw:t});
-      if(annotation)analyte=analyte||annotation;
+      components.push({canonical:comp.canonical,exp,raw:t,dimKey:unitDimKey(comp.dim)});
+      if(annotation)annotate(annotation,comp,direction);
       lastBasis=annotation?null:comp;needFactor=false;
     }
     return !close&&!needFactor&&count>0;
   }
-  if(!readGroup()||pos!==toks.length||physical===0||!Number.isFinite(scale)||scale<=0)return opts.allowUnknown?{raw:raw.trim(),valid:false,recognized:false,unknown:unknown||raw.trim(),flags}:null;
-  const normalized=components.map(c=>c.exp===1?c.canonical:`${c.canonical}^${c.exp}`).join(" ")+numericFactors.map(f=>f.exp===-1?` / ${f.value}`:` × ${f.value}`).join("");
-  const notationFamily=(raw.includes("/")?"solidus":raw.includes("·")||raw.includes("⋅")?"negative_exponent_dot":/[⁻−]|\^-/.test(raw)?"negative_exponent_space":"product_space");
-  return {raw:raw.trim(),valid:true,recognized:true,normalized,dim,dimKey:unitDimKey(dim),scale,scaleKey:unitScaleKey(scale),offset:0,notationFamily,analyte,flags,components,nonstandard:(!!aliasCanonical&&!unitName)||!!flags.nonstandardToken,unitName,domain:components.some(c=>UNIT_REGISTRY[c.canonical]&&UNIT_REGISTRY[c.canonical].domain)};
+  if(!readGroup()||pos!==toks.length||physical===0||!Number.isFinite(scale)||scale<=0||
+    (materialBasis&&!(components.at(-1)?.dimKey==="M:1"&&components.at(-1).exp<0)))return opts.allowUnknown?{raw:raw.trim(),valid:false,recognized:false,unknown:unknown||raw.trim(),flags}:null;
+  const qualifierKey=annotations.map(a=>`${a.label}:${a.dimKey}:${a.exp}`).sort().join(";")+`|${materialBasis}`;
+  const normalized=components.map(c=>(c.exp===1?c.canonical:`${c.canonical}^${c.exp}`)+(c.annotation?` ${c.annotation}`:"")).join(" ")+numericFactors.map(f=>f.exp===-1?` / ${f.value}`:` × ${f.value}`).join("")+(materialBasis?` of ${materialBasis}`:"");
+  const notationFamily=(raw.includes("/")||/\bper\b/i.test(raw)?"solidus":raw.includes("·")||raw.includes("⋅")?"negative_exponent_dot":/[⁻−‐‑‒–—]|\^-/.test(raw)?"negative_exponent_space":"product_space");
+  return {raw:raw.trim(),valid:true,recognized:true,normalized,dim,dimKey:unitDimKey(dim),scale,scaleKey:unitScaleKey(scale),offset:0,notationFamily,analyte,annotations,materialBasis,qualifierKey,flags,components,nonstandard:(!!aliasCanonical&&!unitName)||!!flags.nonstandardToken,unitName,domain:components.some(c=>UNIT_REGISTRY[c.canonical]&&UNIT_REGISTRY[c.canonical].domain)};
 }
 function isUnitExpr(tok){const p=unitParseExpression(tok);return !!(p&&p.valid&&p.recognized);}
 function unitIsChemicalLike(s){return /^(?:H2O|H2|CH4|CO2|O2|NH4\+?|NH3|NO[23][−-]?|SO4(?:2[−-]|²⁻)?|Fe[23](?:\+|⁺)|Cr\(?VI\)?|TiO2|MnO2|g-?C3N4|PM2\.5|C\d+H\d+)/i.test((s||"").replace(/\s+/g,""));}
-function unitStrongUnknown(s){s=(s||"").trim();return !!s&&!unitIsChemicalLike(s)&&(s.includes("/")||/[µμ°%²³⁻]/.test(s)||/^[a-z]{1,4}$/.test(s));}
+function unitStrongUnknown(s){s=(s||"").trim();return !!s&&!unitIsChemicalLike(s)&&(s.includes("/")||/[µμ°%²³⁻^]|[A-Za-zµμΩ][−‐‑‒–—-]\d/.test(s)||/^[a-z]{1,4}$/.test(s));}
 function unitCandidatePrefixes(rest){
   rest=(rest||"").replace(/^[\s]+/,"");
   // Keep uppercase VS (volatile solids), but stop at the prose word vs/versus.
@@ -7223,10 +7238,10 @@ function unitCandidatePrefixes(rest){
     return unitParseExpression(rest.slice(0,m.index))?.dimKey===unitDimKey(UNIT_REGISTRY.V.dim);
   });
   if(versus)rest=rest.slice(0,versus.index);
-  const cut=rest.split(/(?=[,;:!?])|\.(?=\s+[A-Z]|$)/)[0].slice(0,90);
-  const parts=cut.split(/\s+/).filter(Boolean).slice(0,8),out=[];
+  const cut=rest.split(/(?=[,;:!?])|\.(?=\s+[A-Z]|$)/)[0].slice(0,160);
+  const parts=[...cut.matchAll(/\S+/g)].slice(0,16),out=[];
   for(let n=1;n<=parts.length;n++){
-    const candidate=parts.slice(0,n).join(" "),closers=[];
+    const candidate=cut.slice(0,parts[n-1].index+parts[n-1][0].length),closers=[];
     let end=candidate.length,stop=false,valid=true;
     for(let i=0;i<candidate.length;i++){
       const ch=candidate[i];
@@ -7241,8 +7256,15 @@ function unitCandidatePrefixes(rest){
     const prefix=candidate.slice(0,end).trim();
     // Do not retreat across an unfinished divisor or exponent and then
     // certify only its numerator as a complete unit.
-    const remainder=cut.replace(/\s+/g," ").slice(prefix.length);
-    if(valid&&!closers.length&&prefix&&!/^\s*(?:\/|\^|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻])/.test(remainder))out.push(prefix);
+    const remainder=cut.slice(prefix.length);
+    const power=remainder.match(/^\s+([A-Za-zµμΩ]+)(\s*)(?:\^|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]|[−‐‑‒–—-]\s*\d)/);
+    const per=remainder.match(/^\s*per\b\s*(.*)/);
+    // "and -0.46 V" starts another value, not a powered word "and".
+    // Likewise "per scan" supplies prose context; "per 1000 mL" is a divisor.
+    const continued=/^\s*(?:\/|\^|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]|[−‐‑‒–—-]\s*\d|[·⋅×]\s*[A-Za-zµμΩ])/.test(remainder)||
+      (power&&(!power[2]||unitParseComponent(power[1])))||
+      (per&&(!per[1]||/^[\d(.]/.test(per[1])||unitParseComponent(per[1].split(/\s/)[0])));
+    if(valid&&!closers.length&&prefix&&!continued)out.push(prefix);
     if(stop)break;
   }
   return [...new Set(out)].reverse();
@@ -7364,7 +7386,7 @@ function unitExtractQuantities(text,context="body"){
     if(out.some(q=>m.index>=q.index+q.value.length&&m.index<q.index+q.value.length+q.space.length+q.rawUnit.length))continue;
     const val=m[0],pre=text.slice(Math.max(0,m.index-24),m.index);
     if(/\b(?:Figure|Fig\.?|Table|Eq\.?|Equation|Section|Sec\.?)\s*$/i.test(pre)) continue;
-    const after=text.slice(m.index+m[0].length,m.index+m[0].length+95); if(!after)continue;
+    const after=text.slice(m.index+m[0].length,m.index+m[0].length+165); if(!after)continue;
     const sep=(after.match(/^[ \t]*/)||[""])[0],rest=after.slice(sep.length); if(!rest||/^[,;:!?]/.test(rest))continue;
     if(sep==="" && /^(?:18|19|20|21)\d{2}[a-z]\b/i.test(val+rest.slice(0,1))) continue;
     let parsed=null,rawUnit="";
@@ -7377,13 +7399,17 @@ function unitExtractQuantities(text,context="body"){
     if(!parsed){
       // Retain an explicitly written but unreadable denominator for review;
       // its numerator alone must not become a valid measurement.
-      const divided=candidates.slice().reverse().filter(c=>c.includes("/")&&unitParseExpression(c.split("/")[0])?.valid);
-      const incomplete=divided.find(c=>/\/\s*\S/.test(c))||divided[0];
+      const divided=candidates.slice().reverse().filter(c=>/(?:\/|\bper\b)/.test(c)&&unitParseExpression(c.split(/\/|\bper\b/)[0])?.valid);
+      const powered=candidates.slice().reverse().find(c=>{
+        const m=c.match(/^(.+?)\s+([A-Za-zµμΩ]+\s*(?:\^|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]|[−‐‑‒–—-]\s*\d)\S*)/);
+        return m&&unitParseExpression(m[1])?.valid;
+      });
+      const incomplete=divided.find(c=>/(?:\/|\bper\b)\s*\S/.test(c))||divided[0]||powered;
       if(incomplete){parsed=unitParseExpression(incomplete,{allowUnknown:true});rawUnit=incomplete;}
     }
     if(!parsed){
-      const one=(rest.match(/^[A-Za-zµμΩ°%][A-Za-z0-9µμΩ°%²³⁻−^/·-]{0,16}/)||[])[0];
-      if(one&&unitStrongUnknown(one)&&(sep===""||/[\/µμ°%²³⁻^]/.test(one))){parsed={raw:one,valid:false,recognized:false,unknown:one,flags:{}};rawUnit=one;} else continue;
+      const one=(rest.match(/^[A-Za-zµμΩ°%][A-Za-z0-9µμΩ°%⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻−‐‑‒–—^/·+-]{0,24}/)||[])[0];
+      if(one&&unitStrongUnknown(one)&&(sep===""||/[\/µμ°%²³⁻^]|[A-Za-zµμΩ][−‐‑‒–—-]\d/.test(one))){parsed={raw:one,valid:false,recognized:false,unknown:one,flags:{}};rawUnit=one;} else continue;
     }
     const param=unitInferParameter(text,m.index,parsed.valid?parsed:null),ctx=unitContextFlags(text,m.index);
     out.push({value:val,rawUnit,parsed,parameter:param.key,parameterConfidence:param.confidence,context,external:ctx.external,snippet:ctx.snippet,index:m.index,space:sep});
@@ -7404,7 +7430,7 @@ function unitConsistencyKey(q){
   if(!q?.parsed?.valid)return null;
   // Same physical unit and scale. This is used only to identify alternate
   // written forms of the SAME unit, never to compare different dimensions.
-  return `${q.parsed.dimKey}|${q.parsed.scaleKey}|${q.parsed.affine?"affine":""}|${q.parsed.analyte||""}`;
+  return `${q.parsed.dimKey}|${q.parsed.scaleKey}|${q.parsed.affine?"affine":""}|${q.parsed.analyte||""}|${q.parsed.qualifierKey||"|"}`;
 }
 function unitRawFormatKey(q){
   /*
@@ -7505,6 +7531,18 @@ function unitPrecisionTableInfo(table){
     rows.slice(info.dataStart).some(row=>row.some(Boolean))&&rows.slice(info.dataStart).every((row,i)=>row.every((cell,c)=>
       table.dataCells?.[i+info.dataStart]?.[c]===false||!cell||clean(cell)===clean(b.cellMatrix[i+info.dataStart]?.[c]))));
   const block=matches.length===1?matches[0]:null;
+  // Read only notes attached to this uniquely matched table. A marker in a
+  // different table or ordinary following paragraph cannot license stripping.
+  const notes=[];
+  if(block){
+    const classed=typeof DOCX_STRUCTURAL_PARAGRAPHS!=="undefined"?DOCX_STRUCTURAL_PARAGRAPHS:[];
+    for(let i=blocks.indexOf(block)+1;i<Math.min(blocks.length,blocks.indexOf(block)+8);i++){
+      if(!String(blocks[i].text||"").trim())continue;
+      if(classed[i]?.type!=="TABLE_NOTE")break;
+      notes.push(blocks[i].text);
+    }
+  }
+  const noteMarkers=[...new Set(notes.flatMap(note=>[...String(note).matchAll(/(?:^|[;,]\s*|\bNotes?:\s*)([*†‡§#]+)\s*(?:[=:–—-]\s*)?(?=[\p{L}\p{N}])/gu)].map(m=>m[1])))];
   const headerPaths=info.headerPaths.map((path,c)=>{
     if(!info.headers[c]||!block?.abbrSymbolCells)return path;
     const restored=rows.slice(0,info.dataStart).map((row,r)=>{
@@ -7521,7 +7559,11 @@ function unitPrecisionTableInfo(table){
   const caption=table.caption||table.title||(/^\s*Table\s+[S\d]/i.test(preceding?.text||"")?preceding.text:"");
   const referenceColumn=headers.findIndex(h=>/^(?:ref\.?|references?|sources?|stud(?:y|ies)|citations?)$/i.test(h.trim()));
   const parameterColumn=headers.findIndex(h=>/^(?:parameters?|analytes?|indicators?|pollutants?|properties|characteristics|KPI)[*#%$†‡\s]*$/i.test(h.trim()));
-  return {...info,headers,headerPaths,caption,referenceColumn,parameterColumn};
+  return {...info,headers,headerPaths,caption,referenceColumn,parameterColumn,noteMarkers};
+}
+function tableMeasurementCell(cell,info){
+  const text=String(cell||"").trim(),mark=text.match(/\s*([*†‡§#]+)$/);
+  return mark&&info?.noteMarkers?.includes(mark[1])?text.slice(0,mark.index).trimEnd():text;
 }
 function unitPrecisionTableCell(table,info,r,c){
   const row=table.rows[r]||[],header=info.headers[c]||"";
@@ -7538,7 +7580,7 @@ function unitPrecisionTableCell(table,info,r,c){
     exclusion={role:"setting",reason:"These values describe the experimental setup, so decimal places were not compared. No action needed for this comparison."};
   if(!exclusion&&(!header||unitFindHeaderUnit(header)?.parameter==="Table column"))
     exclusion={role:"unresolved",reason:"The measurement parameter could not be established from this column header."};
-  const scalar=tableScalar(row[c],header);
+  const scalar=tableScalar(tableMeasurementCell(row[c],info),header);
   if(!exclusion&&scalar&&/^(?:0|100)$/.test(scalar.raw)&&(scalar.unit==="%"||unitFindHeaderUnit(header)?.raw==="%"))
     exclusion={role:"endpoint",reason:"A percentage endpoint alone does not establish measurement resolution."};
   return {tableIndex:table.index,rowIndex:r,columnIndex:c,analyte,source,
@@ -7722,7 +7764,7 @@ function unitAnalyzeTables(tables){
       const parameter=hi?path.map((part,h)=>h===unitPart?(hi.parameter==="Table column"?"":hi.parameter):part).filter(Boolean).join(" / ")||"Table column":header;
       for(let r=dataStart;r<t.rows.length;r++){
         if(t.dataCells?.[r]?.[c]===false)continue;
-        const cell=(t.rows[r][c]||"").trim();if(!cell)continue;
+        const sourceCell=String(t.rows[r][c]||"").trim(),cell=tableMeasurementCell(sourceCell,tableInfo);if(!cell)continue;
         const precisionTable=unitPrecisionTableCell(t,tableInfo,r,c);
         const pair=tableUncertainty(cell,hi,header);
         if(pair&&(pair.parsed||hi)){
@@ -7734,7 +7776,7 @@ function unitAnalyzeTables(tables){
             parameterConfidence:.99,
             context:`Table ${t.index}, ${parameter}`,
             external:false,
-            snippet:`Table ${t.index}, row ${r+1}, column ${c+1}, ${parameter}: ${cell}`,
+            snippet:`Table ${t.index}, row ${r+1}, column ${c+1}, ${parameter}: ${sourceCell}`,
             space:pair.rawUnit?pair.space:"",
             inherited:!pair.rawUnit,precisionTable
           });
@@ -7746,7 +7788,7 @@ function unitAnalyzeTables(tables){
             q.parameter=parameter;
             q.parameterConfidence=.99;
             q.context=`Table ${t.index}, ${parameter}`;
-            q.snippet=`Table ${t.index}, row ${r+1}, ${parameter}: ${cell}`;
+            q.snippet=`Table ${t.index}, row ${r+1}, ${parameter}: ${sourceCell}`;
             q.precisionTable=precisionTable;
             qs.push(q);
           });
@@ -7762,7 +7804,7 @@ function unitAnalyzeTables(tables){
             parameterConfidence:.99,
             context:`Table ${t.index}, ${parameter}`,
             external:false,
-            snippet:`Table ${t.index}, row ${r+1}, ${parameter}: ${cell}`,
+            snippet:`Table ${t.index}, row ${r+1}, ${parameter}: ${sourceCell}`,
             space:" ",
             inherited:true,precisionTable
           });
@@ -8216,6 +8258,7 @@ const ENG_CAPTION_PROSE_PREFIX_RE=/^(?:as\s+(?:shown|presented|illustrated|depic
    tied to any particular abbreviation or footnote symbol. */
 const ABBR_NOTE_MARKER_SRC=String.raw`(?:[\p{P}\p{S}\u2070-\u209F\u1D2C-\u1DFF]{1,8}|(?:\(?[a-z0-9]{1,3}\)?[.)]?))`;
 const ABBR_TABLE_NOTE_SHORTFORM_SRC=String.raw`(?:[A-Z][A-Z0-9\/-]{1,13}|[A-Za-z][A-Za-z0-9_]{0,14})`;
+const ABBR_TABLE_NOTE_ENTRY_MARKER_SRC=String.raw`(?:(?:[\p{P}\p{S}]{1,8}|\(?\d{1,3}\)?[.)]?|\([a-z]\)|[a-z][.)]|[a-z](?=\s+[–—-]))\s*(?:[–—-]\s*)?)?`;
 // Internal non-letter marker used only while abbreviation prose is being prepared.
 // It separates the Abstract from the main manuscript body so duplicate-definition
 // checks can treat them as independent editorial scopes without changing visible text.
@@ -8239,12 +8282,9 @@ function abbrTableNoteDefinitionAssignments(text){
   let markerRe;
   try{
     markerRe=new RegExp(
-      // Do not reuse abbrDefinitionMarkerSource() here. Its alphanumeric
-      // footnote-marker alternative can greedily consume the first letters of
-      // a real abbreviation (for example GA + C from GAC) under case-insensitive
-      // matching. Inside an explicit list, comma/semicolon boundaries already
-      // identify each entry; only punctuation-style markers are allowed.
-      String.raw`(?:^|[,;]\s*)(?:[*†‡§¶#%^&$]+\s*)?\(?\s*(${sf})\s*\)?\s*(?:[:=]|\s+[–—-]\s+)`,
+      // A marker and optional separator belong to each entry, not just the
+      // first. Bare letters cannot consume part of a real abbreviation.
+      String.raw`(?:^(?:(?:Notes?|Abbreviations?)\s*:\s*)?|[,;]\s*)${ABBR_TABLE_NOTE_ENTRY_MARKER_SRC}\(?\s*(${sf})\s*\)?\s*(?:[:=]|\s+[–—-]\s+)`,
       "gu"
     );
   }catch(_e){
@@ -8355,7 +8395,7 @@ function abbrLooksTableNoteDefinitionLine(text){
   // marker, otherwise narrative text such as "The C:N ratio ..." can be
   // misread as the assignment "C: N ratio". Supported markers remain
   // punctuation/symbols and explicit forms such as a), (a), 1), or (1).
-  const lead=String.raw`(?:(?:[\p{P}\p{S}\u2070-\u209F\u1D2C-\u1DFF]{1,8}|\(?[a-z0-9]{1,3}\)?[.)])\s*)?`;
+  const lead=ABBR_TABLE_NOTE_ENTRY_MARKER_SRC;
   const sf=ABBR_TABLE_NOTE_SHORTFORM_SRC;
   try{
     const first=new RegExp(
@@ -24132,16 +24172,16 @@ function precisionTableCheck(tables){
       const headerUnit=unitFindHeaderUnit(header);
       for(let r=dataStart;r<rows.length;r++){
         if(tbl.dataCells?.[r]?.[c]===false)continue;
-        const cell=String(rows[r][c]||"").trim();
+        const sourceCell=String(rows[r][c]||"").trim(),cell=tableMeasurementCell(sourceCell,precisionInfo);
         const pair=tableUncertainty(cell,headerUnit,header);
         if(pair&&pair.meanPlace!==pair.uncertaintyPlace){
           out.push({cat:"uncertainty",
             msg:`Word table ${tbl.index}, column ${c+1} (${header}): row ${r+1} has a value and variation/uncertainty ending at different decimal places (${pair.value}). Verify the measurement resolution and report both to the same scientifically justified decimal place.`,
-            snippet:`<b>Row ${r+1}, column ${c+1} (${escapeHtml(header)}):</b> <mark>${escapeHtml(cell)}</mark>`
+            snippet:`<b>Row ${r+1}, column ${c+1} (${escapeHtml(header)}):</b> <mark>${escapeHtml(sourceCell)}</mark>`
           });
         }
         // Keep uncertainty expressions out of cross-row scalar comparisons.
-        const x=tableScalar(rows[r][c],header);
+        const x=tableScalar(cell,header);
         const context=unitPrecisionTableCell(tbl,precisionInfo,r,c);
         if(x&&!context.reason&&!thresholdMatrix){
           const explicit=cell.slice(x.raw.length).trim(),parsed=explicit?unitParseExpression(explicit):headerUnit?.parsed;
