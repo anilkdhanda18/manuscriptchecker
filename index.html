@@ -7134,34 +7134,71 @@ function unitParseExpression(raw,opts={}){
   if(work==="°C") return {raw:raw.trim(),valid:true,recognized:true,normalized:"°C",dim:{Th:1},dimKey:"Th:1",scale:1,scaleKey:"1e0",offset:273.15,affine:true,notationFamily:"single",analyte:null,flags,components:[{canonical:"°C",exp:1}],nonstandard:!!aliasCanonical&&!unitName,unitName};
   if(work==="°F") return {raw:raw.trim(),valid:true,recognized:true,normalized:"°F",dim:{Th:1},dimKey:"Th:1",scale:5/9,scaleKey:unitScaleKey(5/9),offset:255.372222,affine:true,notationFamily:"single",analyte:null,flags,components:[{canonical:"°F",exp:1}],domain:true};
   if(work==="%") return {raw:raw.trim(),valid:true,recognized:true,normalized:"%",dim:{},dimKey:"dimensionless",scale:.01,scaleKey:unitScaleKey(.01),offset:0,notationFamily:"single",analyte:null,flags,components:[{canonical:"%",exp:1}]};
-  work=work.replace(/·|⋅|×/g," ").replace(/\//g," / ").replace(/\s+/g," ").trim();
-  const toks=work.split(" ").filter(Boolean); if(!toks.length)return null;
-  let denom=false,dim={},scale=1,analyte=null,components=[],numericDiv=1,physical=0,unknown=[],expectAnalyte=false;
-  for(let i=0;i<toks.length;i++){
-    let t=toks[i].replace(/^[()\[\]]+|[()\[\],;]+$/g,""); if(!t)continue;
-    const aq=t.toUpperCase().replace(/[₀-₉]/g,c=>({"₀":"0","₁":"1","₂":"2","₃":"3","₄":"4","₅":"5","₆":"6","₇":"7","₈":"8","₉":"9"}[c]));
-    if(expectAnalyte){
-      if(!UNIT_ANALYTES.has(aq)){unknown.push(t);break;}
-      analyte=analyte||aq;expectAnalyte=false;continue;
+  work=work.replace(/·|⋅|×/g," ").replace(/([/()\[\]])/g," $1 ").replace(/\s+/g," ").trim();
+  // A numeric basis may touch its denominator unit: MPN/100mL.
+  const toks=work.split(" ").filter(Boolean).flatMap(t=>{
+    const m=t.match(/^(\d+(?:\.\d+)?)([A-Za-zµΩ].*)$/);
+    return m?[m[1],m[2]]:[t];
+  });
+  let dim={},scale=1,analyte=null,components=[],numericFactors=[],physical=0,pos=0,unknown="";
+  const analyteKey=t=>t.replace(/[₀-₉]/g,c=>String("₀₁₂₃₄₅₆₇₈₉".indexOf(c))).toUpperCase();
+  const analyteBasis=c=>c&&(["M:1","L:3","N:1","Count:1"].includes(unitDimKey(c.dim))||(unitDimKey(c.dim)==="L:1"&&Math.abs(c.exp)===3));
+  function readGroup(sign=1,close=""){
+    let denom=false,needFactor=true,lastBasis=null,count=0;
+    while(pos<toks.length){
+      const t=toks[pos++];
+      if(t===")"||t==="]")return t===close&&!needFactor&&count>0;
+      if(t==="/"){
+        if(needFactor)return false;
+        denom=true;needFactor=true;lastBasis=null;continue;
+      }
+      if(t==="("||t==="["){
+        const dividedGroup=denom&&needFactor;
+        if(!readGroup(sign*(denom?-1:1),t==="("?")":"]"))return false;
+        // A closed denominator group is one complete divisor. Subsequent
+        // factors are again in this group's numerator, e.g. kg/(m) s.
+        if(dividedGroup)denom=false;
+        needFactor=false;lastBasis=null;count++;continue;
+      }
+      const direction=sign*(denom?-1:1),aq=analyteKey(t);
+      if(/^as$/i.test(t)){
+        const annotation=toks[pos++];
+        if(needFactor||!lastBasis||!annotation||!UNIT_ANALYTES.has(analyteKey(annotation)))return false;
+        analyte=analyte||analyteKey(annotation);lastBasis=null;continue;
+      }
+      // Symbols are case-sensitive: s is seconds, while S after a mass or
+      // volume basis may annotate sulfur. An operator ends that annotation.
+      if(!needFactor&&analyteBasis(lastBasis)&&/^[A-Z]/.test(t)&&UNIT_ANALYTES.has(aq)){
+        analyte=analyte||aq;lastBasis=null;continue;
+      }
+      if(/^\d+(?:\.\d+)?$/.test(t)){
+        const factor=Number(t);
+        if((!denom&&sign===1)||!Number.isFinite(factor)||factor<=0)return false;
+        scale*=Math.pow(factor,direction);numericFactors.push({value:t,exp:direction});
+        needFactor=false;lastBasis=null;count++;continue;
+      }
+      let comp=unitParseComponent(t),annotation=null;
+      if(!comp&&UNIT_NONSTANDARD[t]){comp=unitParseComponent(UNIT_NONSTANDARD[t]);flags.nonstandardToken=t;}
+      if(!comp){
+        const term=t.match(/^(.+?)(\^[+-]?\d+)?$/),base=term[1];
+        // Split compact annotations only after a recognised mass/volume
+        // basis, never by uppercasing an otherwise valid SI symbol.
+        for(let n=1;n<base.length;n++){
+          const suffix=base.slice(n),basis=unitParseComponent(base.slice(0,n)+(term[2]||""));
+          if(analyteBasis(basis)&&/^[A-Z]/.test(suffix)&&UNIT_ANALYTES.has(analyteKey(suffix))){comp=basis;annotation=analyteKey(suffix);break;}
+        }
+      }
+      if(!comp){unknown=t;return false;}
+      const exp=comp.exp*direction;physical++;count++;
+      unitAddDim(dim,comp.dim,exp);scale*=Math.pow(comp.scale,exp);
+      components.push({canonical:comp.canonical,exp,raw:t});
+      if(annotation)analyte=analyte||annotation;
+      lastBasis=annotation?null:comp;needFactor=false;
     }
-    if(t==="/"){denom=true;continue;}
-    if(/^\d+(?:\.\d+)?$/.test(t) && denom){numericDiv*=+t;continue;}
-    // "as" belongs to a unit only when it introduces a recognised analyte.
-    if(/^as$/i.test(t)){
-      if(!physical){unknown.push(t);break;}
-      expectAnalyte=true;continue;
-    }
-    if(physical>0 && UNIT_ANALYTES.has(aq)){analyte=analyte||aq;continue;}
-    let comp=unitParseComponent(t);
-    if(!comp && UNIT_NONSTANDARD[t]){comp=unitParseComponent(UNIT_NONSTANDARD[t]);flags.nonstandardToken=t;}
-    if(!comp){unknown.push(t);break;}
-    let exp=comp.exp*(denom?-1:1); physical++;
-    unitAddDim(dim,comp.dim,exp); scale*=Math.pow(comp.scale,exp);
-    components.push({canonical:comp.canonical,exp,raw:t});
+    return !close&&!needFactor&&count>0;
   }
-  if(unknown.length||physical===0||expectAnalyte)return opts.allowUnknown?{raw:raw.trim(),valid:false,recognized:false,unknown:unknown[0]||raw.trim(),flags}:null;
-  if(numericDiv!==1)scale/=numericDiv;
-  const normalized=components.map(c=>c.exp===1?c.canonical:`${c.canonical}^${c.exp}`).join(" ");
+  if(!readGroup()||pos!==toks.length||physical===0||!Number.isFinite(scale)||scale<=0)return opts.allowUnknown?{raw:raw.trim(),valid:false,recognized:false,unknown:unknown||raw.trim(),flags}:null;
+  const normalized=components.map(c=>c.exp===1?c.canonical:`${c.canonical}^${c.exp}`).join(" ")+numericFactors.map(f=>f.exp===-1?` / ${f.value}`:` × ${f.value}`).join("");
   const notationFamily=(raw.includes("/")?"solidus":raw.includes("·")||raw.includes("⋅")?"negative_exponent_dot":/[⁻−]|\^-/.test(raw)?"negative_exponent_space":"product_space");
   return {raw:raw.trim(),valid:true,recognized:true,normalized,dim,dimKey:unitDimKey(dim),scale,scaleKey:unitScaleKey(scale),offset:0,notationFamily,analyte,flags,components,nonstandard:(!!aliasCanonical&&!unitName)||!!flags.nonstandardToken,unitName,domain:components.some(c=>UNIT_REGISTRY[c.canonical]&&UNIT_REGISTRY[c.canonical].domain)};
 }
@@ -7194,18 +7231,21 @@ function unitCandidatePrefixes(rest){
       }
     }
     const prefix=candidate.slice(0,end).trim();
-    if(valid&&!closers.length&&prefix)out.push(prefix);
+    // Do not retreat across an unfinished divisor or exponent and then
+    // certify only its numerator as a complete unit.
+    const remainder=cut.replace(/\s+/g," ").slice(prefix.length);
+    if(valid&&!closers.length&&prefix&&!/^\s*(?:\/|\^|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻])/.test(remainder))out.push(prefix);
     if(stop)break;
   }
   return [...new Set(out)].reverse();
 }
 const UNIT_NUM_SIGN='[+−‐‑–—-]';
-const UNIT_NUM_DECIMAL='(?:\\d+(?:\\.\\d+)?|\\.\\d+)';
+const UNIT_NUM_DECIMAL='(?:(?:\\d{1,3}(?:,\\d{3})+|\\d{1,2}(?:,\\d{2})+,\\d{3}|\\d+)(?:\\.\\d+)?|\\.\\d+)';
 const UNIT_NUM_EXPONENT='(?:\\^\\s*'+UNIT_NUM_SIGN+'?\\d+|[⁺⁻]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+)';
 // Read the full scientific value and both range endpoints before considering
 // an isolated signed decimal. Standalone powers require a caret or superscript;
 // flattened text such as 106 must not be guessed to mean 10 to the sixth power.
-const UNIT_NUM_CORE=UNIT_NUM_SIGN+'?(?:'+UNIT_NUM_DECIMAL+'\\s*[×x]\\s*10\\s*(?:'+UNIT_NUM_EXPONENT+'|'+UNIT_NUM_SIGN+'?\\d+)|10\\s*'+UNIT_NUM_EXPONENT+'|'+UNIT_NUM_DECIMAL+'(?:[eE]'+UNIT_NUM_SIGN+'?\\d+)?)';
+const UNIT_NUM_CORE=UNIT_NUM_SIGN+'?(?:'+UNIT_NUM_DECIMAL+'\\s*[×x·⋅]\\s*10\\s*(?:'+UNIT_NUM_EXPONENT+'|'+UNIT_NUM_SIGN+'?\\d+)|10\\s*'+UNIT_NUM_EXPONENT+'|'+UNIT_NUM_DECIMAL+'(?:[eE]'+UNIT_NUM_SIGN+'?\\d+)?)';
 const UNIT_VALUE_RE=new RegExp('(?:[<>≤≥~≈]\\s*)?'+UNIT_NUM_CORE+'(?:\\s*(?:±|[−‐‑–—-]|\\bto\\b)\\s*'+UNIT_NUM_CORE+')?','g');
 const UNIT_CELL_VALUE_RE=new RegExp('^'+UNIT_VALUE_RE.source+'$');
 const UNIT_PARAM_PATTERNS=[
@@ -7225,15 +7265,71 @@ function unitInferParameter(text,index,parsed){
   return {key:"Body text",confidence:.35};
 }
 function unitContextFlags(text,index){const s=(text||"").slice(Math.max(0,index-110),Math.min((text||"").length,index+90));return {external:/\b(?:reported by|according to|et al\.|standard|guideline|limit|threshold|CPCB|NGT|WHO|EPA)\b/i.test(s),snippet:s.replace(/\s+/g," ").trim()};}
+function unitOrbitalLabelSpans(text,context=""){
+  // Protect only the label, preserving source offsets and neighbouring eV
+  // values. An XPS keyword elsewhere does not establish that 1s means an orbital.
+  text=String(text||"").replace(/\u00A0|\u202F/g," ");
+  const spans=[],labelColumn=/(?:^|,|\/)\s*(?:XPS\s+)?(?:orbitals?|core[- ]levels?|subshells?|peak assignments?)\s*$/i.test(context);
+  const re=/([1-9])([ \t]*)([spdf])(?:[ \t]*_?[ \t]*(?:([1357₁₃₅₇])[ \t]*[\/⁄∕][ \t]*[2₂]|\([ \t]*([1357₁₃₅₇])[ \t]*[\/⁄∕][ \t]*[2₂][ \t]*\))|([0-9⁰¹²³⁴⁵⁶⁷⁸⁹]{1,2}))?(?![A-Za-z0-9₀-₉⁰¹²³⁴⁵⁶⁷⁸⁹^]|\.\d)/g;
+  for(const m of text.matchAll(re)){
+    const l="spdf".indexOf(m[3]),j=m[4]||m[5]?Number((m[4]||m[5]).normalize("NFKC")):null;
+    if(Number(m[1])<=l||j!==null&&!([2*l-1,2*l+1].includes(j)))continue;
+    const start=m.index,end=start+m[0].length,before=text.slice(Math.max(0,start-90),start),after=text.slice(end,end+90);
+    const element=before.match(/(?:^|[^A-Za-z0-9])([A-Z][a-z]?)(?:[0-9⁰¹²³⁴⁵⁶⁷⁸⁹]+[+⁺−-]|\([IVX]+\))?[ \t]*([([])?[ \t]*$/);
+    const elementCue=element&&MC_CHEM_ELEMENT_SYMBOLS.has(element[1])&&(!element[2]||after.trimStart().startsWith(element[2]==="("?")":"]"))&&!/\b(?:sample|specimen|group|run|batch|label)\s*$/i.test(before.slice(0,element.index));
+    if(/[A-Za-z0-9.₀-₉⁰¹²³⁴⁵⁶⁷⁸⁹]$/.test(before)&&!elementCue)continue;
+    const orbitalCue=/^[ \t-]*(?:(?:filled|electronic?)\s+)?(?:orbitals?|subshells?|core[- ]levels?|configurations?)\b/i.test(after)||/\b(?:orbital|subshell|core[- ]level)(?:\s+labels?)?[ \t]+$/i.test(before);
+    const spectralCue=/^[ \t-]*(?:XPS\s+)?(?:spectr(?:um|a)|peaks?|doublets?|states?|levels?)\b/i.test(after);
+    // Explicit duration wording wins over an adjacent spectroscopy word.
+    const timeCue=/\b(?:for|after|before|within|over|every|at|lasting|lasted|time(?:\s+(?:of|was|is))?|duration(?:\s+of)?)\s*(?:about\s+|approximately\s+)?$/i.test(before)||/^[ \t]+(?:long|elapsed|duration|intervals?|acquisition|dwell|exposure)\b/i.test(after);
+    if(j===null&&timeCue)continue;
+    if(m[6]&&(!(Number(m[6].normalize("NFKC"))>0&&Number(m[6].normalize("NFKC"))<=2*(2*l+1))||!orbitalCue))continue;
+    if((j!==null&&!m[2])||orbitalCue||labelColumn||(elementCue&&(!m[2]||j!==null||spectralCue)))spans.push({start,end});
+  }
+  return spans;
+}
+function unitFinancialValueSpans(text,context=""){
+  text=String(text||"").replace(/\u00A0|\u202F/g," ");
+  const spans=[],isCurrency=s=>!!s&&(/^\p{Sc}$/u.test(s)||ABBR_CURRENCY_CODES.has(s.replace(/\.$/,""))||/^(?:rs\.?|rupees?|dollars?|euros?|yen|yuan)$/i.test(s));
+  const header=String(context||"").replace(/^Table\s+\d+,\s*/,""),name=header.replace(/\([^)]*\)/g," ");
+  const financialName=/\b(?:costs?|expenditure|expenses?|OPEX|CAPEX|prices?|tariffs?|fees?|payments?|revenues?)\b/i;
+  const physicalHeader=/^\s*(?:(?:measured|design|installed|treatment|operating|total)\s+)*(?:flow|capacity|throughput|volume|duration|time|power|energy)\b/i.test(name);
+  const costHeader=financialName.test(name)&&!physicalHeader;
+  const currencyHeader=[...header.matchAll(/\p{Sc}|\b[A-Za-z]{2,8}\.?\b/gu)].some(m=>isCurrency(m[0]));
+  const moneyHeader=!physicalHeader&&(isCurrency(header.match(/^(\p{Sc}|[A-Za-z]{2,8})(?=$|[\s/.()])/u)?.[1])||costHeader&&(currencyHeader||/\bLPM\b/.test(header)));
+  for(const m of text.matchAll(new RegExp(UNIT_VALUE_RE.source,"g"))){
+    const before=text.slice(Math.max(0,m.index-140),m.index),after=text.slice(m.index+m[0].length,m.index+m[0].length+90);
+    const prefix=before.match(/(\p{Sc}|\b[A-Za-z]{2,8}\.?)[ \t]*(?:[(\[][ \t]*)?$/u)?.[1];
+    const suffix=after.match(/^[ \t]*(?:(?:[kKmMbB]|thousands?|millions?|billions?|lakhs?|crores?)[ \t]*)?(\p{Sc}|[A-Za-z]{2,8}\.?)(?![A-Za-z])/u)?.[1];
+    let money=isCurrency(prefix)||isCurrency(suffix);
+    // A price's explicit numeric denominator is part of that price, while
+    // an operating condition introduced by "at" remains a measurement.
+    const prior=spans.at(-1),basis=prior&&text.slice(prior.end,m.index).match(/^[ \t]*(?:(\p{Sc}|[A-Za-z]{1,8}\.?)\s*)?(?:\/|per)[ \t]*$/u);
+    if(basis&&(!basis[1]||isCurrency(basis[1])||/^(?:LPM|lakhs?|crores?|million|billion)$/.test(basis[1])))money=true;
+    if(!money){
+      const flowCue=/\b(?:flow(?:\s+rate)?|airflow|discharge|capacity|throughput)\s*(?:(?:was|were|is|are|of|at)\s*)?[:=]?\s*$/i.test(before)||/^[ \t]*LPM[ \t]+(?:(?:water|air|gas)\s+)?flow\b/i.test(after);
+      const subject=[...before.matchAll(new RegExp(financialName.source,"gi"))].at(-1);
+      const relation=subject&&/^[ \t]*(?:(?:was|were|is|are)(?:\s+(?:estimated|reported))?(?:\s+(?:at|as|to be))?|(?:ranged?|ranges?|ranging|varied|varies|varying)\s+(?:from|between)|(?:amounted|amounts)\s+to|of|[:=])?[ \t]*(?:(?:approximately|about|around)\s*)?$/i.test(before.slice(subject.index+subject[0].length));
+      const shorthand=/^[ \t]*(?:LPM\b|crores?\b|lakhs?\b)/.test(after);
+      money=!flowCue&&((moneyHeader&&UNIT_CELL_VALUE_RE.test(text.trim()))||(shorthand&&(relation||(costHeader&&m.index===text.search(/\S/)))));
+    }
+    if(money)spans.push({start:m.index,end:m.index+m[0].length});
+  }
+  return spans;
+}
 function unitNumericMatchIsEmbedded(text,index,length){
   const before=(text||"").slice(Math.max(0,index-40),index);
   const after=(text||"").slice(index+length,index+length+24);
   const prev=before.slice(-1);
 
+  // Commas inside a numeric token cannot be dropped to recover a smaller
+  // value. Unsupported decimal commas and malformed grouping stay unresolved.
+  if(/[\d,],$/.test(before)||/^,\d/.test(after)||/^\.\d/.test(after))return true;
+
   // Digits immediately attached to letters/symbols are normally powers,
   // subscripts, chemical formulae or identifier fragments, not reported values:
   // m3, cm2, H2, CO2, NH4, PM2.5, Fe3+, etc.
-  if(/[A-Za-zµμΩ0-9.⁰¹²³⁴⁵⁶⁷⁸⁹]/.test(prev)) return true;
+  if(/[A-Za-zµμΩ0-9.₀-₉⁰¹²³⁴⁵⁶⁷⁸⁹]/.test(prev)) return true;
 
   // Caret/signed powers such as m^3, s^-1 and 10^-3 must never be re-read as
   // independent measurements by the global number scanner.
@@ -7242,7 +7338,7 @@ function unitNumericMatchIsEmbedded(text,index,length){
 
   // A bare numeric divisor inside an already-started unit expression belongs
   // to that expression rather than starting a new measured quantity.
-  if(/[A-Za-zµμΩ%°²³][A-Za-z0-9µμΩ%°²³⁻−^·⋅×-]*\/\s*$/.test(before)) return true;
+  if(/[A-Za-zµμΩ%°²³][A-Za-z0-9µμΩ%°²³⁻−^·⋅×-]*\s*\/\s*[(\[]?\s*$/.test(before)) return true;
 
   // Decimal fragments inside compact scientific/product notation are protected
   // when attached to an identifier immediately on the left.
@@ -7252,18 +7348,30 @@ function unitNumericMatchIsEmbedded(text,index,length){
 }
 function unitExtractQuantities(text,context="body"){
   const out=[]; text=(text||"").replace(/\u00A0|\u202F/g," "); let m; UNIT_VALUE_RE.lastIndex=0;
+  const orbitalSpans=unitOrbitalLabelSpans(text,context),financialSpans=unitFinancialValueSpans(text,context);
   while((m=UNIT_VALUE_RE.exec(text))){
+    if(orbitalSpans.some(span=>m.index<span.end&&m.index+m[0].length>span.start))continue;
+    if(financialSpans.some(span=>m.index<span.end&&m.index+m[0].length>span.start))continue;
     if(unitNumericMatchIsEmbedded(text,m.index,m[0].length)) continue;
+    if(out.some(q=>m.index>=q.index+q.value.length&&m.index<q.index+q.value.length+q.space.length+q.rawUnit.length))continue;
     const val=m[0],pre=text.slice(Math.max(0,m.index-24),m.index);
     if(/\b(?:Figure|Fig\.?|Table|Eq\.?|Equation|Section|Sec\.?)\s*$/i.test(pre)) continue;
     const after=text.slice(m.index+m[0].length,m.index+m[0].length+95); if(!after)continue;
-    const sep=(after.match(/^[ \t]*/)||[""])[0],rest=after.slice(sep.length); if(!rest)continue;
+    const sep=(after.match(/^[ \t]*/)||[""])[0],rest=after.slice(sep.length); if(!rest||/^[,;:!?]/.test(rest))continue;
     if(sep==="" && /^(?:18|19|20|21)\d{2}[a-z]\b/i.test(val+rest.slice(0,1))) continue;
     let parsed=null,rawUnit="";
-    for(const cand of unitCandidatePrefixes(rest)){
+    const candidates=unitCandidatePrefixes(rest);
+    for(const cand of candidates){
       if(unitIsChemicalLike(cand))continue;
       const p=unitParseExpression(cand); if(p&&p.valid){parsed=p;rawUnit=cand;break;}
       if(UNIT_BAD_CASE[cand]||UNIT_NONSTANDARD[cand]||cand==="°K"){parsed=unitParseExpression(cand,{allowUnknown:true})||{raw:cand,valid:false};rawUnit=cand;break;}
+    }
+    if(!parsed){
+      // Retain an explicitly written but unreadable denominator for review;
+      // its numerator alone must not become a valid measurement.
+      const divided=candidates.slice().reverse().filter(c=>c.includes("/")&&unitParseExpression(c.split("/")[0])?.valid);
+      const incomplete=divided.find(c=>/\/\s*\S/.test(c))||divided[0];
+      if(incomplete){parsed=unitParseExpression(incomplete,{allowUnknown:true});rawUnit=incomplete;}
     }
     if(!parsed){
       const one=(rest.match(/^[A-Za-zµμΩ°%][A-Za-z0-9µμΩ°%²³⁻−^/·-]{0,16}/)||[])[0];
@@ -7333,13 +7441,17 @@ function unitRawFormatKey(q){
 
   return s;
 }
+function unitNormalizeScalar(value){
+  const raw=String(value??"").trim();
+  return new RegExp('^'+UNIT_NUM_SIGN+'?'+UNIT_NUM_DECIMAL+'$').test(raw)?raw.replace(/,/g,"").replace(/[−‐‑–—]/g,"-"):null;
+}
 function unitScalarDecimals(v){
-  v=(v||"").trim();
+  v=unitNormalizeScalar(v);
   // Precision comparison is limited to simple scalar reported values.
   // Ranges, uncertainty expressions and scientific notation are handled by
   // the dedicated numeric-precision checker.
-  const m=v.match(/^[+−‐‑–—-]?(\d+)(?:\.(\d+))?\s*$/);
-  return m?(m[2]||"").length:null;
+  const m=v?.match(/^[+-]?(?:\d+)?(?:\.(\d+))?$/);
+  return m?(m[1]||"").length:null;
 }
 function unitPrecisionDiffers(values){
   const scalars=values.map(unitWrittenPrecision).filter(Boolean);
@@ -7350,12 +7462,20 @@ function unitPrecisionDiffers(values){
   return sig.some(n=>n===null)||new Set(sig).size>1;
 }
 function unitWrittenPrecision(value){
-  const s=String(value||"").normalize("NFKC").replace(/[−‐‑–—]/g,"-").trim();
-  const m=s.match(/^([+-]?\d+(?:\.\d+)?)(?:\s*(?:[eE]|[×x·⋅]\s*10\s*\^?)\s*([+-]?\d+))?$/);
+  const raw=String(value??"").trim();
+  if(!new RegExp('^'+UNIT_NUM_CORE+'$').test(raw))return null;
+  const power=raw.match(new RegExp('^'+UNIT_NUM_SIGN+'?10\\s*('+UNIT_NUM_EXPONENT+')$'));
+  if(power){
+    const exponent=Number(power[1].normalize("NFKC").replace(/^\^\s*/,"").replace(/[−‐‑–—]/g,"-"));
+    return Number.isSafeInteger(exponent)?{place:-exponent,sig:1}:null;
+  }
+  const s=raw.normalize("NFKC").replace(/[−‐‑–—]/g,"-");
+  const m=s.match(new RegExp('^([+-]?'+UNIT_NUM_DECIMAL+')(?:\\s*(?:[eE]|[×x·⋅]\\s*10\\s*\\^?)\\s*([+-]?\\d+))?$'));
   if(!m)return null;
   const exponent=Number(m[2]||0);
   if(!Number.isSafeInteger(exponent))return null;
-  return {place:nDec(m[1])-exponent,sig:Number(m[1])===0||(!m[2]&&/^[+-]?\d*0$/.test(m[1]))?null:nSig(m[1])};
+  const mantissa=unitNormalizeScalar(m[1]);
+  return {place:nDec(mantissa)-exponent,sig:Number(mantissa)===0||(!m[2]&&/^[+-]?\d*0$/.test(mantissa))?null:nSig(mantissa)};
 }
 function unitPrecisionLabel(place){return place>=0?`${place} decimal place${place===1?"":"s"}`:`last reported place: 10^${-place}`;}
 function unitPrecisionSource(text){
@@ -7410,7 +7530,7 @@ function unitPrecisionTableCell(table,info,r,c){
     exclusion={role:"setting",reason:"These values describe the experimental setup, so decimal places were not compared. No action needed for this comparison."};
   if(!exclusion&&(!header||unitFindHeaderUnit(header)?.parameter==="Table column"))
     exclusion={role:"unresolved",reason:"The measurement parameter could not be established from this column header."};
-  const scalar=tableScalar(row[c]);
+  const scalar=tableScalar(row[c],header);
   if(!exclusion&&scalar&&/^(?:0|100)$/.test(scalar.raw)&&(scalar.unit==="%"||unitFindHeaderUnit(header)?.raw==="%"))
     exclusion={role:"endpoint",reason:"A percentage endpoint alone does not establish measurement resolution."};
   return {tableIndex:table.index,rowIndex:r,columnIndex:c,analyte,source,
@@ -7569,8 +7689,13 @@ function unitPrecisionConsistency(qs){
 function unitFindHeaderUnit(header){
   header=(header||"").replace(/\u00A0/g," ").trim(); if(!header)return null;
   if(tableCellStartsNumber(header)||tableCellIsMissing(header)||tableHeaderIsPH(header))return null;
-  const pars=[...header.matchAll(/\(([^()]{1,45})\)/g)].map(m=>m[1]);
-  for(let i=pars.length-1;i>=0;i--){const p=unitParseExpression(pars[i]);if(p?.valid)return {parsed:p,raw:pars[i],parameter:header.replace(/\([^()]*\)/g," ").replace(/\s+/g," ").trim()||"Table column"};}
+  const pars=[];let depth=0,start=-1;
+  for(let i=0;i<header.length;i++){
+    if(header[i]==="("){if(depth++===0)start=i;}
+    else if(header[i]===")"&&depth>0&&--depth===0)pars.push({raw:header.slice(start+1,i),start,end:i+1});
+  }
+  // Inspect complete outer groups so mg/(L s) cannot become just L s.
+  for(let i=pars.length-1;i>=0;i--){const part=pars[i];if(/\/\s*$/.test(header.slice(0,part.start)))continue;const p=unitParseExpression(part.raw);if(p?.valid)return {parsed:p,raw:part.raw,parameter:(header.slice(0,part.start)+" "+header.slice(part.end)).replace(/\s+/g," ").trim()||"Table column"};}
   const words=header.split(/\s+/).filter(Boolean);
   for(let n=Math.min(5,words.length);n>=1;n--){const cand=words.slice(words.length-n).join(" ").replace(/^[,;:]+/,"");const p=unitParseExpression(cand);if(p?.valid){const parameter=words.slice(0,words.length-n).join(" ").replace(/[,;:]$/," ").trim()||"Table column";return {parsed:p,raw:cand,parameter};}}
   return null;
@@ -7591,7 +7716,7 @@ function unitAnalyzeTables(tables){
         if(t.dataCells?.[r]?.[c]===false)continue;
         const cell=(t.rows[r][c]||"").trim();if(!cell)continue;
         const precisionTable=unitPrecisionTableCell(t,tableInfo,r,c);
-        const pair=tableUncertainty(cell,hi);
+        const pair=tableUncertainty(cell,hi,header);
         if(pair&&(pair.parsed||hi)){
           qs.push({
             value:pair.value,
@@ -7617,7 +7742,7 @@ function unitAnalyzeTables(tables){
             q.precisionTable=precisionTable;
             qs.push(q);
           });
-        }else if(hi&&UNIT_CELL_VALUE_RE.test(cell)){
+        }else if(hi&&UNIT_CELL_VALUE_RE.test(cell)&&!unitFinancialValueSpans(cell,header).length){
           // A pH row is dimensionless even when a mixed-parameter table gives
           // its standard/limit columns a shared concentration-unit heading.
           if(t.rows[r].slice(0,c).some(label=>/^pH(?:\s+(?:value|range))?\s*[*†‡#$%&]*$/i.test(String(label||"").trim())))continue;
@@ -14897,7 +15022,10 @@ function fteXmlText(node,options={}){
     // Floating drawings, pictures, OLE objects and text boxes can be anchored to
     // an otherwise ordinary prose paragraph. Their internal labels must never be
     // interpreted as body cross-references belonging to that anchor paragraph.
-    if(!includeEmbedded && ns===FTE_W_NS && (ln==="drawing"||ln==="pict"||ln==="object"||ln==="txbxcontent")) return;
+    if(!includeEmbedded && ns===FTE_W_NS && (ln==="drawing"||ln==="pict"||ln==="object"||ln==="txbxcontent")){
+      if(options.relationDrawings && (ln==="drawing"||ln==="pict") && fteWordRelationDrawing(n)) options.relationDrawings.push(true);
+      return;
+    }
 
     // mc:AlternateContent frequently stores both a Choice and a Fallback copy.
     // Reading both duplicates visible text and can duplicate equation labels.
@@ -15542,7 +15670,43 @@ async function extractDocxEnglishExclusions(buf){
 }
 
 
-function fteEquationExpressionEvidence(text){
+function fteWordRelationDrawing(node){
+  // Only a visible, ungrouped horizontal line with a directional arrowhead can
+  // supply relation evidence. The caller has already selected current Word content.
+  const elements=[node,...node.getElementsByTagName("*")];
+  if(elements.some(el=>/^(?:blip|imagedata|txbxContent|txBody|textbox|grpSp|wgp|group)$/.test(el.localName)||
+    /^(?:1|true|on)$/i.test(el.getAttribute("hidden")||"")||/(?:^|;)\s*(?:visibility\s*:\s*hidden|display\s*:\s*none)\s*(?:;|$)/i.test(el.getAttribute("style")||""))) return false;
+  const geometries=[...node.getElementsByTagNameNS(FTE_A_NS,"prstGeom")];
+  if(geometries.length){
+    if(geometries.length!==1||! /^(?:straightConnector1|line)$/.test(geometries[0].getAttribute("prst")||""))return false;
+    const props=geometries[0].parentNode;
+    const transform=props.getElementsByTagNameNS(FTE_A_NS,"xfrm")[0],extent=transform?.getElementsByTagNameNS(FTE_A_NS,"ext")[0];
+    const line=props.getElementsByTagNameNS(FTE_A_NS,"ln")[0];
+    if(!extent||!extent.hasAttribute("cx")||!extent.hasAttribute("cy")||!(Number(extent.getAttribute("cx"))>0)||Number(extent.getAttribute("cy"))!==0||
+      Number(transform.getAttribute("rot")||0)%10800000!==0||!line||line.getElementsByTagNameNS(FTE_A_NS,"noFill").length||
+      [...line.getElementsByTagNameNS(FTE_A_NS,"solidFill")].some(fill=>[...fill.getElementsByTagNameNS(FTE_A_NS,"alpha")].some(alpha=>alpha.getAttribute("val")==="0"))||
+      (line.hasAttribute("w")&&!(Number(line.getAttribute("w"))>0)))return false;
+    return [...line.children].some(el=>el.namespaceURI===FTE_A_NS&&/^(?:headEnd|tailEnd)$/.test(el.localName)&&/^(?:triangle|arrow|stealth)$/.test(el.getAttribute("type")||""));
+  }
+  const vml="urn:schemas-microsoft-com:vml",shapes=elements.filter(el=>el.namespaceURI===vml&&/^(?:line|shape)$/.test(el.localName));
+  if(shapes.length!==1)return false;
+  const shape=shapes[0],stroke=shape.getElementsByTagNameNS(vml,"stroke")[0];
+  if(!stroke||[shape.getAttribute("stroked"),stroke.getAttribute("on")].some(v=>/^(?:f|false|0|off)$/i.test(v||""))||parseFloat(stroke.getAttribute("opacity"))===0||
+    ![stroke.getAttribute("startarrow"),stroke.getAttribute("endarrow")].some(v=>/^(?:block|classic|open)$/.test(v||"")))return false;
+  const style=shape.getAttribute("style")||"",property=name=>(style.match(new RegExp("(?:^|;)\\s*"+name+"\\s*:\\s*([^;]+)","i"))?.[1]||"").trim();
+  const rotation=property("rotation");
+  if(rotation&&(!/^[+-]?\d+(?:\.\d+)?(?:deg)?$/.test(rotation)||parseFloat(rotation)%180!==0))return false;
+  if(shape.hasAttribute("strokeweight")&&parseFloat(shape.getAttribute("strokeweight"))===0)return false;
+  if(shape.localName==="line"){
+    const point=value=>String(value||"").split(",").map(v=>v.trim());
+    const from=point(shape.getAttribute("from")),to=point(shape.getAttribute("to"));
+    return from.length===2&&to.length===2&&from.concat(to).every(v=>/^[+-]?\d+(?:\.\d+)?$/.test(v))&&Number(from[1])===Number(to[1])&&Number(from[0])!==Number(to[0]);
+  }
+  return shape.getAttribute("type")==="#_x0000_t32"&&/^0(?:\.0+)?(?:pt|px|in|cm|mm)?$/.test(property("height"))&&
+    /^\d+(?:\.\d+)?(?:pt|px|in|cm|mm)?$/.test(property("width"))&&parseFloat(property("width"))>0;
+}
+
+function fteEquationExpressionEvidence(text,hasRelationDrawing=false){
   /*
     Score whether text looks like an equation/reaction rather than ordinary prose.
     This intentionally works on flattened Word text too, because many manuscripts
@@ -15555,8 +15719,8 @@ function fteEquationExpressionEvidence(text){
     .trim();
   if(!s) return {score:0,operatorCount:0,proseWords:0,formulaTokens:0};
 
-  const operatorCount=(s.match(/(?:=|→|←|↔|⇌|⇒|⇄|±|∓|≈|≃|≅|≤|≥|≠|∝|∑|∫|√|×|÷|\+|\s-\s)/g)||[]).length;
-  const relationCount=(s.match(/(?:=|→|←|↔|⇌|⇒|⇄|≈|≃|≅|≤|≥|≠|∝)/g)||[]).length;
+  const operatorCount=(s.match(/(?:=|→|←|↔|⇌|⇒|⇄|±|∓|≈|≃|≅|≤|≥|≠|∝|∑|∫|√|×|÷|\+|\s-\s)/g)||[]).length+(hasRelationDrawing?1:0);
+  const relationCount=(s.match(/(?:=|→|←|↔|⇌|⇒|⇄|≈|≃|≅|≤|≥|≠|∝)/g)||[]).length+(hasRelationDrawing?1:0);
   const chargeCount=(s.match(/(?:[A-Za-z0-9\)\]](?:\+|-)(?=\s|$|\+|→|←|↔|⇌))/g)||[]).length;
   const subSupCount=(s.match(/[₀-₉⁰-⁹]/g)||[]).length;
   const formulaTokens=(s.match(/\b(?:[A-Z][a-z]?\d*){1,5}(?:[+\-]|•)?\b/g)||[]).length;
@@ -15595,8 +15759,8 @@ function fteEquationProseEvidence(text){
   return {score,words};
 }
 
-function ftePlainEquationLike(text){
-  const ev=fteEquationExpressionEvidence(text);
+function ftePlainEquationLike(text,hasRelationDrawing=false){
+  const ev=fteEquationExpressionEvidence(text,hasRelationDrawing);
   const prose=fteEquationProseEvidence(text);
   // Require genuine mathematical/chemical relation syntax. Plus signs alone
   // are not enough because prose can contain charged species inline.
@@ -16013,6 +16177,11 @@ function fteDisplayedEquationId(block){
   // equation structure and the expression itself is equation-like.
   const proseCitation=(prose.score>=12 && !layoutCue) || (prose.score>=9 && expr.score<14);
   if(proseCitation) return null;
+
+  // Drawn reaction arrows are structural evidence, not text to insert into the
+  // manuscript. Require an explicit label; a terminal chemical subscript is not one.
+  if(block.hasRelationDrawing && core!==t.trim() && layoutCue && expr.operatorCount>=1 &&
+    expr.proseWords<=2 && ftePlainEquationLike(core,true))return id;
 
   // Borderless equation-layout tables and true Office Math display paragraphs
   // are strong structural evidence. Still require either relation syntax or
@@ -23433,15 +23602,14 @@ function numSnip(s,idx,len){
   const a=Math.max(0,idx-45), b=Math.min(s.length,idx+len+45);
   return (a>0?"… ":"")+escapeHtml(s.slice(a,idx))+"<mark>"+escapeHtml(s.slice(idx,idx+len))+"</mark>"+escapeHtml(s.slice(idx+len,b))+(b<s.length?" …":"");
 }
-function nDec(v){ const m=String(v).trim().match(/^[+−‐‑–—-]?(?:\d+)?(?:\.(\d+))?/); return m&&m[1]?m[1].length:0; }
+function nDec(v){ return unitNormalizeScalar(v)?.split(".")[1]?.length||0; }
 function nSig(v){
-  let s=String(v).trim().replace(/[+−-]/g,"").split(/[eE×]/)[0].replace(/\./g,"");
+  let s=(unitNormalizeScalar(v)||"").replace(/[+.-]/g,"");
   s=s.replace(/^0+/,""); return s.length||1;
 }
 function nNormUnit(u){
   return (u||"").toLowerCase().replace(/[\s·⋅]/g,"").replace(/μ/g,"µ").replace(/−/g,"-").replace(/⁻¹/g,"-1").replace(/⁻²/g,"-2").replace(/⁻³/g,"-3");
 }
-const PREC_UNIT=String.raw`(?:CFU(?:\s*\/\s*|\s+)100\s*mL|MPN(?:\s*\/\s*|\s+)100\s*mL|kg\s*(?:\/|·|\s)\s*m(?:3|³|\s*[-−⁻]?3)|mg\s*(?:\/|·|\s)\s*kg(?:\s*[-−⁻]?1|¹)?|mg\s*(?:\/|·|\s)\s*L(?:\s*[-−⁻]?1|¹)?|g\s*(?:\/|·|\s)\s*L(?:\s*[-−⁻]?1|¹)?|µg\s*(?:\/|·|\s)\s*L(?:\s*[-−⁻]?1|¹)?|μg\s*(?:\/|·|\s)\s*L(?:\s*[-−⁻]?1|¹)?|ng\s*(?:\/|·|\s)\s*L(?:\s*[-−⁻]?1|¹)?|m³|cm³|mm³|m²|cm²|mm²|MLD|MGD|mmol|µmol|μmol|nmol|mM|µM|μM|nM|kPa|MPa|kHz|MHz|mV|mA|kW|kJ|kWh|mmHg|rpm|mol(?:\s*[·.]?\s*[A-Za-zµμ]+)?|kg|mg|µg|μg|ng|pg|mL|µL|μL|km|cm|mm|µm|μm|nm|Pa|bar|atm|Hz|dB|Wh|eV|°\s*[CF]|℃|℉|%|‰|K|V|A|W|J|M|L|g|m)`;
 const PREC_SKIP_CONTEXT=/\b(?:doi|isbn|issn|pmid|pmcid|cas|figure|fig\.?|table|equation|eq\.?|section|appendix|version|model\s+no|serial|catalog|postcode|zip|latitude|longitude|coordinates?|standard|guideline|regulatory|limit|threshold|specification|according\s+to|reported\s+by|literature|previous(?:ly)?\s+reported)\b/i;
 
 function precisionIssue(out,cat,msg,s,idx=0,len=0){ out.push({cat,msg,snippet:s&&len?numSnip(s,idx,len):""}); }
@@ -23464,17 +23632,25 @@ function precisionBodyCheck(text){
   const out=[]; const sents=splitIntoSentences(text);
   sents.forEach(s=>{
     let m;
-    // Value ± uncertainty: same decimal place; uncertainty normally one or two significant digits.
-    const unc=new RegExp(`([+−-]?\\d+(?:\\.\\d+)?)\\s*[±]\\s*(\\d+(?:\\.\\d+)?)(?:\\s*(${PREC_UNIT}))?`,'gi');
+    const quantities=unitExtractQuantities(s),financialSpans=unitFinancialValueSpans(s);
+    // Reuse complete number tokens; compare absolute places even when the
+    // mean and uncertainty use different scientific exponents.
+    const unc=new RegExp('('+UNIT_NUM_CORE+')\\s*±\\s*('+UNIT_NUM_CORE+')','g');
     while((m=unc.exec(s))){
-      if(nDec(m[1])!==nDec(m[2])) precisionIssue(out,"uncertainty",`Value and variation/uncertainty end at different decimal places (${m[1]} ± ${m[2]}). Use the same decimal place for both the reported value and its variation/uncertainty. For example, report them as ${m[1]} ± ${Number(m[2]).toFixed(nDec(m[1]))} or round both to another scientifically justified common decimal place after verifying the underlying precision.`,s,m.index,m[0].length);
-      
+      if(unitNumericMatchIsEmbedded(s,m.index,m[0].length))continue;
+      if(financialSpans.some(span=>m.index<span.end&&m.index+m[0].length>span.start))continue;
+      const mean=unitWrittenPrecision(m[1]),variation=unitWrittenPrecision(m[2]);
+      const q=quantities.find(q=>q.index===m.index&&q.value===m[0]);
+      if(mean&&variation&&mean.place!==variation.place)precisionIssue(out,"uncertainty",`Value and variation/uncertainty end at different decimal places (${m[1]} ± ${m[2]}). Verify the measurement resolution and report both to the same scientifically justified decimal place.`,s,m.index,q?m[0].length+q.space.length+q.rawUnit.length:m[0].length);
     }
 
     // Numerical ranges with an explicit unit. Ignore likely years and identifiers.
-    const range=new RegExp(`([+−-]?\\d+(?:\\.\\d+)?)\\s*[–—-]\\s*([+−-]?\\d+(?:\\.\\d+)?)\\s*(${PREC_UNIT})(?![A-Za-zµμ])`,'gi');
-    while((m=range.exec(s))){
-      if(nDec(m[1])!==nDec(m[2]) && !looksDefinedOrLiterature(s)) precisionIssue(out,"range",`Range endpoints use different decimal precision (${m[1]} and ${m[2]} ${m[3]}). Verify the source resolution and use compatible precision if these endpoints are directly comparable.`,s,m.index,m[0].length);
+    const range=new RegExp('^('+UNIT_NUM_CORE+')\\s*(?:[−‐‑–—-]|\\bto\\b)\\s*('+UNIT_NUM_CORE+')$');
+    for(const q of quantities.filter(q=>q.parsed?.valid)){
+      m=q.value.match(range);
+      if(!m)continue;
+      const first=unitWrittenPrecision(m[1]),last=unitWrittenPrecision(m[2]);
+      if(first&&last&&q.precisionRole!=="setting"&&unitPrecisionDiffers([m[1],m[2]])&&!looksDefinedOrLiterature(s))precisionIssue(out,"range",`Range endpoints use different decimal precision (${m[1]} and ${m[2]} ${q.rawUnit}). Verify the source resolution and use compatible precision if these endpoints are directly comparable.`,s,q.index,q.value.length+q.space.length+q.rawUnit.length);
     }
 
     // p-values: never report p = 0.000; review excessive software precision.
@@ -23485,20 +23661,23 @@ function precisionBodyCheck(text){
     }
 
     // Direct numerical lists sharing one trailing unit, e.g. 12.4, 18.72, 21.358, 15.6 mg/L.
-    const listRe=new RegExp(`((?:[+−-]?\\d+(?:\\.\\d+)?\\s*(?:(?:,|;)\\s*(?:and\\s+)?|\\band\\s+|&\\s*)){2,}[+−-]?\\d+(?:\\.\\d+)?)\\s*(${PREC_UNIT})(?![A-Za-zµμ])`,'gi');
+    const scalar=UNIT_NUM_SIGN+'?'+UNIT_NUM_DECIMAL;
+    const listRe=new RegExp('((?:'+scalar+'\\s*(?:(?:,|;)\\s*(?:and\\s+)?|\\band\\s+|&\\s*)){2,}'+scalar+')','g');
     while((m=listRe.exec(s))){
-      const quantity=unitExtractQuantities(s).find(q=>q.index>=m.index&&q.index<m.index+m[0].length);
+      if(unitNormalizeScalar(m[1])!==null||unitNumericMatchIsEmbedded(s,m.index,m[0].length))continue;
+      const quantity=quantities.find(q=>q.index>=m.index&&q.index+q.value.length===m.index+m[0].length);
       if(!quantity?.precisionComparable)continue;
-      const vals=m[1].match(/[+−-]?\d+(?:\.\d+)?/g)||[];
+      const vals=m[1].match(new RegExp(scalar,'g'))||[];
+      if(vals.length<3||vals.some(v=>unitNormalizeScalar(v)===null))continue;
       if(shouldFlagMixedPrecision(vals)){
-        precisionIssue(out,"precision",`Values in this series (${vals.join(", ")} ${m[2]}) use different written precision. Review their analytical resolution and reporting convention; retain scientifically justified differences.`,s,m.index,m[0].length);
+        precisionIssue(out,"precision",`Values in this series (${vals.join(", ")} ${quantity.rawUnit}) use different written precision. Review their analytical resolution and reporting convention; retain scientifically justified differences.`,s,m.index,m[0].length+quantity.space.length+quantity.rawUnit.length);
       }
     }
 
     // Reuse the unit classifier so uncertainty terms, compositions and different
     // efficiencies cannot become a percentage series just by sharing a sentence.
     const percentages=new Map();
-    for(const q of unitExtractQuantities(s).filter(q=>q.rawUnit==="%"&&q.precisionComparable)){
+    for(const q of quantities.filter(q=>q.rawUnit==="%"&&q.precisionComparable)){
       const key=window.MC_MEASUREMENT_CONTEXT.precisionGroupKey(q);
       if(!percentages.has(key))percentages.set(key,[]);
       percentages.get(key).push(q);
@@ -23511,7 +23690,7 @@ function precisionBodyCheck(text){
     // Scientific values use the same source, parameter and written-place rules
     // as the unit ledger; matching absolute resolution is a valid pattern.
     const scientific=new Map();
-    for(const q of unitExtractQuantities(s).filter(q=>q.precisionComparable&&unitScalarDecimals(q.value)===null&&unitWrittenPrecision(q.value))){
+    for(const q of quantities.filter(q=>q.precisionComparable&&unitScalarDecimals(q.value)===null&&unitWrittenPrecision(q.value))){
       const key=window.MC_MEASUREMENT_CONTEXT.precisionGroupKey(q);
       if(!scientific.has(key))scientific.set(key,[]);
       scientific.get(key).push(q);
@@ -23523,13 +23702,15 @@ function precisionBodyCheck(text){
     }
 
     // Obvious calculator-like precision in a measured value with a unit. This is review-only.
-    const over=new RegExp(`([+−-]?\\d+\\.(\\d{7,}))\\s*(${PREC_UNIT})(?![A-Za-zµμ])`,'gi');
-    while((m=over.exec(s))){ if(!looksDefinedOrLiterature(s)) precisionIssue(out,"precision",`${m[1]} ${m[3]} contains many reported decimal digits. Verify whether this precision is supported by the measurement or calculation; do not retain software-generated digits automatically.`,s,m.index,m[0].length); }
+    for(const q of quantities.filter(q=>q.parsed?.valid&&unitScalarDecimals(q.value)>=7)){
+      if(!looksDefinedOrLiterature(s))precisionIssue(out,"precision",`${q.value} ${q.rawUnit} contains many reported decimal digits. Verify whether this precision is supported by the measurement or calculation; do not retain software-generated digits automatically.`,s,q.index,q.value.length+q.space.length+q.rawUnit.length);
+    }
   });
   return out;
 }
 
 function tableCellStartsNumber(text){
+  if(unitOrbitalLabelSpans(String(text||"").trim()).some(span=>span.start===0))return false;
   return /^(?:[([]\s*)?[<>≤≥~≈]?\s*[+−‐‑–—-]?(?:\d|\.\d)/.test(String(text||"").trim());
 }
 function tableCellIsMissing(text){
@@ -23548,36 +23729,35 @@ function tableHeaderInfo(table){
   const headerPaths=Array.from({length:width},(_,c)=>[...new Set(rows.slice(0,dataStart).map(row=>String(row[c]||"").replace(/\s+/g," ").trim()).filter(t=>t&&!tableCellIsMissing(t)))]);
   return {headers:headerPaths.map(path=>path.join(" / ")),headerPaths,dataStart};
 }
-function tableScalar(cell){
+function tableScalar(cell,header=""){
   const t=(cell||"").trim(); if(!t) return null;
+  if(unitFinancialValueSpans(t,header).length)return null;
+  if(unitOrbitalLabelSpans(t,header).some(span=>span.start<=(/^[+−‐‑–—-]/.test(t)?1:0)))return null;
   // Single scalar, optionally followed by a unit/percent. Exclude ranges, ±, inequalities, dates and embedded text.
   if(/[±<>≤≥]/.test(t)||/\d\s*[−‐‑–—-]\s*\d/.test(t)) return null;
-  const m=t.match(/^([+−‐‑–—-]?\d+(?:\.\d+)?)(?:\s*([%A-Za-zµμ°℃℉\/·.⁻¹⁻²⁻³\-0-9 ]{0,24}))?$/);
+  const m=t.match(new RegExp('^('+UNIT_NUM_SIGN+'?'+UNIT_NUM_DECIMAL+')(?:\\s*([%A-Za-zµμ°℃℉\\/·.⁻¹⁻²⁻³\\-0-9 ]{0,24}))?$'));
   if(!m) return null;
   // An exponent attached to the value is not a unit. Keep scientific values
   // out of the ordinary scalar decimal comparison, including bare powers of ten.
   if(/^(?:[⁺⁻⁰¹²³⁴⁵⁶⁷⁸⁹]|[eE][+−‐‑–—-]?\d)/.test(m[2]||""))return null;
+  if(m[2]&&!unitParseExpression(m[2])?.valid)return null;
   return {raw:m[1],unit:nNormUnit(m[2]||"")};
 }
-function tableUncertainty(cell,headerUnit=null){
+function tableUncertainty(cell,headerUnit=null,header=""){
   // Match a complete cell, retaining signs and written precision. Only symbol
   // footnotes are stripped; letter suffixes may be units and are not guessed.
   const text=String(cell||"").trim().replace(/\s*[*†‡]+$/,"").trimEnd();
   if(!text.includes("±"))return null;
-  const number=String.raw`(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+−‐‑–—-]?\d+)?`;
-  const m=text.match(new RegExp(String.raw`^(\(\s*)?([+−‐‑–—-]?${number})\s*±\s*(${number})(\s*\))?(\s*)(.*)$`));
+  if(unitFinancialValueSpans(text,header||headerUnit?.parameter||"").length)return null;
+  const m=text.match(new RegExp('^(\\(\\s*)?('+UNIT_NUM_CORE+')\\s*±\\s*('+UNIT_NUM_CORE+')(\\s*\\))?(\\s*)(.*)$'));
   if(!m||!!m[1]!==!!m[4])return null;
   const rawUnit=m[6],parsed=rawUnit?unitParseExpression(rawUnit):null;
   if(rawUnit&&!parsed?.valid)return null;
   // A percent after an unwrapped pair in a non-percent column may describe
   // relative uncertainty; do not compare it with an absolute decimal place.
   if(rawUnit==="%"&&!m[1]&&headerUnit&&unitConsistencyKey({parsed})!==unitConsistencyKey(headerUnit))return null;
-  const lastPlace=raw=>{
-    const [mantissa,exponent="0"]=raw.split(/[eE]/);
-    const power=Number(exponent.replace(/[−‐‑–—]/g,"-"));
-    return Number.isSafeInteger(power)?power-nDec(mantissa):null;
-  };
-  const meanPlace=lastPlace(m[2]),uncertaintyPlace=lastPlace(m[3]);
+  const mean=unitWrittenPrecision(m[2]),uncertainty=unitWrittenPrecision(m[3]);
+  const meanPlace=mean?-mean.place:null,uncertaintyPlace=uncertainty?-uncertainty.place:null;
   if(meanPlace===null||uncertaintyPlace===null)return null;
   return {value:text.slice(0,text.length-rawUnit.length-m[5].length),rawUnit,parsed,space:m[5],meanPlace,uncertaintyPlace};
 }
@@ -23626,7 +23806,7 @@ function precisionTableCheck(tables){
       for(let r=dataStart;r<rows.length;r++){
         if(tbl.dataCells?.[r]?.[c]===false)continue;
         const cell=String(rows[r][c]||"").trim();
-        const pair=tableUncertainty(cell,headerUnit);
+        const pair=tableUncertainty(cell,headerUnit,header);
         if(pair&&pair.meanPlace!==pair.uncertaintyPlace){
           out.push({cat:"uncertainty",
             msg:`Word table ${tbl.index}, column ${c+1} (${header}): row ${r+1} has a value and variation/uncertainty ending at different decimal places (${pair.value}). Verify the measurement resolution and report both to the same scientifically justified decimal place.`,
@@ -23634,7 +23814,7 @@ function precisionTableCheck(tables){
           });
         }
         // Keep uncertainty expressions out of cross-row scalar comparisons.
-        const x=tableScalar(rows[r][c]);
+        const x=tableScalar(rows[r][c],header);
         const context=unitPrecisionTableCell(tbl,precisionInfo,r,c);
         if(x&&!context.reason&&!thresholdMatrix){
           const explicit=cell.slice(x.raw.length).trim(),parsed=explicit?unitParseExpression(explicit):headerUnit?.parsed;
@@ -23781,7 +23961,7 @@ function numberCheck(text,tables=[]){
     const st=s.replace(/^["'\u201C(\[]+/,""); const off=s.length-st.length;
     if(/^(\d[\d.,]*)\s+[A-Za-z]/.test(st)){
       const affiliation=/^\d{1,2}[.)]?\s+[A-Z]/.test(st) && /\b(Department|School|Institute|Institution|University|College|Faculty|Centre|Center|Laborator(?:y|ies)|Division|Hospital|Ministry|Corporation|Academy|Organi[sz]ation|Council|Board|Authority|Foundation|Society)\b/i.test(st);
-      if(!affiliation) out.push({cat:"start",msg:"Avoid beginning a sentence with a numeral; restructure the sentence rather than spelling out a measurement.",snippet:numSnip(s,off,Math.min(38,st.length))});
+      if(!affiliation&&!unitOrbitalLabelSpans(st).some(span=>span.start===0)) out.push({cat:"start",msg:"Avoid beginning a sentence with a numeral; restructure the sentence rather than spelling out a measurement.",snippet:numSnip(s,off,Math.min(38,st.length))});
     }
     const nc=/(^|[^\w.,\-\u2013<>=\u00B1~\u00D7xX$\/])([0-9])\s+([a-z][a-z]+)\b/g;
     while((m=nc.exec(s))){
@@ -24944,7 +25124,8 @@ extractDocxStructure=async function(buf){
   const blocks=[]; let pos=0;
 
   const paragraphBlock=(el,extra={})=>{
-    const rawStructuralText=fteXmlText(el,{preserveSeparators:true});
+    const relationDrawings=[];
+    const rawStructuralText=fteXmlText(el,{preserveSeparators:true,relationDrawings});
     const symbolText=fteXmlText(el,{preserveSymbols:true});
     const symbolMeta=abbrWordSymbolMatches(symbolText).length?{
       abbrSymbolText:symbolText,abbrSourceText:fteXmlText(el,{omitMath:true,preserveSeparators:true})
@@ -24980,7 +25161,7 @@ extractDocxStructure=async function(buf){
     const hasPageBreak=[...el.getElementsByTagNameNS(FTE_W_NS,"br")].some(br=>/^(?:page)$/i.test(attrVal(br)));
     const sectionBreakAfter=!!(pPr&&pPr.getElementsByTagNameNS(FTE_W_NS,"sectPr").length);
     const eqBinding=fteWordParagraphEquationBinding(el,{hasMath,hasMathPara,mathCount,tabCount,textAlign,rightTabStop,style});
-    return {type:"p",pos:pos++,text,rawStructuralText,separatorMeta,...symbolMeta,style,styleName:sm?.name||"",styleBasedOn:sm?.basedOn||"",styleChain:sm?.chain||[],seqCaptionType,hasDrawing,hasImage,imageCount,hasMath,hasMathPara,mathCount,outlineLvl,directOutlineLvl,hasNumbering:!!numPr,ilvl,tabCount,tabStopCount,textAlign,rightTabStop,pageBreakBefore,hasPageBreak,sectionBreakAfter,attachedEquationId:eqBinding?.id||null,equationNumberOnlyId:eqBinding?.numberOnlyId||null,equationCoreText:eqBinding?.coreText||"",equationLabelSource:eqBinding?.source||"",...extra};
+    return {type:"p",pos:pos++,text,rawStructuralText,separatorMeta,...symbolMeta,...(relationDrawings.length?{hasRelationDrawing:true}:{}),style,styleName:sm?.name||"",styleBasedOn:sm?.basedOn||"",styleChain:sm?.chain||[],seqCaptionType,hasDrawing,hasImage,imageCount,hasMath,hasMathPara,mathCount,outlineLvl,directOutlineLvl,hasNumbering:!!numPr,ilvl,tabCount,tabStopCount,textAlign,rightTabStop,pageBreakBefore,hasPageBreak,sectionBreakAfter,attachedEquationId:eqBinding?.id||null,equationNumberOnlyId:eqBinding?.numberOnlyId||null,equationCoreText:eqBinding?.coreText||"",equationLabelSource:eqBinding?.source||"",...extra};
   };
 
   const addEmbeddedCaptionBlocks=(p,containerAnchor)=>{
@@ -25364,7 +25545,7 @@ fteAnalyze=function(blocks){
       if(kind==="figure" && b.hasDrawing){
         const anchor=b.containerAnchor||b.physicalAnchor||`drawing:${bi}`;
         if(!assignedFigureAnchors.has(anchor)) nearbyObjects.push({b,bi,anchor});
-      }else if(kind==="equation" && (b.hasMath||b.hasMathPara||/equation/i.test(b.style||""))){
+      }else if(kind==="equation" && (fteDisplayedEquationId(b)||fteLooksLikeUnnumberedDisplayedEquation(b))){
         const anchor=b.physicalAnchor||`equation:${bi}`;
         if(!assignedEquationAnchors.has(anchor)) nearbyObjects.push({b,bi,anchor});
       }else if(kind==="table" && b.type==="table"){
@@ -26545,7 +26726,7 @@ fteAnalyze=function(blocks){
   function numericLike(s){
     s=norm(s); if(!s) return false;
     if(/^\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}$/.test(s)) return false;
-    return /(?:^|\s)[<>≤≥~±]?\s*-?\d+(?:\.\d+)?(?:\s*(?:±|to|[-–])\s*\d+(?:\.\d+)?)?(?:\s|$|%|[A-Za-zµμΩΩ/·^-])/.test(s);
+    return [...s.matchAll(new RegExp(UNIT_VALUE_RE.source,'g'))].some(m=>(m.index===0||/\s/.test(s[m.index-1]))&&!unitNumericMatchIsEmbedded(s,m.index,m[0].length)&&/^(?:\s|$|%|[A-Za-zµμΩΩ/·^-])/.test(s.slice(m.index+m[0].length)));
   }
 
   const SCI_HEADER=/\b(?:parameter|analyte|variable|sample|site|station|location|treatment|method|technology|category|condition|group|run|replicate|influent|effluent|removal|value|result|mean|median|range|concentration|depth|length|width|height|mass|volume|time|temperature|pressure|resistivity|conductivity|advantage|advantages|limitation|limitations|observation|characteristic|property|response|performance|composition|yield|efficiency)\b/i;
@@ -29504,6 +29685,8 @@ fteAnalyze=function(blocks){
   function mcDimFamily(q){
     const raw=mcCleanContextText(q?.rawUnit||"");
     const norm=String(q?.parsed?.normalized||raw).trim();
+    const dim=q?.parsed?.dimKey||unitParseExpression(raw)?.dimKey;
+    if(dim==="I:-1|L:2|M:1|T:-4")return "voltage_rate";
     if(MC_TIME_UNIT.test(raw)||MC_TIME_UNIT.test(norm)) return "time";
     if(MC_INV_TIME_UNIT.test(raw)||MC_INV_TIME_UNIT.test(norm)) return "rate";
     if(MC_TEMP_UNIT.test(raw)||q?.parsed?.dimKey==="Th:1") return "temperature";
@@ -29513,10 +29696,12 @@ fteAnalyze=function(blocks){
     if(MC_LENGTH_UNIT.test(raw)||MC_LENGTH_UNIT.test(norm)) return "length";
     if(/(?:L|m3|m³).*(?:m-?2|m\^?-?2|m²).*(?:h-?1|h\^?-?1|h⁻¹)/i.test(norm.replace(/\s+/g,""))||/\bflux\b/i.test(q?.snippet||"")) return "flux";
     if(/(?:mg|g|kg).*(?:cm|m)(?:2|²|\^2)/i.test(raw.replace(/\s+/g,""))) return "loading";
-    if(/\b(?:V|mV)\b/.test(raw)) return "voltage";
-    if(/\b(?:A|mA|µA|μA)\b/.test(raw)) return "current";
-    if(/\b(?:W|kW|mW)\b/.test(raw)) return "power";
-    if(/\b(?:J|kJ|Wh|kWh|eV)\b/.test(raw)) return "energy";
+    if(dim===unitDimKey(UNIT_REGISTRY.V.dim))return "voltage";
+    // Densities retain their electrical family; a time denominator must not
+    // be discarded when identifying the physical quantity.
+    if(["I:1","I:1|L:-2","I:1|L:-3"].includes(dim))return "current";
+    if(["L:2|M:1|T:-3","M:1|T:-3","L:-1|M:1|T:-3"].includes(dim))return "power";
+    if(["L:2|M:1|T:-2","L:2|M:1|N:-1|T:-2","L:2|T:-2"].includes(dim))return "energy";
     return "other";
   }
   function mcContextResult(parameterKey,parameter,contextKey,contextLabel,confidence,evidence=[],precisionComparable=true){
@@ -29716,6 +29901,11 @@ fteAnalyze=function(blocks){
   }
   function mcClassifyGeneric(q,clause,before,after){
     const family=mcDimFamily(q);
+    if(family==="voltage_rate"){
+      const cue=mcAttachedCue(before,after,[["scan_rate","Scan rate",/\b(?:scan|sweep)\s+rates?\b/i,"Scan rate"]]);
+      if(cue)return mcContextResult("scan_rate","Scan rate","scan_rate","Scan rate",.94,["scan-rate cue and voltage/time unit"]);
+      return mcContextResult("voltage_rate","Voltage change per time","unresolved_role","Scientific role unresolved",.75,["voltage/time unit"],false);
+    }
     if(family==="time") return mcClassifyTime(clause,before,after);
     if(family==="length") return mcClassifyLength(clause,before,after);
     if(family==="concentration") return mcClassifyConcentration(q,clause,before,after);
@@ -30363,7 +30553,7 @@ fteAnalyze=function(blocks){
       const c=q.measurementContext;
       const attached=settings.filter(s=>s.index>=c.clauseStart&&s.index<c.clauseEnd&&s!==q);
       if(!attached.length)continue;
-      q.precisionConditions=[...new Set(attached.map(s=>`${s.parameterKey}:${unitScalarDecimals(s.value)===null?s.value:Number(s.value.replace(/[−‐‑–—]/g,"-"))}:${unitConsistencyKey(s)}`))].sort().join("|");
+      q.precisionConditions=[...new Set(attached.map(s=>`${s.parameterKey}:${unitScalarDecimals(s.value)===null?s.value:Number(unitNormalizeScalar(s.value))}:${unitConsistencyKey(s)}`))].sort().join("|");
       const label=attached.map(s=>`${s.parameter}: ${s.value} ${s.rawUnit}`).join("; ");
       q.measurementContext={...c,contextLabel:c.contextLabel===c.parameter?label:`${c.contextLabel}; ${label}`};
     }
@@ -33192,7 +33382,6 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       if(p.referenceDelimiterReview)L.push(`  Formatting review: ${p.referenceDelimiterReview.recommendation}`);
       if(duplicates.has(idx))L.push(`  ${duplicates.get(idx).message}`);
     });
-    L.push('',reportFindingsText(res.issues||[],'Reference findings',res.parsed));
     return L.join('\n');
   };
 
