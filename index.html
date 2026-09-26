@@ -16851,17 +16851,29 @@ function fteIssue(issues,kind,id,code,msg,suggestion,context,severity="warn"){
   issues.push({kind,id,code,msg,suggestion,context:fteSnippet(context),severity});
 }
 function ftePanelCheck(figures,issues){
+  // Use the same bounded, letter-only grammar for assignments and references.
+  // Each list item is one label or an ascending range; items may be combined.
+  const panelDash="[-‐‑‒–—−]";
+  const panelItem=String.raw`[a-z](?:\s*${panelDash}\s*[a-z])?`;
+  const panelSeparator=String.raw`(?:\s*,\s*(?:(?:and|or)\s+|&\s*)?|\s+(?:and|or)\s+|\s*&\s*)`;
+  const panelGroup=String.raw`${panelItem}(?:${panelSeparator}${panelItem})*`;
+  const panelToken=String.raw`\(\s*(${panelGroup})\s*\)`;
+  const itemPattern=new RegExp(String.raw`^([a-z])(?:\s*${panelDash}\s*([a-z]))?$`,"i");
+  const separatorPattern=new RegExp(panelSeparator,"i");
+  const tokenPattern=new RegExp(panelToken,"i");
+  const referenceChainPattern=new RegExp(String.raw`(?:\bpanels?|\b(?:in|within|from|for|of|to|see)|\bcompared\s+with|\brelative\s+to|\bcorresponding\s+to)\s+(?:${panelToken}(?:${panelSeparator}|\s*${panelDash}\s*))+\s*$`,"i");
   const expandGroup=raw=>{
-    const x=String(raw||"").toLowerCase().replace(/\s+/g,"");
-    if(/^[a-z]$/.test(x)) return [x];
-    if(/^[a-z](?:,[a-z])+$/.test(x)) return x.split(",");
-    const m=x.match(/^([a-z])[-–]([a-z])$/);
-    if(m){
-      const a=m[1].charCodeAt(0),b=m[2].charCodeAt(0),out=[];
-      if(b>=a && b-a<=12) for(let c=a;c<=b;c++) out.push(String.fromCharCode(c));
-      return out;
+    const out=[];
+    for(const item of String(raw||"").toLowerCase().trim().split(separatorPattern)){
+      const m=item.match(itemPattern);
+      if(!m) return [];
+      const a=m[1].charCodeAt(0),b=(m[2]||m[1]).charCodeAt(0);
+      // Reject an invalid group as a whole; never reverse a range or keep a
+      // partial expansion. Preserve overlaps so duplicate labels remain visible.
+      if(b<a) return [];
+      for(let c=a;c<=b;c++) out.push(String.fromCharCode(c));
     }
-    return [];
+    return out;
   };
   const sentenceStart=(text,pos)=>{
     const pre=String(text||"").slice(0,pos);
@@ -16922,9 +16934,11 @@ function ftePanelCheck(figures,issues){
     // Handle chained references such as "Panels (a) and (b)", "from (a) and (b)",
     // or "see (a), (b), and (c)". A direct preposition may precede only the
     // first token, so later tokens inherit the reference role from the clause.
-    if(/(?:\bpanels?|\b(?:in|within|from|for|of|to|see)|\bcompared\s+with|\brelative\s+to|\bcorresponding\s+to)\s+(?:\(\s*[a-z]\s*\)\s*(?:,|and|&|or|-|–)\s*)+$/i.test(compact) && declared.size>=2) score+=7;
+    // A long list can extend beyond the local context window; retain its
+    // introductory cue while requiring an uninterrupted chain of panel tokens.
+    if(declared.size>=2 && referenceChainPattern.test(String(text||"").slice(0,occ.start))) score+=7;
     const currentClause=(compact.split(/[.!?;]/).pop()||compact).trim();
-    if(declared.size>=2 && /^(?:see|panels?)\b/i.test(currentClause) && /\([a-z]\)/i.test(currentClause)) score+=7;
+    if(declared.size>=2 && /^(?:see|panels?)\b/i.test(currentClause) && tokenPattern.test(currentClause)) score+=7;
     if(occ.letters.length && occ.letters.every(x=>declared.has(x))) score+=1;
     return score;
   };
@@ -16948,9 +16962,9 @@ function ftePanelCheck(figures,issues){
   };
   const occurrences=text=>{
     const out=[];
-    // Supports (a), (a,b), and (a-c)/(a–c). These are the common caption
-    // declaration/reference forms and deliberately avoid ordinary bracketed prose.
-    const re=/\(\s*([A-Za-z](?:\s*,\s*[A-Za-z])+|[A-Za-z]\s*[-–]\s*[A-Za-z]|[A-Za-z])\s*\)/g;
+    // Supports single labels, lists, ranges, and mixtures such as (d–f, h)
+    // or (a–c and e–g), without accepting ordinary bracketed prose.
+    const re=new RegExp(panelToken,"gi");
     let m;
     while((m=re.exec(String(text||"")))){
       const letters=expandGroup(m[1]);
@@ -16977,7 +16991,7 @@ function ftePanelCheck(figures,issues){
     // These phrases are genuinely anaphoric and should remain references even
     // when followed by "and (x)". A bare "for/of/in" is intentionally absent
     // because captions often introduce inventories as "spectra for (d) and (e)".
-    return /\b(?:as\s+shown\s+in|shown\s+in|illustrated\s+in|presented\s+in|depicted\s+in|observed\s+in|seen\s+in|given\s+in|displayed\s+in|see)\s+(?:panels?\s*)?$/.test(pre)
+    return /\b(?:as\s+shown\s+in|shown\s+in|illustrated\s+in|presented\s+in|depicted\s+in|observed\s+in|seen\s+in|given\s+in|displayed\s+in|compared\s+with|relative\s+to|corresponding\s+to|see)\s+(?:panels?\s*)?$/.test(pre)
       || /\b(?:the|this|that|these|those)\s+(?:inset|image|images|curve|plot|spectrum|spectra|micrograph|micrographs|map|feature|peak|region|value|values|data|result|results)\s+(?:shown\s+)?(?:in|of|from)\s+(?:panels?\s*)?$/.test(pre)
       || /\binset\s+(?:shown\s+)?(?:in|of|from)\s+(?:panels?\s*)?$/.test(pre);
   };
@@ -17004,7 +17018,12 @@ function ftePanelCheck(figures,issues){
       // Strong "shown in / inset in / see" wording is a true reference clause.
       // Weak prepositions such as "for" and "of" do not block assignment because
       // they are common in captions: "EPR spectra for (d) and (e) ...".
-      if(hasStrongCoordinatedReferenceCue(x,first)) continue;
+      if(hasStrongCoordinatedReferenceCue(x,first)){
+        // Keep the whole reference chain together; a later member must not
+        // restart as a new assignment merely because the cue is farther away.
+        i=j-1;
+        continue;
+      }
 
       groupId++;
       group.forEach(occ=>{
@@ -17058,7 +17077,7 @@ function ftePanelCheck(figures,issues){
 
   figures.forEach(it=>{
     const caption=it.caption||"", occs=occurrences(caption);
-    if(occs.length<2) return;
+    if(!occs.length) return;
 
     coordinatedAssignmentGroups(caption,occs);
     inventoryGroups(caption,occs);
