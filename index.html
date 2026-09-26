@@ -68,7 +68,7 @@ if(document.readyState==="loading"){
   .drop-ready-icon{display:grid;place-items:center;width:38px;height:38px;border-radius:50%;background:#fff;border:1px solid rgba(42,74,139,.28);font-size:23px;line-height:1;animation:dropReadyPulse 1.05s ease-in-out infinite}
   .drop-ready-text{font-size:14px}
   .drop.drag .drop-ready{opacity:1;transform:scale(1)}
-  .drop.drag>.big,.drop.drag>.small,.drop.drag>.formats,.drop.drag>.filechip{opacity:.12}
+  .drop.drag>.big,.drop.drag>.small,.drop.drag>.formats,.drop.drag>.filechip,.drop.drag>.device-note{opacity:.12}
   @keyframes dropReadyPulse{0%,100%{transform:translateY(0);box-shadow:0 0 0 0 rgba(42,74,139,.16)}50%{transform:translateY(3px);box-shadow:0 0 0 7px rgba(42,74,139,0)}}
   @media (prefers-reduced-motion:reduce){.drop-ready,.drop-ready-icon,.drop .big,.drop .small,.drop .formats,.drop .filechip{transition:none}.drop-ready-icon{animation:none}}
   .filechip{display:inline-flex;align-items:center;gap:8px;margin-top:14px;background:var(--pencil-soft);color:var(--pencil);font-weight:600;font-size:13px;padding:6px 12px;border-radius:20px}
@@ -5876,6 +5876,7 @@ table.ledger td,table.ledger th{overflow-wrap:normal;word-break:normal;hyphens:n
 #input-card .drop:focus-visible{outline:2px solid var(--mc3-primary)!important;outline-offset:4px!important}
 #input-card .drop .big{font-family:var(--serif)!important;font-size:22px!important;font-weight:600!important;color:var(--mc3-ink)!important;margin:0 0 6px!important}
 #input-card .drop .small{font-size:14px!important;color:var(--mc3-muted)!important}
+#input-card .drop .device-note{max-width:46ch;margin:14px 0 0;color:#92400e!important;font-size:14px!important;font-weight:600;line-height:1.5}
 #input-card .drop .formats{margin-top:18px!important;padding:6px 13px!important;border:1px solid var(--mc3-border)!important;border-radius:999px!important;background:#fff!important;color:#71809A!important;font-size:11px!important;letter-spacing:.1em!important}
 .filechip,.drop .filechip{background:var(--mc3-primary-soft)!important;color:var(--mc3-primary)!important;font-weight:700!important;font-size:13px!important;border:1px solid #cdddf3!important;padding:7px 14px!important}
 
@@ -6558,16 +6559,17 @@ table.ledger tbody>tr:last-child>td{
   </header>
 
   <section class="card" id="input-card">
-    <h2 class="help-row">Upload your manuscript <button type="button" class="info-help inline-auto-help" data-help="The tool reads only Microsoft Word .docx manuscripts. Different modules use the Word structure differently: references are isolated from the bibliography section; affiliations are excluded from Units and English checks; Word tables are retained for table-specific precision/unit checks; figures, tables, and equations use Word document order where available." aria-label="Explain manuscript scanning" title="What is scanned?">i</button></h2>
-    <p class="sub">Start with the DOCX file. The default settings are suitable for a general scientific manuscript, so you can usually click <b>Check manuscript</b> without changing anything else.</p>
+    <h2 class="help-row">Select your manuscript <button type="button" class="info-help inline-auto-help" data-help="The tool reads only Microsoft Word .docx manuscripts. Different modules use the Word structure differently: references are isolated from the bibliography section; affiliations are excluded from Units and English checks; Word tables are retained for table-specific precision/unit checks; figures, tables, and equations use Word document order where available." aria-label="Explain manuscript scanning" title="What is scanned?">i</button></h2>
+    <p class="sub">Choose or drag and drop a Word (.docx) file to begin. Your manuscript is processed locally in your browser and stays on your device. The default settings are suitable for a general scientific manuscript, so you can usually click <b>Check manuscript</b> without changing anything else.</p>
 
     <div class="mc-entry-columns">
       <div class="mc-entry-left">
     <div class="panel" id="panel-upload">
-      <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose a Word DOCX file or drop it here">
+      <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose a Word DOCX file or drop it here" aria-describedby="device-note">
         <p class="big">Drop your Word manuscript here</p>
         <p class="small">or click to browse</p>
         <div class="formats">Microsoft Word · .docx only</div>
+        <p class="device-note" id="device-note"><span aria-hidden="true">ⓘ</span> For the best experience, use Manuscript Check on a laptop or desktop computer, especially when reviewing detailed report tables.</p>
         <div id="filechip" class="filechip" style="display:none"></div>
         <div class="drop-ready" aria-hidden="true"><span class="drop-ready-icon">↓</span><span class="drop-ready-text">Release to add this manuscript</span></div>
       </div>
