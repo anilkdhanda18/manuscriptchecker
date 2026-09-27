@@ -6921,7 +6921,7 @@ table.ledger tbody>tr:last-child>td{
       <li><b>Cross-references.</b> Grouped citations such as Figs. 2–5, Tables 1 and 2, and Eqs. (3)–(5) are expanded and checked against existing items. Figure panel citations such as Figure 2a, Figure 2c,d, and Figure 3a and S5 are resolved to their base and supplementary figures.</li>
       <li><b>Word caption structure.</b> Word tabs, line breaks, split text runs, caption-number fields, and ordinary whitespace after the item number are preserved semantically. Captions such as <code>FIGURE 2&lt;TAB&gt;XPS spectra...</code>, <code>Figure 2. XPS spectra...</code>, and <code>Figure 2 XPS spectra...</code> are treated as equivalent when structural evidence supports a caption. Real embedded image objects are preferred over decorative Word shapes during figure association.</li>
       <li><b>Citation before appearance.</b> Figures and tables should be cited in manuscript text before their first physical appearance. Caption text does not count as the prior citation.</li>
-      <li><b>Equations.</b> Equation numbers are matched locally to displayed Word math structure. In-text equation citations are then matched by identifier and document order, not by line distance, so a citation may occur many lines or a page before the displayed equation.</li>
+      <li><b>Equations.</b> Equation labels must be supported by the displayed content; a citation alone does not assign a number to a calculation. References are matched by equation number, so a reference may be many lines or a page away. Notes about whether or when an equation is cited require changes only if your thesis or journal specifies that style. Equation excerpts use simplified text; consult the Word document for the full mathematical layout. The check assesses numbering and references, not the scientific or mathematical correctness of a formula.</li>
       <li><b>Multipanel figures.</b> Panel-like mentions in captions are classified as panel-label assignments or explanatory references. Only labels that assign content to panels participate in duplicate, gap, and sequence checks; references such as <code>the inset in (d)</code>, <code>shown in (b)</code>, or <code>panel (c)</code> do not create duplicate panels. Introductory structures such as <code>SEM images of (a) sample A, (b) sample B</code> and coordinated assignments such as <code>(a) and (b) MSD results</code>, <code>EPR spectra for (d) and (e)</code>, or <code>(f), (g), and (h) Raman spectra</code> are treated as declared panel groups.</li>
     </ol>
   </details>
@@ -7803,21 +7803,21 @@ function unitAnalyzeTables(tables){
             parsed:pair.parsed||hi.parsed,
             parameter,
             parameterConfidence:.99,
-            context:`Table ${t.index}, ${parameter}`,
+            context:`${mcNumericTableLocation(t)}, ${parameter}`,
             external:false,
-            snippet:`Table ${t.index}, row ${r+1}, column ${c+1}, ${parameter}: ${sourceCell}`,
+            snippet:`${mcNumericTableLocation(t)}, row ${r+1}, column ${c+1}, ${parameter}: ${sourceCell}`,
             space:pair.rawUnit?pair.space:"",
             inherited:!pair.rawUnit,precisionTable
           });
           continue;
         }
-        const explicit=unitExtractQuantities(cell,`Table ${t.index}, ${parameter}`);
+        const explicit=unitExtractQuantities(cell,`${mcNumericTableLocation(t)}, ${parameter}`);
         if(explicit.length){
           explicit.forEach(q=>{
             q.parameter=parameter;
             q.parameterConfidence=.99;
-            q.context=`Table ${t.index}, ${parameter}`;
-            q.snippet=`Table ${t.index}, row ${r+1}, ${parameter}: ${sourceCell}`;
+            q.context=`${mcNumericTableLocation(t)}, ${parameter}`;
+            q.snippet=`${mcNumericTableLocation(t)}, row ${r+1}, ${parameter}: ${sourceCell}`;
             q.precisionTable=precisionTable;
             qs.push(q);
           });
@@ -7831,9 +7831,9 @@ function unitAnalyzeTables(tables){
             parsed:hi.parsed,
             parameter,
             parameterConfidence:.99,
-            context:`Table ${t.index}, ${parameter}`,
+            context:`${mcNumericTableLocation(t)}, ${parameter}`,
             external:false,
-            snippet:`Table ${t.index}, row ${r+1}, ${parameter}: ${sourceCell}`,
+            snippet:`${mcNumericTableLocation(t)}, row ${r+1}, ${parameter}: ${sourceCell}`,
             space:" ",
             inherited:true,precisionTable
           });
@@ -7843,7 +7843,7 @@ function unitAnalyzeTables(tables){
   });
   return {quantities:qs,issues:[]};
 }
-function unitDedupIssues(issues){const seen=new Set();return issues.filter(x=>{const k=x.code+"|"+x.parameter+"|"+x.msg+"|"+x.context;if(seen.has(k))return false;seen.add(k);return true;});}
+function unitDedupIssues(issues){const seen=new Set();return issues.filter(x=>{const k=x.code+"|"+x.parameter+"|"+x.msg+"|"+x.context+"|"+(String(x.precisionGroupKey||"").startsWith("Table ")?x.precisionGroupKey.split("|")[0]:"");if(seen.has(k))return false;seen.add(k);return true;});}
 function unitLedger(qs,issues){
   const map=new Map();
   (qs||[]).filter(q=>q.parsed?.valid).forEach(q=>{
@@ -8085,7 +8085,7 @@ function renderUnitReport(res){
   <div class="ledger-help" id="unit-ledger-help" hidden>
     <div class="ledger-help-grid">
       <b>Parameter / context</b><span>The scientific quantity and, where needed, its experimental role. Values are grouped by parameter and compatible context rather than by unit alone. Examples include <i>Operational duration</i>, <i>Reaction time · PAA response</i>, <i>Membrane thickness</i>, and <i>PAA concentration</i>.</span>
-      <b>Location</b><span>Where the unit was found, such as the manuscript body or a specific Word table.</span>
+      <b>Location</b><span>Where the unit was found. Table numbers follow verified manuscript captions; an unconfirmed number is identified by its document position.</span>
       <b>Observed format</b><span>The unit notation exactly as written in the manuscript. If more than one notation is used for the same unit, the different forms are listed here. Occurrence counts are shown under <b>Decimal places</b> to avoid conflicting totals.</span>
       <b>Decimal places</b><span>The last reported decimal place, accounting for the exponent in scientific notation, for values representing the same parameter in a compatible scientific context and the same unit scale. Values sharing a unit but describing different roles, such as operational duration and reaction time, are not compared.</span>
       <b>Status</b><span><b>consistent</b> means eligible values follow a common decimal-place or significant-figure pattern. <b>mixed precision</b> asks you to review differences in comparable measurements. <b>precision review</b> shows different decimal places in values from other studies; their original precision may be justified. <b>rounding review</b> asks you to check converted or recalculated values against the original inputs. These prompts do not establish measurement accuracy or require identical decimal places. <b>mixed format</b> means equivalent units use different notation. <b>unit format consistent</b> reports matching unit notation without implying that numerical precision passed. <b>unit recognized</b> identifies a single valid unit occurrence. The Action column explains what to review.</span>
@@ -15074,6 +15074,8 @@ function fteXmlText(node,options={}){
   */
   const includeEmbedded=!!(options&&options.includeEmbedded);
   const preserveSeparators=!!(options&&options.preserveSeparators);
+  const preserveSpaces=!!options.preserveSpaces;
+  const equationPreview=!!options.equationPreview;
   const preserveSymbols=!!options.preserveSymbols;
   let out="";
 
@@ -15120,12 +15122,54 @@ function fteXmlText(node,options={}){
     }
 
     if(options.omitMath && ns===FTE_M_NS && (ln==="omath"||ln==="omathpara")) return;
-    if(preserveSymbols && ns===FTE_M_NS && /^(?:ssub|ssup|ssubsup)$/.test(ln)){
+    if(equationPreview && ns===FTE_M_NS && /^(?:f|rad|nary|d|limlow|limupp)$/.test(ln)){
+      const child=name=>[...n.children].find(x=>x.namespaceURI===FTE_M_NS && x.localName===name);
+      const part=name=>child(name)?fteXmlText(child(name),options):"";
+      const props=child(`${n.localName}Pr`);
+      const setting=(name,fallback)=>{
+        const el=props&&[...props.children].find(x=>x.namespaceURI===FTE_M_NS && x.localName===name);
+        return el?(el.getAttributeNS(FTE_M_NS,"val")??el.getAttribute("m:val")??(/Hide$/.test(name)?"true":fallback)):fallback;
+      };
+      if(ln==="f") out+=setting("type","")==="noBar"?`stack(${part("num")}; ${part("den")})`:`(${part("num")})/(${part("den")})`;
+      else if(ln==="rad"){
+        const degree=/^(?:1|true|on)$/i.test(setting("degHide","false"))?"":part("deg");
+        out+=degree?`root[${degree}](${part("e")})`:`sqrt(${part("e")})`;
+      }else if(ln==="nary"){
+        const lower=/^(?:1|true|on)$/i.test(setting("subHide","false"))?"":part("sub");
+        const upper=/^(?:1|true|on)$/i.test(setting("supHide","false"))?"":part("sup");
+        out+=setting("chr","∫")+(lower?`_{${lower}}`:"")+(upper?`^{${upper}}`:"")+`(${part("e")})`;
+      }else if(ln==="d"){
+        const parts=[...n.children].filter(x=>x.namespaceURI===FTE_M_NS && x.localName==="e").map(x=>fteXmlText(x,options));
+        out+=setting("begChr","(")+parts.join(setting("sepChr","|"))+setting("endChr",")");
+      }else out+=part("e")+(ln==="limlow"?`_{${part("lim")}}`:`^{${part("lim")}}`);
+      return;
+    }
+    if((preserveSymbols||equationPreview) && ns===FTE_M_NS && /^(?:ssub|ssup|ssubsup)$/.test(ln)){
       const child=name=>[...n.children].find(x=>x.namespaceURI===FTE_M_NS && x.localName===name);
       const part=name=>child(name)?fteXmlText(child(name),options):"";
       const base=part("e"),sub=part("sub"),sup=part("sup");
-      out+=base+(sub?`_{${sub}}`:"")+(sup?`^{${sup}}`:"");
+      const groupedBase=equationPreview&&!/^[\p{L}\p{N}]+$/u.test(base)?`(${base})`:base;
+      out+=groupedBase+(sub?`_{${sub}}`:"")+(sup?`^{${sup}}`:"");
       return;
+    }
+    if(ns===FTE_W_NS && ln==="sym"){
+      const font=n.getAttributeNS(FTE_W_NS,"font")||n.getAttribute("w:font")||"";
+      const code=n.getAttributeNS(FTE_W_NS,"char")||n.getAttribute("w:char")||"";
+      const arrow=/^wingdings$/i.test(font)&&/^f0e0$/i.test(code);
+      if(arrow&&options.relationSymbols) options.relationSymbols.push(true);
+      if(equationPreview) out+=arrow?"→":"[symbol]";
+      return;
+    }
+    if(equationPreview && ns===FTE_W_NS && ln==="r"){
+      const props=[...n.children].find(x=>x.namespaceURI===FTE_W_NS && x.localName==="rPr");
+      const align=props?.getElementsByTagNameNS(FTE_W_NS,"vertAlign")[0];
+      const val=align?.getAttributeNS(FTE_W_NS,"val")||align?.getAttribute("w:val");
+      if(val==="subscript"||val==="superscript"){
+        out+=val==="subscript"?"_{":"^{";
+        [...n.childNodes].forEach(walk);
+        out+="}";
+        return;
+      }
     }
     if(preserveSymbols && ns===FTE_W_NS && ln==="r"){
       const props=[...n.children].find(x=>x.namespaceURI===FTE_W_NS && x.localName==="rPr");
@@ -15139,7 +15183,7 @@ function fteXmlText(node,options={}){
 
     // Field instructions and deleted text are metadata/history, not visible text.
     if(ns===FTE_W_NS && (ln==="instrtext"||ln==="deltext")) return;
-    if(ln==="t" && (ns===FTE_W_NS||ns===FTE_M_NS)){ out+=n.textContent||""; return; }
+    if(ln==="t" && (ns===FTE_W_NS||ns===FTE_M_NS)){ out+=n.textContent||""; if(options.textElements) options.textElements.push(n); return; }
     if(ns===FTE_W_NS && ln==="tab") { out+="\t"; return; }
     if(ns===FTE_W_NS && (ln==="br"||ln==="cr")) { out+=preserveSeparators?"\n":" "; return; }
     [...n.childNodes].forEach(walk);
@@ -15149,7 +15193,7 @@ function fteXmlText(node,options={}){
   out=out.replace(/[\u00A0\u202F]/g," ");
   if(preserveSeparators){
     return out
-      .replace(/[ ]+/g," ")
+      .replace(/[ ]+/g,spaces=>preserveSpaces?spaces:" ")
       .replace(/ *\t */g,"\t")
       .replace(/ *\n */g,"\n")
       .replace(/\n{3,}/g,"\n\n")
@@ -15952,7 +15996,8 @@ function fteEquationProseEvidence(text){
   if(words>=12) score+=3;
   if(proseVerb.test(s)) score+=6;
   if(connective.test(s) && words>=6) score+=3;
-  if(/[.!?]\s+[A-Z]/.test(s)) score+=5;
+  // A scientific abbreviation followed by a name is not a sentence boundary.
+  if(/[.!?]\s+[A-Z]/.test(s.replace(/\b(?:vs|cf|approx|ca|e\.g|i\.e|et\s+al)\./gi,""))) score+=5;
   return {score,words};
 }
 
@@ -15995,15 +16040,80 @@ function fteAncestorMath(node,local){
 }
 function fteOrderedVisibleTextElements(node){
   const out=[];
-  const walk=n=>{
-    if(!n||n.nodeType!==1) return;
-    const ns=n.namespaceURI||"",ln=(n.localName||"").toLowerCase();
-    if(ns===FTE_W_NS && (ln==="del"||ln==="movefrom"||ln==="drawing"||ln==="pict"||ln==="object"||ln==="txbxcontent")) return;
-    if(ns===FTE_W_NS && (ln==="instrtext"||ln==="deltext")) return;
-    if(ln==="t" && (ns===FTE_W_NS||ns===FTE_M_NS)){ if(String(n.textContent||"").trim()) out.push(n); return; }
-    [...n.childNodes].forEach(walk);
-  };
-  walk(node); return out;
+  fteXmlText(node,{textElements:out});
+  return out.filter(n=>String(n.textContent||"").trim());
+}
+
+
+function fteEquationLabelIdPattern(){
+  // A separated letter is a unit/value suffix, not evidence of a child label.
+  // Citation grammar remains independently tolerant of editorial spacing.
+  return '(?:S|SI|ESI|A|B)?[.-]?\\d+(?: *\\. *\\d+)*(?:\\s*\\([a-z]\\)|-?[a-z])?';
+}
+function fteEquationLabelHasHead(text){
+  return new RegExp('^\\(?\\s*'+fteEquationHeadPattern(false)+fteEquationLabelIdPattern()+'\\s*\\)?[.;:]?$','i').test(String(text||'').replace(/[\u200B\u2060\uFEFF]/g,'').trim());
+}
+function fteEquationLabelIsBare(text){
+  const t=String(text||'').replace(/[\u200B\u2060\uFEFF]/g,'').trim(),ID=fteEquationLabelIdPattern(),HEAD=fteEquationHeadPattern(false);
+  return !new RegExp('(?:\\(\\s*(?:'+HEAD+')?'+ID+'\\s*\\)|\\b'+HEAD+'\\(?\\s*'+ID+'\\s*\\)?)\\s*[.;:]?\\s*$','i').test(t);
+}
+function fteWordEquationLabelSeq(node,label,followingText=''){
+  const text=fteNormalizeStructuralWhitespace(fteXmlText(node,{preserveSeparators:true}));
+  const visible=fteNormalizeStructuralWhitespace(label),start=text.lastIndexOf(visible);
+  if(start<0) return false;
+  const after=text.slice(start+visible.length).trim();
+  if(followingText ? after!==fteNormalizeStructuralWhitespace(followingText) : !!after) return false;
+  const match=visible.match(new RegExp('('+fteEquationLabelIdPattern()+')\\s*\\)?[.;:]?$','i'));
+  if(!match) return false;
+  const idStart=start+match.index,numeric=match[1].replace(/(?:\([a-z]\)|-?[a-z])$/i,'').trimEnd();
+  const end=idStart+numeric.length;
+  return fteWordReferenceFields(node).some(f=>{
+    if(!/^SEQ\s+(?:Equation|Eq|Eqn)\b/i.test(f.instruction)||f.end!==end||f.start<idStart||f.start>=end) return false;
+    const prefix=text.slice(idStart,f.start);
+    return (!prefix||/^(?:S|SI|ESI|A|B)?[.-]?\s*$/i.test(prefix)||/\.\s*$/.test(prefix)) && /^\d+(?:\s*\.\s*\d+)*$/.test(f.text);
+  });
+}
+
+
+function fteEquationTerminalLeader(text,label){
+  const compact=s=>String(s).replace(/[\s\u200B\u2060\uFEFF]/g,'').replace(/[.;:]$/,'');
+  const leader=[...String(text||'').matchAll(/(?:…|⋯|\.{2,}|_{2,}|·{2,}|⋅{2,})/g)].at(-1);
+  return !!leader&&compact(text.slice(leader.index+leader[0].length))===compact(label)&&fteEquationCoreIsComplete(text.slice(0,leader.index));
+}
+function fteWordBareEquationLabel(node,label,followingText="",allowNumberOnlyMath=false){
+  // Inspect every visible run that owns the label. Neither hidden content nor
+  // a superscript, subscript or an operand inside the formula owns a label.
+  const compact=s=>String(s).replace(/[\s\u200B\u2060\uFEFF]/g,"");
+  const target=compact(label).replace(/[.;:]$/,"");
+  let remaining=target,skip=compact(followingText).length,terminal=true;
+  for(const text of fteOrderedVisibleTextElements(node).reverse()){
+    let part=compact(text.textContent||"");
+    if(skip){const used=Math.min(skip,part.length);part=part.slice(0,part.length-used);skip-=used;}
+    if(terminal) part=part.replace(/[.;:]$/,"");
+    if(!part) continue;
+    terminal=false;
+    const suffix=part.slice(-remaining.length);
+    if(!remaining.endsWith(suffix)) return false;
+    for(let parent=text.parentNode;parent&&parent!==node;parent=parent.parentNode){
+      if(parent.namespaceURI===FTE_M_NS&&/^(?:sSup|sSub|sSubSup|sPre)$/.test(parent.localName)) return false;
+      if((parent.namespaceURI===FTE_W_NS||parent.namespaceURI===FTE_M_NS)&&parent.localName==='r'){
+        const align=parent.getElementsByTagNameNS(FTE_W_NS,'vertAlign')[0];
+        if(align&&/^(?:subscript|superscript)$/.test(align.getAttributeNS(FTE_W_NS,'val')||align.getAttribute('w:val')||'')) return false;
+      }
+    }
+    const math=fteAncestorMath(text,'omath');
+    if(math){
+      const mathText=fteXmlText(math,{preserveSeparators:true,preserveSpaces:true});
+      const whole=compact(mathText).replace(/[.;:]$/,'')===target;
+      const ownLabel=whole&&(allowNumberOnlyMath||/^\(/.test(target));
+      const gap=mathText.lastIndexOf('\t');
+      const aligned=gap>=0&&compact(mathText.slice(gap+1)).replace(/[.;:]$/,'')===target&&fteEquationCoreIsComplete(mathText.slice(0,gap));
+      if(!ownLabel&&!aligned&&!fteEquationTerminalLeader(mathText,target)&&!fteEquationLabelHasHead(label)) return false;
+    }
+    remaining=remaining.slice(0,remaining.length-suffix.length);
+    if(!remaining) return true;
+  }
+  return false;
 }
 function fteTerminalOmmlParenNumber(node){
   if(!node) return null;
@@ -16015,7 +16125,7 @@ function fteTerminalOmmlParenNumber(node){
     const d=ds[di];
     const inner=String(fteXmlText(d)||"").replace(/\s+/g," ").trim();
     const id=fteCanonId(inner);
-    if(!id || !new RegExp('^'+fteEquationIdPattern()+'$','i').test(inner)) continue;
+    if(!id || !new RegExp('^'+fteEquationLabelIdPattern()+'$','i').test(inner)) continue;
     const dPr=d.getElementsByTagNameNS(FTE_M_NS,"dPr")[0];
     const begEl=dPr?dPr.getElementsByTagNameNS(FTE_M_NS,"begChr")[0]:null;
     const endEl=dPr?dPr.getElementsByTagNameNS(FTE_M_NS,"endChr")[0]:null;
@@ -16036,15 +16146,24 @@ function fteTerminalOmmlParenNumber(node){
   }
   return null;
 }
+
 function fteWordNodeNumberOnlyEquationId(node){
   if(!node) return null;
-  const text=String(fteXmlText(node)||"").replace(/\s+/g," ").trim();
-  const plain=fteEquationNumberOnly(text); if(plain) return plain;
+  const text=String(fteXmlText(node)||'').replace(/\s+/g,' ').trim();
+  const plain=fteEquationNumberOnly(text);
+  if(plain) return fteWordBareEquationLabel(node,text,'',true)?plain:null;
   const om=fteTerminalOmmlParenNumber(node);
-  if(!om) return null;
-  // Number-only OMML cell/paragraph: the visible text consists solely of the
-  // numeric content because the parentheses themselves are structural.
-  return text===om.inner ? om.id : null;
+  return om&&text===om.inner&&fteWordBareEquationLabel(node,text,'',true)?om.id:null;
+}
+function fteEquationCoreIsComplete(text){
+  const core=String(text||"").trim();
+  // Operators still need an operand. A charge attached to a chemical species
+  // (H+, h+ or O2.-) or an adsorbed reaction product (Pt*, Catalyst*) can
+  // legitimately finish a reaction; an arithmetic operator still cannot.
+  const reactionSite=/[→←↔⇌⇄]/.test(core)&&/(?:[Cc]atalyst|(?:[A-Z][a-z]?[0-9₀-₉]*)+)\*$/.test(core);
+  return !!core && !/[=×÷/^<>≤≥≈≃≅≠∝→←↔⇌⇒⇄,;:([{]$/.test(core) &&
+    (!/\*$/.test(core)||reactionSite) &&
+    (!/[+−‒–—-]$/.test(core) || /(?:(?:[A-Z][a-z]?[0-9₀-₉]*|e)[.·∙•⋅]?[+−‒-]|h\+)$/.test(core));
 }
 function fteWordParagraphEquationBinding(p,meta={}){
   if(!p) return null;
@@ -16052,30 +16171,45 @@ function fteWordParagraphEquationBinding(p,meta={}){
   const om=fteTerminalOmmlParenNumber(p);
   if(om){
     const idx=full.lastIndexOf(om.inner);
-    const core=idx>=0?full.slice(0,idx).replace(/\s+/g," ").trim():"";
-    if(!core) return {numberOnlyId:om.id,id:null,coreText:"",source:"omml_parenthesized_number_only"};
-    const separated=!!(om.separateMathLabel || meta.rightTabStop || (meta.tabCount||0)>0);
-    if(separated) return {id:om.id,numberOnlyId:null,coreText:core,source:"omml_parenthesized_terminal",confidence:.995};
+    const core=idx>=0?full.slice(0,idx).replace(/\s*(?:…|⋯|\.{2,}|_{2,}|·{2,}|⋅{2,})\s*$/,"").replace(/\s+/g," ").trim():"";
+    if(!core) return {numberOnlyId:fteWordNodeNumberOnlyEquationId(p),id:null,coreText:"",source:"omml_parenthesized_number_only",bare:false,seq:false};
+    const raw=fteXmlText(p,{preserveSeparators:true});
+    const separated=om.separateMathLabel || raw.endsWith('\t'+om.inner) || fteEquationTerminalLeader(raw,om.inner);
+    if(separated && fteEquationCoreIsComplete(core) && fteWordBareEquationLabel(p,om.inner,"",true)) return {id:om.id,numberOnlyId:null,coreText:core,source:"omml_parenthesized_terminal",bare:false,seq:false,confidence:.995};
   }
   // Literal terminal labels remain handled by the established parser. Record a
   // structural binding when Word math and the visible label share one paragraph.
   const literal=fteEquationLabel(full);
-  if(literal && meta.hasMath){
+  if(literal){
     const core=fteStripTerminalEquationLabel(full);
-    if(core) return {id:literal,numberOnlyId:null,coreText:core,source:"same_paragraph_literal_label",confidence:.99};
+    const label=full.slice(core.length).trim().replace(/^(?:…|⋯|\.{2,}|_{2,}|·{2,}|⋅{2,})\s*/,'');
+    if(core&&(!fteEquationCoreIsComplete(core)||!fteWordBareEquationLabel(p,label))) return {rejected:true};
+    if(core&&meta.hasMath) return {id:literal,numberOnlyId:null,coreText:core,source:"same_paragraph_literal_label",bare:fteEquationLabelIsBare(label),seq:fteWordEquationLabelSeq(p,label),confidence:.99};
   }
 
-  // Some Word equation layouts store the visible parentheses/field decoration
-  // separately, leaving flattened text such as "formula 17". Only accept the
-  // final number as an equation label when Word independently supplies strong
-  // displayed-equation layout evidence.
-  if(meta.hasMath && (meta.rightTabStop || (meta.tabCount||0)>0 || meta.hasMathPara)){
-    const ID=fteEquationIdPattern();
-    const bare=full.match(new RegExp('^(.*?)(?:\\s+|…|⋯|\\.{2,}|_{2,})('+ID+')\\s*[.;:]?\\s*$','i'));
+  // Allow explanation after a visibly aligned label; validate the preceding
+  // formula independently so a prose citation cannot become a display label.
+  const aligned=fteXmlText(p,{preserveSeparators:true,preserveSpaces:true}).replace(/[\u200B\u2060\uFEFF]/g,"");
+  const followed=aligned.match(new RegExp('^([\\s\\S]*?\\S)(?:[ ]*[\\t\\n][ \\t\\n]*| {2,}|[ ]*(?:…|⋯|\\.{2,})[ ]*)\\(\\s*('+fteEquationLabelIdPattern()+')\\s*\\)[.;:]?\\s+(\\S[\\s\\S]*)$','i'));
+  if(followed && fteEquationCoreIsComplete(followed[1]) && ftePlainEquationLike(followed[1],meta.hasRelationSymbol) && fteEquationProseEvidence(followed[3]).score>=6 && fteWordBareEquationLabel(p,`(${followed[2]})`,followed[3])){
+    return {id:fteCanonId(followed[2]),numberOnlyId:null,coreText:followed[1].trim(),source:"same_paragraph_label_before_explanation",bare:false,seq:fteWordEquationLabelSeq(p,`(${followed[2]})`,followed[3]),confidence:.94};
+  }
+
+  // A label must be separated from a complete expression and outside Office
+  // Math. Preserve spaces before testing alignment; a tab, line break or a run
+  // of spaces can align a label, but must never detach an operand or result.
+  if(meta.hasMath){
+    const ID=fteEquationLabelIdPattern();
+    const bare=aligned.match(new RegExp('^([\\s\\S]*?\\S)(?:[ ]*[\\t\\n][ \\t\\n]*| {2,})('+ID+')[ ]*[.;:]?[ ]*$','i'));
     if(bare){
       const id=fteCanonId(bare[2]);
       const core=String(bare[1]||"").replace(/\s+/g," ").trim();
-      if(id && core) return {id,numberOnlyId:null,coreText:core,source:"same_paragraph_structural_bare_terminal",confidence:.94};
+      const outside=fteEquationProseEvidence(fteXmlText(p,{omitMath:true}));
+      const visible=fteOrderedVisibleTextElements(p),lastMath=visible.findLastIndex(n=>fteAncestorMath(n,"omath"));
+      const tail=visible.slice(lastMath+1).map(n=>n.textContent||"").join("").replace(/[\s\u200B\u2060\uFEFF]/g,"").replace(/[.;:]$/,"");
+      const continuation=tail.slice(0,-bare[2].replace(/\s/g,"").length);
+      if(id && outside.score<9 && (!continuation||/^[=+−‒×÷*/^<>≤≥≈≠→←↔⇌-]/.test(continuation)) && fteEquationCoreIsComplete(core) && fteWordBareEquationLabel(p,bare[2]))
+        return {id,numberOnlyId:null,coreText:core,source:"same_paragraph_structural_bare_terminal",bare:true,seq:fteWordEquationLabelSeq(p,bare[2]),confidence:.94};
     }
   }
   return null;
@@ -16101,7 +16235,6 @@ function fteClassifyEquationLayoutRows(rows){
   if(!meaningful.length) return {isEquationLayout:false,rows:[]};
 
   const parsed=[];
-  const labels=new Set();
 
   for(const r of meaningful){
     const cells=(r.cells||[]).filter(c=>String(c.text||"").trim() || c.hasMath);
@@ -16109,8 +16242,8 @@ function fteClassifyEquationLayoutRows(rows){
 
     const labelCells=[];
     cells.forEach((c,ci)=>{
-      const id=c.equationNumberId||fteEquationNumberOnly(c.text);
-      if(id) labelCells.push({ci,id});
+      const id=c.equationNumberOnlyChecked?c.equationNumberId:(c.equationNumberId||fteEquationNumberOnly(c.text));
+      if(id) labelCells.push({ci,id,bare:c.equationLabelBare??fteEquationLabelIsBare(c.text),seq:!!c.equationLabelSeq});
     });
     if(labelCells.length!==1) return {isEquationLayout:false,rows:[]};
 
@@ -16126,6 +16259,7 @@ function fteClassifyEquationLayoutRows(rows){
       .replace(/\s+/g," ")
       .trim();
 
+    if(!fteEquationCoreIsComplete(nonLabelText)) return {isEquationLayout:false,rows:[]};
     const exprEv=fteEquationExpressionEvidence(nonLabelText);
     const proseEv=fteEquationProseEvidence(nonLabelText);
     const hasOfficeMath=mathCount>0 || mathParaCount>0;
@@ -16137,12 +16271,12 @@ function fteClassifyEquationLayoutRows(rows){
     if(hasOfficeMath && mathParaCount===0 && proseEv.score>=12 && exprEv.score<12)
       return {isEquationLayout:false,rows:[]};
 
-    if(labels.has(label.id)) return {isEquationLayout:false,rows:[]};
-    labels.add(label.id);
-
     parsed.push({
       id:label.id,
+      equationLabelBare:label.bare,
+      equationLabelSeq:label.seq,
       text:cells.map(c=>String(c.text||"").trim()).filter(Boolean).join(" ").replace(/\s+/g," ").trim(),
+      equationPreview:cells.map(c=>String(c.equationPreview||c.text||"").trim()).filter(Boolean).join(" "),
       expressionText:nonLabelText,
       mathCount:r.mathCount||mathCount,
       mathParaCount:r.mathParaCount||mathParaCount,
@@ -16167,10 +16301,14 @@ function fteWordTableRowSummaries(tbl){
       const mathParaCount=tc.getElementsByTagNameNS(FTE_M_NS,"oMathPara").length;
       return {
         text:fteXmlText(tc),
+        equationPreview:fteXmlText(tc,{equationPreview:true}),
         hasMath:mathCount>0 || mathParaCount>0,
         mathCount,
         mathParaCount,
-        equationNumberId:fteWordNodeNumberOnlyEquationId(tc)
+        equationNumberId:fteWordNodeNumberOnlyEquationId(tc),
+        equationNumberOnlyChecked:true,
+        equationLabelBare:!fteTerminalOmmlParenNumber(tc)&&fteEquationLabelIsBare(fteXmlText(tc)),
+        equationLabelSeq:fteWordEquationLabelSeq(tc,fteXmlText(tc))
       };
     });
 
@@ -16297,6 +16435,57 @@ function fteCaptionEvidence(text,label,kind,style="",distance=99,meta={}){
   return {score,capStyle,seqEvidence,startsWithLabel,tabAfterId,firstWord,after:trimmed,reportingVerb,reasons};
 }
 
+function fteMatchTableCaptions(blocks,candidates){
+  const credible=candidates.filter(c=>c.ev?.capStyle||c.ev?.score>=20);
+  const captionIndices=new Set(credible.map(c=>c.i));
+  const links=new Map(),assigned=new Map(),used=new Set();
+  for(const c of credible){
+    const nearby=[];
+    for(const direction of [-1,1]){
+      let distance=0;
+      for(let j=c.i+direction;j>=0&&j<blocks.length;j+=direction){
+        const b=blocks[j];
+        if(!b) break;
+        // Blank/page-break paragraphs do not change caption ownership.
+        if(b.type==="p"&&!String(b.text||"").trim()&&!b.hasDrawing&&!b.hasMath&&!b.sectionBreakAfter) continue;
+        if(++distance>3||captionIndices.has(j)) break;
+        if(b.type==="table"){
+          if(!b.isEquationLayout&&b.rows>=2&&b.cols>=2) nearby.push({i:j,distance});
+          break; // A caption cannot reach through another physical table.
+        }
+        if(b.hasDrawing||b.hasMathPara||b.sectionBreakAfter||b.outlineLvl!=null||/^(?:heading\s*\d*|title|subtitle)$/i.test(b.style||"")) break;
+      }
+    }
+    links.set(c.i,nearby);
+  }
+  // Resolve local one-to-one relationships together. End pairs disambiguate
+  // compact chains with captions either above or below their tables.
+  let changed=true;
+  while(changed){
+    changed=false;
+    const claims=new Map();
+    for(const c of credible){
+      if(used.has(c.i)) continue;
+      const available=links.get(c.i).filter(x=>!assigned.has(x.i));
+      if(!available.length) continue;
+      available.sort((a,b)=>a.distance-b.distance);
+      if(available.length>1&&available[0].distance===available[1].distance) continue;
+      const link=available[0],forced=available.length===1;
+      if(!claims.has(link.i)) claims.set(link.i,[]);
+      claims.get(link.i).push({c,distance:link.distance,forced});
+    }
+    for(const [i,choices] of claims){
+      choices.sort((a,b)=>Number(b.forced)-Number(a.forced)||a.distance-b.distance);
+      if(choices.length>1&&choices[0].forced===choices[1].forced&&choices[0].distance===choices[1].distance) continue;
+      const c=choices[0].c;
+      assigned.set(i,c); used.add(c.i); changed=true;
+    }
+  }
+  const unresolved=credible.filter(c=>!used.has(c.i)&&links.get(c.i).length)
+    .map(c=>({c,tableIndices:links.get(c.i).map(x=>x.i)}));
+  return {assigned,unresolved};
+}
+
 function fteChooseCaptionCandidate(candidates,kind,objectIndex){
   if(!candidates.length) return null;
   const scored=candidates.map(c=>{
@@ -16333,7 +16522,7 @@ function fteNormalizeCrossRefText(text){
     .trim();
 }
 function fteDisplayedEquationId(block){
-  if(!block || block.type!=="p" || !block.text) return null;
+  if(!block || block.type!=="p" || !block.text || block.equationLabelRejected) return null;
   const structuralId=block.attachedEquationId?fteCanonId(block.attachedEquationId):null;
   const id=structuralId||fteEquationLabel(block.text); if(!id) return null;
   const t=fteNormalizeCrossRefText(block.text);
@@ -16342,12 +16531,12 @@ function fteDisplayedEquationId(block){
   // "... proposed (Eq. 8 - Eq. 11)" is never a displayed equation.
   const refs=fteCitations(t,"equation");
   const unique=[...new Set(refs.map(x=>x.id))];
-  if(unique.length>1) return null;
+  if(unique.length>1 && block.equationLabelSource!=="same_paragraph_label_before_explanation") return null;
 
   const core=structuralId&&block.equationCoreText?String(block.equationCoreText).trim():fteStripTerminalEquationLabel(t);
   if(!core) return null; // number-only blocks are paired separately.
 
-  const expr=fteEquationExpressionEvidence(core);
+  const expr=fteEquationExpressionEvidence(core,!!block.hasRelationSymbol);
   const prose=fteEquationProseEvidence(core);
   const equationStyle=/(?:^|[^a-z])equation(?:[^a-z]|$)/i.test(block.style||"") || /equationlayout/i.test(block.style||"");
   const layoutCue=!!(
@@ -16364,6 +16553,9 @@ function fteDisplayedEquationId(block){
   // parentheses are stored as m:begChr/m:endChr and disappear from textContent.
   if(structuralId){
     if(block.fromEquationTable) return id;
+    // A verified separate number after Word math also supports formulas written
+    // with word-based operands, which otherwise score like long prose.
+    if(block.equationLabelSource==="same_paragraph_structural_bare_terminal" && block.hasMath && expr.relationCount>=1) return id;
     if(block.hasMathPara && (expr.relationCount>=1 || expr.score>=5 || prose.score<6)) return id;
     if(block.hasMath && layoutCue && prose.score<9 && (expr.relationCount>=1 || expr.score>=8)) return id;
   }
@@ -16377,7 +16569,7 @@ function fteDisplayedEquationId(block){
 
   // Drawn reaction arrows are structural evidence, not text to insert into the
   // manuscript. Require an explicit label; a terminal chemical subscript is not one.
-  if(block.hasRelationDrawing && core!==t.trim() && layoutCue && expr.operatorCount>=1 &&
+  if((block.hasRelationDrawing||block.hasRelationSymbol) && core!==t.trim() && layoutCue && expr.operatorCount>=1 &&
     expr.proseWords<=2 && ftePlainEquationLike(core,true))return id;
 
   // Borderless equation-layout tables and true Office Math display paragraphs
@@ -16400,7 +16592,7 @@ function fteDisplayedEquationId(block){
   // They may contain no OMML at all. Accept them only when the text has clear
   // mathematical/chemical relation syntax, with layout cues or very strong
   // equation evidence.
-  if(ftePlainEquationLike(core) && (layoutCue || expr.score>=12)) return id;
+  if(ftePlainEquationLike(core,!!block.hasRelationSymbol) && (layoutCue || expr.score>=12)) return id;
 
   // Inline OMML can represent a genuine displayed equation in an ordinary
   // paragraph. Fraction/root-heavy Office Math sometimes flattens to sparse text
@@ -16420,7 +16612,7 @@ function fteLooksLikeUnnumberedDisplayedEquation(block){
   if(!block || block.type!=="p" || !block.text) return false;
   if(fteEquationLabel(block.text) || fteEquationNumberOnly(block.text)) return false;
 
-  const expr=fteEquationExpressionEvidence(block.text);
+  const expr=fteEquationExpressionEvidence(block.text,!!block.hasRelationSymbol);
   const prose=fteEquationProseEvidence(block.text);
   const equationStyle=/(?:^|[^a-z])equation(?:[^a-z]|$)/i.test(block.style||"") || /equationlayout/i.test(block.style||"");
   const layoutCue=!!(
@@ -16435,7 +16627,7 @@ function fteLooksLikeUnnumberedDisplayedEquation(block){
   if(prose.score>=10 && expr.score<14) return false;
   if(block.hasMathPara && (expr.score>=4 || prose.score<6)) return true;
   if(equationStyle && (expr.score>=4 || prose.score<7)) return true;
-  if(ftePlainEquationLike(block.text) && (layoutCue || expr.score>=12)) return true;
+  if(ftePlainEquationLike(block.text,!!block.hasRelationSymbol) && (layoutCue || expr.score>=12)) return true;
   if(block.hasMath && prose.score<8){
     if(expr.score>=9) return true;
     if(layoutCue && expr.relationCount>=1 && prose.score<6) return true;
@@ -16460,13 +16652,13 @@ function fteAdjacentEquationExpression(blocks,labelIndex,maxDist=4){
 
   // Same Word drawing/text-box/equation container is the strongest evidence.
   for(const anchor of sharedAnchors){
-    const j=blocks.findIndex((b,k)=>
-      k!==labelIndex &&
-      b?.type==="p" &&
-      (b.physicalAnchor===anchor || b.containerAnchor===anchor) &&
-      fteLooksLikeUnnumberedDisplayedEquation(b)
-    );
-    if(j>=0) return {j,b:blocks[j],d:Math.abs(j-labelIndex),dir:j<labelIndex?-1:1,sameContainer:true,confidence:.995};
+    const owners=blocks.flatMap((b,k)=>k!==labelIndex&&b?.type==="p"&&
+      (b.physicalAnchor===anchor||b.containerAnchor===anchor)&&
+      fteLooksLikeUnnumberedDisplayedEquation(b)&&fteEquationCoreIsComplete(b.text)?[k]:[]);
+    if(owners.length){
+      const j=owners[0];
+      return {j,b:blocks[j],d:Math.abs(j-labelIndex),dir:j<labelIndex?-1:1,sameContainer:true,ownershipAmbiguous:owners.length>1,confidence:.995};
+    }
   }
 
   const candidates=[];
@@ -16483,7 +16675,7 @@ function fteAdjacentEquationExpression(blocks,labelIndex,maxDist=4){
       // structural association.
       if(!t && !b.hasMath) continue;
 
-      if(fteLooksLikeUnnumberedDisplayedEquation(b)){
+      if(fteLooksLikeUnnumberedDisplayedEquation(b)&&fteEquationCoreIsComplete(b.text)){
         const expr=fteEquationExpressionEvidence(String(b.text||""));
         const score=
           (b.hasMathPara?80:0) +
@@ -16511,7 +16703,9 @@ function fteAdjacentEquationExpression(blocks,labelIndex,maxDist=4){
 
   if(!candidates.length) return null;
   candidates.sort((a,b)=>b.score-a.score || a.d-b.d || (a.dir===-1?-1:1));
-  return candidates[0];
+  const best=candidates[0];
+  const tied=candidates.filter(c=>c!==best&&c.d===best.d&&c.score-(c.dir===-1?5:0)===best.score-(best.dir===-1?5:0));
+  return {...best,ownershipAmbiguous:tied.length>0};
 }
 
 function fteNearbyIndex(blocks,i,pred,maxDist=2){
@@ -17172,13 +17366,13 @@ function fteYN(v){ return `<span class="yn ${v?"y":"n"}">${v?"yes":"no"}</span>`
 function renderFteReport(res){
   LAST_FTE=res;
   const total=res.figures.length+res.tables.length+res.equations.length;
-  $("fte-report-sub").textContent=!res.reliable?"Unable to verify document structure reliably.":`${res.issues.length} item${res.issues.length===1?"":"s"} to review · ${res.figures.length} figure${res.figures.length===1?"":"s"} · ${res.tables.length} table${res.tables.length===1?"":"s"} · ${res.equations.length} numbered equation${res.equations.length===1?"":"s"}`;
+  $("fte-report-sub").textContent=!res.reliable?"Unable to verify document structure reliably.":`${res.issues.length} item${res.issues.length===1?"":"s"} to review · ${res.figures.length} figure${res.figures.length===1?"":"s"} · ${res.tables.length} table${res.tables.length===1?"":"s"} · ${fteEquationCountSummary(res)}`;
   if(!res.reliable){ $("fte-summary").innerHTML=""; $("fte-findings").innerHTML=`<p class="sec-label">Structural verification</p><div class="issue"><span class="badge warn">!</span><div class="body"><p class="msg">Unable to verify placement reliably from the Word document structure.</p></div></div>`; bindInfoHelp("fte-report-info","fte-report-help");
   $("fte-report").hidden=false; buildReportSubnav("fte-report","fte-subnav"); return; }
   const rows=[
     ["Figures",res.figures.length,fteStatus(res,"figure","numbering"),fteStatus(res,"figure","cited"),fteStatus(res,"figure","resolve"),fteStatus(res,"figure","before")],
     ["Tables",res.tables.length,fteStatus(res,"table","numbering"),fteStatus(res,"table","cited"),fteStatus(res,"table","resolve"),fteStatus(res,"table","before")],
-    ["Equations",res.equations.length,fteStatus(res,"equation","numbering"),fteStatus(res,"equation","cited"),fteStatus(res,"equation","resolve"),fteStatus(res,"equation","citeorder")]
+    ["Equations",res.equations.filter(x=>!x.identifierUncertain).length,fteStatus(res,"equation","numbering"),fteStatus(res,"equation","cited"),fteStatus(res,"equation","resolve"),fteStatus(res,"equation","citeorder")]
   ];
   $("fte-summary").innerHTML=`<p class="sec-label">Manuscript-level validation ${inlineHelpButton("Summary of structural checks for Figures, Tables, and Equations. Detected = number of items found; Numbering = no gaps/duplicates/order problems; Cited/ref. = each item has a matching in-text reference where expected; Cross-refs resolve = cited identifiers correspond to detected items; Order/placement = citation and physical order checks passed where Word structure is reliable.","Explain manuscript-level validation")}</p><div class="ledger-scroll"><table class="ledger"><thead><tr><th>Category</th><th>Detected</th><th>Numbering</th><th>Cited/ref.</th><th>Cross-refs resolve</th><th>Order / placement</th></tr></thead><tbody>${rows.map(r=>`<tr><td class="t-abbr">${r[0]}</td><td class="t-num">${r[1]}</td><td>${fteYN(r[2])}</td><td>${fteYN(r[3])}</td><td>${fteYN(r[4])}</td><td>${fteYN(r[5])}</td></tr>`).join("")}</tbody></table></div>${res.unverified?`<p class="std-note">${res.unverified} figure placement${res.unverified===1?"":"s"} could not be tied confidently to a Word drawing; citation-before-appearance was not asserted for those figure${res.unverified===1?"":"s"}.</p>`:""}`;
   if(!res.issues.length) $("fte-findings").innerHTML=`<p class="verdict clean">No figure, table, or numbered-equation consistency issues detected.</p>`;
@@ -17190,16 +17384,61 @@ function renderFteReport(res){
   $("fte-report").hidden=false;
   buildReportSubnav("fte-report","fte-subnav");
 }
+function ftePrioritizedIssues(issues){
+  const rank={err:0,warn:1,info:2};
+  return [...issues].sort((a,b)=>(rank[a.severity]??1)-(rank[b.severity]??1));
+}
+function fteReviewSummary(issues){
+  const notes=issues.filter(x=>x.severity==="info").length,review=issues.length-notes;
+  return `${review} item${review===1?"":"s"} to review · ${notes} style note${notes===1?"":"s"}`;
+}
 function fteReportText(res){
   const L=["FIGURE, TABLE, AND EQUATION CONSISTENCY REPORT",""];
-  L.push(`Figures detected: ${res.figures.length}`); L.push(`Tables detected: ${res.tables.length}`); L.push(`Numbered equations detected: ${res.equations.length}`); L.push(`Items to review: ${res.issues.length}`,"");
+  L.push(`Figures detected: ${res.figures.length}`); L.push(`Tables detected: ${res.tables.length}`); L.push(`Numbered equations detected: ${res.equations.filter(x=>!x.identifierUncertain).length}`); if(res.equations.some(x=>x.identifierUncertain)) L.push(`Possible equation labels to confirm: ${res.equations.filter(x=>x.identifierUncertain).length}`); L.push(fteReviewSummary(res.issues),"");
   if(!res.reliable){ L.push("Unable to verify placement reliably from the Word document structure."); return L.join("\n"); }
   if(!res.issues.length) L.push("No figure, table, or numbered-equation consistency issues detected.");
-  else res.issues.forEach(x=>{ L.push(`${humanIssueCode(x.code)} | ${x.id&&x.id!=="?"?fteDisplay(x.kind,x.id):x.kind}`); L.push(`  Finding: ${x.msg}`); if(x.context)L.push(`  Manuscript context: ${x.context}`); if(x.suggestion)L.push(`  Recommendation: ${x.suggestion}`); L.push(""); });
+  else ftePrioritizedIssues(res.issues).forEach(x=>{ L.push(`${humanIssueCode(x.code)} | ${x.id&&x.id!=="?"?fteDisplay(x.kind,x.id):x.kind}`); L.push(`  Priority: ${x.severity==="info"?"Style note":x.severity==="err"?"Action required":"Review required"}`); L.push(`  Finding: ${x.msg}`); if(x.context)L.push(`  Manuscript context: ${x.context}`); if(x.suggestion)L.push(`  Recommendation: ${x.suggestion}`); L.push(""); });
   return L.join("\n");
 }
 
 /* ---------- File reading ---------- */
+// Report labels come from the verified caption-to-table association. Document
+// ordinals remain internal identities, including for duplicate caption numbers.
+function mcNumericTableLocation(table){
+  return table?.reportTableLabel||`Table (number unconfirmed; document position ${table?.index??"unknown"})`;
+}
+function mcAssignNumericTableLabels(tables,blocks){
+  (tables||[]).forEach(table=>{delete table.reportTableId;delete table.reportTableLabel;delete table.reportTableAnchor;});
+  let registered=[];
+  try{registered=fteAnalyze((blocks||[]).map(b=>({...b}))).tables||[];}
+  catch(error){console.warn("Table caption locations could not be confirmed; document positions will be shown.",error);return;}
+  (tables||[]).forEach(table=>{
+    // Compare original physical cells, before colspan/rowspan expansion.
+    // Matching display-grid columns to Word cells shifts merged-row values.
+    // Empty continuation cells may be omitted by the HTML reader.
+    const clean=rows=>JSON.stringify(rows.map(row=>row.map(cell=>String(cell||"").normalize("NFKC").replace(/[−‐‑–—]/g,"-").replace(/\s+/g,"")).filter(Boolean)));
+    const rows=table.reportSourceRows||table.rows||[];
+    if(!rows.some(row=>row.some(Boolean)))return;
+    const signature=clean(rows);
+    let sources=(blocks||[]).filter(b=>b.type==="table"&&Array.isArray(b.cellMatrix)&&clean(b.cellMatrix)===signature);
+    if(!sources.length){
+      // Header superscripts can differ between the two Word readers. Reuse the
+      // existing strict data-cell match without changing unit/header analysis.
+      const info=tableHeaderInfo(table),dataRows=table.rows||[];
+      const cellText=s=>String(s||"").normalize("NFKC").replace(/[−‐‑–—]/g,"-").replace(/\s+/g,"");
+      sources=(blocks||[]).filter(b=>b.type==="table"&&Array.isArray(b.cellMatrix)&&b.cellMatrix.length===dataRows.length&&
+        dataRows.slice(info.dataStart).some((row,i)=>row.some((cell,c)=>cell&&table.dataCells?.[i+info.dataStart]?.[c]!==false))&&dataRows.slice(info.dataStart).every((row,i)=>row.every((cell,c)=>
+          table.dataCells?.[i+info.dataStart]?.[c]===false||!cell||cellText(cell)===cellText(b.cellMatrix[i+info.dataStart]?.[c]))));
+    }
+    const source=sources.length===1?sources[0]:null;
+    if(!source?.physicalAnchor)return;
+    const matches=registered.filter(item=>item.physicalAnchor===source.physicalAnchor&&item.objectResolved!==false&&!item.identifierUncertain);
+    if(matches.length!==1)return;
+    table.reportTableId=matches[0].id;
+    table.reportTableLabel=fteDisplay("table",matches[0].id);
+    table.reportTableAnchor=source.physicalAnchor;
+  });
+}
 function extractNumericTable(tbl,index){
   const htmlRows=[...tbl.querySelectorAll("tr")].filter(tr=>tr.closest("table")===tbl),grid=htmlRows.map(()=>[]);
   const htmlCells=htmlRows.map(tr=>[...tr.children].filter(td=>td.matches("td,th")));
@@ -17233,6 +17472,7 @@ function extractNumericTable(tbl,index){
   });
   const width=Math.max(0,...grid.map(row=>row.length));
   const table={index,rows:grid.map(row=>Array.from({length:width},(_,c)=>row[c]?.text||""))};
+  table.reportSourceRows=grid.map((row,r)=>[...new Set(row)].filter(cell=>cell?.row===r).map(cell=>cell.text));
   table.headerFlags=htmlRows.map((tr,r)=>tr.parentElement.tagName==="THEAD"||(htmlCells[r].length>0&&htmlCells[r].every(td=>td.tagName==="TH")));
   table.headerHints=grid.map((row,r)=>{
     const own=[...new Set(row)].filter(cell=>cell?.row===r&&cell.text&&!tableCellIsMissing(cell.text));
@@ -17353,6 +17593,7 @@ async function readFile(file){
       const table=extractNumericTable(tbl,tableIndex+1);
       if(table.rows.filter(r=>r.some(Boolean)).length>=2)DOCX_NUMERIC_TABLES.push(table);
     });
+    mcAssignNumericTableLabels(DOCX_NUMERIC_TABLES,DOCX_FTE_BLOCKS);
     box.querySelectorAll("table").forEach(t=>t.remove());   // drop Word tables entirely
 
     // Mammoth preserves Word automatic numbering structurally as <ol><li>, while
@@ -17466,12 +17707,14 @@ function issueHelpText(code,msg=""){
     return "The physical order of numbered items does not match their numerical order, or simple and section-based numbering appear to be mixed.";
   if(/_CITATION_WITHOUT_/.test(code) || code==="EQUATION_REFERENCE_WITHOUT_EQUATION")
     return "An in-text cross-reference was detected, but the corresponding numbered figure, table, or equation was not located in the Word document.";
-  if(/_NOT_CITED$/.test(code) || code==="EQUATION_NOT_REFERENCED")
+  if(code==="EQUATION_NOT_REFERENCED")
+    return "No reference using this equation number was found. The equation may still be introduced in words, such as ‘the equation below’. A numbered reference is needed only if required by your thesis or journal style.";
+  if(/_NOT_CITED$/.test(code))
     return "A numbered item was detected in the manuscript, but no matching in-text cross-reference was found. Caption text itself does not count as a prior in-text citation.";
   if(/_APPEARS_BEFORE_FIRST_CITATION$/.test(code))
     return "The figure or table appears physically in the Word document before its first in-text citation. The checker uses Word document order and applies this only when placement can be resolved reliably.";
   if(code==="EQUATION_FIRST_CITATION_ORDER")
-    return "The checker compares the first explicit in-text equation reference with the displayed numbered equation. This is reported conservatively because journal styles differ on whether equations must be introduced before display.";
+    return "This compares references that use equation numbers, not every explanation introducing a formula. Citation order is a style observation, not an equation-numbering error. No change is needed unless your thesis or journal requires a different citation order.";
   if(/_CITED_BEFORE_PREVIOUS_/.test(code))
     return "The first citations of sequential items appear out of numerical order, for example Figure 3 is first cited before Figure 2. Each main and supplementary sequence is evaluated separately.";
 
@@ -24217,6 +24460,7 @@ function precisionTableCheck(tables){
     // Category bands, LB/UB matrices, regulatory limits, and other predefined
     // threshold tables are exact/external values. Do not force decimal harmonisation.
     const thresholdMatrix=tableLooksLikeThresholdMatrix(rows);
+    const tableLocation=mcNumericTableLocation(tbl);
 
     const {headers,dataStart}=tableHeaderInfo(tbl),precisionInfo=unitPrecisionTableInfo(tbl);
     for(let c=0;c<headers.length;c++){
@@ -24231,8 +24475,8 @@ function precisionTableCheck(tables){
         const sourceCell=String(rows[r][c]||"").trim(),cell=tableMeasurementCell(sourceCell,precisionInfo);
         const pair=tableUncertainty(cell,headerUnit,header);
         if(pair&&pair.meanPlace!==pair.uncertaintyPlace){
-          out.push({cat:"uncertainty",
-            msg:`Word table ${tbl.index}, column ${c+1} (${header}): row ${r+1} has a value and variation/uncertainty ending at different decimal places (${pair.value}). Verify the measurement resolution and report both to the same scientifically justified decimal place.`,
+          out.push({cat:"uncertainty",tableIndex:tbl.index,tableLocation,tableParameter:header,
+            msg:`${tableLocation}, column ${c+1} (${header}): row ${r+1} has a value and variation/uncertainty ending at different decimal places (${pair.value}). Verify the measurement resolution and report both to the same scientifically justified decimal place.`,
             snippet:`<b>Row ${r+1}, column ${c+1} (${escapeHtml(header)}):</b> <mark>${escapeHtml(sourceCell)}</mark>`
           });
         }
@@ -24268,7 +24512,7 @@ function precisionTableCheck(tables){
       if(!shouldFlagMixedPrecision(raw) && vals.length<4) continue;
 
       const variants=dps.map(dp=>precisionVariantSummary(vals,dp,c,rows));
-      const loc=`Word table ${tbl.index}, column ${c+1} (${header})`;
+      const loc=`${tableLocation}, column ${c+1} (${header})`;
       const msg=`${loc}: values in this comparison use different written precision. ${variants.join(" | ")}. Review their analytical resolution and reporting convention; retain scientifically justified differences.`;
 
       // Show only the relevant cells, not the entire table rows.
@@ -24279,7 +24523,7 @@ function precisionTableCheck(tables){
           examples.push(`<b>Row ${v.row}${label?` [${escapeHtml(label)}]`:""}:</b> <mark>${escapeHtml(v.raw)}</mark>`);
         });
       });
-      out.push({cat:"table",msg,snippet:examples.join("<br>")});
+      out.push({cat:"table",tableIndex:tbl.index,tableLocation,tableParameter:header,msg,snippet:examples.join("<br>")});
       }
     }
   });
@@ -24401,16 +24645,18 @@ function numberCheck(text,tables=[]){
 
   // Deduplicate identical findings generated by overlapping conservative rules.
   const seen=new Set();
-  return out.filter(f=>{ const k=f.cat+"|"+f.msg+"|"+f.snippet; if(seen.has(k)) return false; seen.add(k); return true; });
+  return out.filter(f=>{ const k=(f.tableIndex??"")+"|"+f.cat+"|"+f.msg+"|"+f.snippet; if(seen.has(k)) return false; seen.add(k); return true; });
 }
 function numFindingLocation(f){
+  if(f?.tableLocation)return f.tableLocation;
   const msg=String(f?.msg||"");
   const mt=msg.match(/Word table\s+(\d+)\s*,\s*column\s+\d+/i);
-  return mt?`Table ${mt[1]}`:"Body";
+  return mt?mcNumericTableLocation({index:mt[1]}):"Body";
 }
 function numFindingParameter(f){
   const msg=String(f?.msg||"");
   if(f?.cat==="table"){
+    if(f.tableParameter)return f.tableParameter;
     const m=msg.match(/Word table\s+\d+\s*,\s*column\s+\d+\s*\((.*?)\)\s*:/i);
     if(m&&m[1])return m[1];
     return "Table measurement";
@@ -24549,7 +24795,7 @@ function renderNumReport(findings){
     <p class="sec-label">Numerical reporting ledger <button type="button" class="info-help" id="num-ledger-info" aria-label="Explain the Numerical reporting ledger" aria-expanded="false" title="What do these columns mean?">i</button></p>
     <div class="ledger-help num-ledger-help" id="num-ledger-help" hidden><div class="ledger-help-grid">
       <b>Parameter / context</b><span>The numerical reporting rule or parameter being reviewed, such as pH, ordinary counts, a numerical range, or a comparable table measurement.</span>
-      <b>Location</b><span>Where the item occurs, such as the manuscript body or a specific Word table.</span>
+      <b>Location</b><span>Where the item occurs. Table numbers follow verified manuscript captions; an unconfirmed number is identified by its document position.</span>
       <b>Observed reporting</b><span>A concise description of the form detected in the manuscript.</span>
       <b>Status</b><span><b>review</b> indicates a reporting form that needs author judgement; <b>mixed precision</b> indicates inconsistent precision among values inferred to be comparable; <b>editorial note</b> indicates a lower-priority prose-number convention.</span>
       <b>Recommendation</b><span>A concise reporting recommendation. Scientific meaning, source precision, measurement resolution, and journal instructions take priority. Select <b>View instances</b> to inspect the original manuscript context before editing.</span>
@@ -24811,7 +25057,8 @@ function combinedReportText(){
     `Prose paragraphs assessed: ${LAST_ENG?.proseParagraphs??0}`,
     `Figures detected: ${LAST_FTE?.figures?.length??0}`,
     `Tables detected: ${LAST_FTE?.tables?.length??0}`,
-    `Numbered equations detected: ${LAST_FTE?.equations?.length??0}`,
+    `Numbered equations detected: ${LAST_FTE?.equations?.filter(x=>!x.identifierUncertain).length??0}`,
+    ...(LAST_FTE?.equations?.some(x=>x.identifierUncertain)?[`Possible equation labels to confirm: ${LAST_FTE.equations.filter(x=>x.identifierUncertain).length}`]:[]),
     "",
     "Priority guide: Critical error = high-confidence finding to address; Review item = author judgement required; Editorial note = lower-priority consistency or readability observation.",
     ""
@@ -25250,7 +25497,7 @@ function fteEquationMatchingCitations(itemId,citations){
 }
 
 function fteEquationIdPattern(){
-  return '(?:S|SI|ESI|A|B)?[.-]?\\d+(?:\\.\\d+)*(?:\\s*(?:\\([a-z]\\)|-?[a-z]))?';
+  return '(?:S|SI|ESI|A|B)?[.-]?\\d+(?: *\\. *\\d+)*(?:\\s*(?:\\([a-z]\\)|-?[a-z]))?';
 }
 
 // Shared equation-label grammar. Keep this centralized so citation extraction,
@@ -25264,38 +25511,47 @@ function fteEquationHeadPattern(plural=true){
 
 fteEquationLabel=function(text){
   const t=fteNormalizeCrossRefText(text||"")
+    .replace(/[\u200B\u2060\uFEFF]/g,"")
     .replace(/[\u00A0\u202F]/g," ")
     .replace(/\s+/g," ")
     .trim();
-  const ID=fteEquationIdPattern(), HEAD=fteEquationHeadPattern(false);
-  const LEADER='(?:…|⋯|\\.{2,}|_{2,}|·{2,}|⋅{2,})?';
+  const ID=fteEquationLabelIdPattern(), HEAD=fteEquationHeadPattern(false);
+  const LEADER='(?:…|⋯|\\.{2,}|_{2,}|·{2,}|⋅{2,})';
   let m;
   // Parenthesized terminal number, optionally preceded by Eq./Eqn./Equation and
   // optional No./Number wording. Word templates may visually separate a
   // right-aligned equation number with dot/underscore leader characters.
-  m=t.match(new RegExp(LEADER+'\\s*\\(\\s*(?:'+HEAD+')?('+ID+')\\s*\\)\\s*[.;:]?\\s*$','i'));
-  if(m) return fteCanonId(m[1]);
+  m=t.match(new RegExp(LEADER+'?\\s*\\(\\s*(?:'+HEAD+')?('+ID+')\\s*\\)\\s*[.;:]?\\s*$','i'));
+  if(m){
+    const open=t.indexOf('(',m.index),before=t.slice(0,open);
+    const separated=!before || /\s$/.test(before) || new RegExp(LEADER+'$').test(before);
+    const explicit=new RegExp('^\\(\\s*'+HEAD,'i').test(t.slice(open));
+    const core=fteStripTerminalEquationLabel(t);
+    if((separated||explicit) && (!core||fteEquationCoreIsComplete(core))) return fteCanonId(m[1]);
+  }
   // Explicit terminal label: Eq. 2.15, Eqn. 2.15, Equation No. 2.15, etc.
   m=t.match(new RegExp('\\b'+HEAD+'\\(?\\s*('+ID+')\\s*\\)?\\s*[.;:]?\\s*$','i'));
   if(m) return fteCanonId(m[1]);
-  // Word may expose the leader and number while hiding structural parentheses.
+  // Bare terminal values are part of the expression unless an actual leader
+  // separates the label. Never match a suffix of a decimal, unit or exponent.
   m=t.match(new RegExp(LEADER+'\\s*\\(?\\s*('+ID+')\\s*\\)?\\s*[.;:]?\\s*$','i'));
   return m?fteCanonId(m[1]):null;
 };
 fteStripTerminalEquationLabel=function(text){
-  let t=String(text||"");
-  const ID=fteEquationIdPattern(), HEAD=fteEquationHeadPattern(false);
+  let t=String(text||"").replace(/[\u200B\u2060\uFEFF]/g,"");
+  const ID=fteEquationLabelIdPattern(), HEAD=fteEquationHeadPattern(false);
   const pats=[
-    new RegExp('\\s*(?:…|⋯|\\.{2,})?\\s*\\(\\s*(?:'+HEAD+')?'+ID+'\\s*\\)\\s*[.;:]?\\s*$','i'),
+    new RegExp('\\s*(?:…|⋯|\\.{2,}|_{2,}|·{2,}|⋅{2,})?\\s*\\(\\s*(?:'+HEAD+')?'+ID+'\\s*\\)\\s*[.;:]?\\s*$','i'),
     new RegExp('\\s*\\b'+HEAD+'\\(?\\s*'+ID+'\\s*\\)?\\s*[.;:]?\\s*$','i'),
-    new RegExp('\\s*(?:…|⋯|\\.{2,})\\s*\\(?\\s*'+ID+'\\s*\\)?\\s*[.;:]?\\s*$','i')
+    new RegExp('\\s*(?:…|⋯|\\.{2,}|_{2,}|·{2,}|⋅{2,})\\s*\\(?\\s*'+ID+'\\s*\\)?\\s*[.;:]?\\s*$','i')
   ];
   for(const p of pats){ const x=t.replace(p,""); if(x!==t){ t=x; break; } }
   return t.trim();
 };
 fteEquationNumberOnly=function(text){
-  const t=String(text||"").replace(/[\u00A0\u202F]/g," ").replace(/\s+/g," ").trim();
-  const ID=fteEquationIdPattern(), HEAD=fteEquationHeadPattern(false);
+  const t=String(text||"").replace(/[\u200B\u2060\uFEFF]/g,"").replace(/[\u00A0\u202F]/g," ").replace(/\s+/g," ").trim();
+  const ID=fteEquationLabelIdPattern(), HEAD=fteEquationHeadPattern(false);
+  if(new RegExp('^'+HEAD,'i').test(t)&&/:$/.test(t)) return null;
   const LEADER='(?:…|⋯|\\.{2,}|_{2,}|·{2,}|⋅{2,})?';
   const pats=[
     new RegExp('^\\s*'+LEADER+'\\s*\\(\\s*(?:'+HEAD+')?('+ID+')\\s*\\)\\s*[.;:]?\\s*$','i'),
@@ -25441,8 +25697,165 @@ function fteFigureSpecialCitations(text){
   return out;
 }
 
-fteCitations=function(text,kind){
-  text=fteNormalizeCrossRefText(text||"");
+function fteWordReferenceFields(el){
+  if(!el) return [];
+  const stack=[],fields=[];
+  let raw="";
+  const attr=(n,key)=>n.getAttributeNS(FTE_W_NS,key)||n.getAttribute("w:"+key)||n.getAttribute(key)||"";
+  const finish=f=>{
+    f.closed=true;
+    if(!f.invalid && f.result && /^\s*(?:REF|SEQ)\s+\S/i.test(f.instruction))
+      fields.push({...f,instruction:f.instruction.replace(/\s+/g," ").trim(),end:raw.length});
+  };
+  const walk=n=>{
+    if(!n || n.nodeType!==1) return;
+    const word=n.namespaceURI===FTE_W_NS,name=(n.localName||"").toLowerCase();
+    const props=word&&name==="r"?[...n.children].find(x=>x.namespaceURI===FTE_W_NS&&x.localName==="rPr"):null;
+    const hidden=props&&[...props.children].some(x=>x.namespaceURI===FTE_W_NS&&/^(?:vanish|webHidden|specVanish)$/.test(x.localName)&&!/^(?:0|false|off|no)$/i.test(attr(x,"val")));
+    if(word&&/^(?:del|movefrom|drawing|pict|object|txbxcontent)$/.test(name)||hidden){
+      if(["instrText","fldChar","fldSimple"].some(k=>n.getElementsByTagNameNS(FTE_W_NS,k).length)) stack.forEach(f=>f.invalid=true);
+      return;
+    }
+    if(name==="alternatecontent"){
+      const children=[...n.children];
+      walk(children.find(x=>x.localName==="Choice")||children.find(x=>x.localName==="Fallback"));
+      return;
+    }
+    if(word&&name==="fldsimple"){
+      const f={instruction:attr(n,"instr"),result:true,start:raw.length,invalid:stack.some(x=>!x.result||/^\s*(?:TOC|PAGEREF)\b/i.test(x.instruction)),simple:true,parents:[...stack]};
+      const depth=stack.length;
+      stack.push(f);
+      [...n.children].forEach(walk);
+      if(stack.length!==depth+1||stack.at(-1)!==f) f.invalid=true;
+      stack.length=depth;
+      finish(f);
+      return;
+    }
+    if(word&&name==="fldchar"){
+      const kind=attr(n,"fldCharType"),f=stack.at(-1);
+      if(kind==="begin"){
+        if(f&&!f.result) f.invalid=true;
+        stack.push({instruction:"",result:false,start:0,invalid:stack.some(x=>!x.result||/^\s*(?:TOC|PAGEREF)\b/i.test(x.instruction)),parents:[...stack]});
+      }else if(kind==="separate"&&f&&!f.simple){
+        if(f.result) f.invalid=true;
+        f.result=true; f.start=raw.length;
+      }else if(kind==="end"&&f&&!f.simple){
+        stack.pop(); finish(f);
+      }else stack.forEach(x=>x.invalid=true);
+      return;
+    }
+    if(word&&name==="instrtext"){
+      const f=stack.at(-1);
+      if(f&&!f.result) f.instruction+=n.textContent||"";
+      return;
+    }
+    if(word&&name==="deltext") return;
+    if(name==="t"&&(word||n.namespaceURI===FTE_M_NS)){raw+=n.textContent||"";return;}
+    if(word&&name==="tab"){raw+="\t";return;}
+    if(word&&(name==="br"||name==="cr")){raw+="\n";return;}
+    [...n.children].forEach(walk);
+  };
+  walk(el);
+  const normalized=fteNormalizeStructuralWhitespace(fteXmlText(el,{preserveSeparators:true}));
+  // Never guess offsets when this reader and the authoritative visible text differ.
+  if(fteNormalizeStructuralWhitespace(raw)!==normalized) return [];
+  return fields.flatMap(f=>{
+    if(f.parents.some(x=>x.invalid||!x.closed)) return [];
+    const value=raw.slice(f.start,f.end),left=value.length-value.trimStart().length,right=value.trimEnd().length;
+    if(right<=left) return [];
+    const a=f.start+left,b=f.start+right,first=String.fromCodePoint(raw.codePointAt(a));
+    const start=fteNormalizeStructuralWhitespace(raw.slice(0,a)+first).length-fteNormalizeStructuralWhitespace(first).length;
+    const end=fteNormalizeStructuralWhitespace(raw.slice(0,b)).length;
+    const text=fteNormalizeStructuralWhitespace(raw.slice(a,b));
+    if(normalized.slice(start,end)!==text) return [];
+    return [{instruction:f.instruction,text,start,end}];
+  }).sort((a,b)=>a.start-b.start||a.end-b.end);
+}
+
+function fteSpacedIdentifierMatches(text,kind){
+  const head=kind==="figure"?'(?:Figures?|Figs?)\\.?':kind==="table"?'Tables?':fteEquationHeadPattern();
+  const h='[ \\u00a0\\u202f]';
+  const re=new RegExp('\\b'+head+h+'*\\(?'+h+'*((?:S|SI|ESI|[A-Z])?\\d+(?:'+h+'*\\.'+h+'*\\d+)+)(?!\\d)','gi');
+  const out=[]; let m;
+  while((m=re.exec(String(text||"")))){
+    const split=m[1].search(/[ \u00a0\u202f]+\.|\.[ \u00a0\u202f]+/);
+    if(split<0) continue;
+    const numberStart=m.index+m[0].lastIndexOf(m[1]);
+    out.push({index:m.index,end:re.lastIndex,numberStart,number:m[1],raw:m[0],id:fteCanonId(m[1]),base:fteCanonId(m[1].slice(0,split))});
+  }
+  return out;
+}
+
+function ftePrepareSpacedReferences(source,kind,fields=[]){
+  const matches=fteSpacedIdentifierMatches(source,kind);
+  const replacements=[],uncertain=[];
+  for(const m of matches){
+    const shortField=fields.some(f=>/^REF\s/i.test(f.instruction)&&f.start<=m.numberStart&&f.end===m.numberStart+m.base.length);
+    // Parentheses must enclose only references, never a sentence with a number.
+    const open=Math.max(source.lastIndexOf('(',m.numberStart),source.lastIndexOf('[',m.numberStart));
+    const close=open<0?-1:source.indexOf(source[open]==='('?')':']',m.end);
+    const body=open<0||close<0?'':source.slice(open+1,close);
+    const head=kind==="figure"?'(?:Figures?|Figs?)\\.?':kind==="table"?'Tables?':fteEquationHeadPattern();
+    const id='(?:S|SI|ESI)?\\d+(?:[ \\u00a0\\u202f]*\\.[ \\u00a0\\u202f]*\\d+)*(?:[a-z])?';
+    const list=new RegExp('^(?:'+head+'\\s*)?'+id+'(?:\\s*(?:,|and|&|to|through|[-–—])\\s*(?:'+head+'\\s*)?'+id+')*\\s*$','i');
+    const field=fields.find(f=>/^REF\s/i.test(f.instruction)&&f.start<=m.numberStart&&f.end>=m.end&&
+      list.test(f.text.trim().replace(/^[([]\s*|\s*[)\]]$/g,'')));
+    const bounded=open>=0&&close>=m.end&&!/[\r\n\t]/.test(body)&&list.test(body.trim())&&
+      (open<m.index||source.slice(open+1,m.numberStart).trim()==="");
+    if(bounded){
+      // A reference-only list can share one label: (Tables 3. 11 and 3. 12).
+      for(const hit of body.matchAll(new RegExp(id,'gi'))){
+        if(!/[ \u00a0\u202f]+\.|\.[ \u00a0\u202f]+/.test(hit[0])) continue;
+        const numberStart=open+1+hit.index;
+        replacements.push({numberStart,end:numberStart+hit[0].length,number:hit[0],id:hit[0].replace(/[ \u00a0\u202f]/g,'')});
+      }
+    }else if(field) replacements.push(m);
+    else uncertain.push({...m,shortField});
+  }
+  replacements.sort((a,b)=>a.numberStart-b.numberStart);
+  for(let i=replacements.length-1;i>0;i--) if(replacements[i].numberStart===replacements[i-1].numberStart) replacements.splice(i,1);
+  let text=source;
+  for(const m of replacements.slice().reverse()) text=text.slice(0,m.numberStart)+m.id+text.slice(m.end);
+  const candidates=uncertain.map(m=>{
+    const shift=replacements.filter(r=>r.end<=m.index).reduce((n,r)=>n+r.id.length-r.number.length,0);
+    const index=fteNormalizeCrossRefText(text.slice(0,m.index+shift)+'@').length-1;
+    return {...m,index};
+  });
+  return {text:fteNormalizeCrossRefText(text),candidates};
+}
+
+function fteResolveSpacedCaption(c,kind,bodyIds,candidates){
+  const m=fteSpacedIdentifierMatches(c.b.text,kind).find(x=>x.index===0);
+  if(!m||!m.id||!m.base) return c.label;
+  const parse=kind==="figure"?fteFigureCaption:fteTableCaption;
+  const joined=c.b.text.slice(0,m.numberStart)+m.id+c.b.text.slice(m.end);
+  const label=parse(joined);
+  if(!label||label.id!==m.id) return c.label;
+  const family=kind==="figure"?'(?:Figure|Fig)':'Table';
+  const field=(c.b.referenceFields||[]).some(f=>
+    new RegExp('^SEQ\\s+'+family+'(?:_\\d+\\.?)?(?=\\s|$)','i').test(f.instruction)&&
+    f.start>=m.numberStart&&f.end===m.end&&/^\d+(?:\.\d+)*$/.test(f.text.replace(/\s+/g,'')));
+  const shortField=(c.b.referenceFields||[]).some(f=>/^SEQ\s/i.test(f.instruction)&&f.start===m.numberStart&&f.end===m.numberStart+m.base.length);
+  const hasBase=bodyIds.has(m.base)||candidates.some(x=>x!==c&&!fteSpacedIdentifierMatches(x.b.text,kind).length&&x.label.id===m.base);
+  const near=kind==="figure"?c.draw:c.table;
+  const parts=m.id.split('.'),parent=parts.slice(0,-1).join('.');
+  const anchors=new Set(candidates.filter(x=>x!==c&&!fteSpacedIdentifierMatches(x.b.text,kind).length&&
+    x.label.id.split('.').length===parts.length&&x.label.id.split('.').slice(0,-1).join('.')===parent&&x.ev.score>=40).map(x=>x.label.id));
+  const chapterRefs=[...bodyIds].filter(id=>id.includes('.')&&id.split('.').length===parts.length);
+  // Do not infer a duplicate from a numeric caption description. An already
+  // labelled object is a competing interpretation, not proof of another label.
+  const competing=candidates.some(x=>x!==c&&!fteSpacedIdentifierMatches(x.b.text,kind).length&&x.label.id===m.id)&&
+    !/^\s*[:;,.|–—-]/.test(c.b.text.slice(m.end));
+  if(!shortField&&(field||(!hasBase&&!competing&&near!=null&&((bodyIds.has(m.id)&&chapterRefs.length>=2)||anchors.size>=2)))){
+    return {...label,raw:label.raw.replace(m.id,m.number)};
+  }
+  if(shortField||(hasBase&&!bodyIds.has(m.id))) return c.label;
+  return {...c.label,identifierUncertain:true,alternativeIds:[m.base,m.id]};
+}
+
+fteCitations=function(text,kind,fields=[]){
+  const spaced=ftePrepareSpacedReferences(String(text||""),kind,fields);
+  text=spaced.text;
   const out=[];
   const sep='(?:\\s*,\\s*(?:and\\s+)?|\\s+and\\s+|\\s*&\\s*|\\s+to\\s+|\\s+through\\s+|\\s*[-–—]\\s*)';
   let token,head,expr,keepChild=false;
@@ -25485,14 +25898,22 @@ fteCitations=function(text,kind){
   }
   // Repeated labels/range recovery can discover the same identifier twice. One
   // occurrence per identifier is enough for structural resolution in a paragraph.
-  const uniq=[]; const seenIds=new Set();
+  out.forEach(c=>{
+    const candidate=spaced.candidates.find(m=>!m.shortField&&m.index===c.index&&m.base===c.id);
+    if(candidate) c.spacingCandidate={base:candidate.base,id:candidate.id};
+  });
+  const uniq=[];
   out.sort((a,b)=>a.index-b.index || fteCmpId(a.id,b.id));
-  out.forEach(x=>{if(!seenIds.has(x.id)){seenIds.add(x.id);uniq.push(x);}});
+  out.forEach(x=>{
+    const previous=uniq.findIndex(c=>c.id===x.id);
+    if(previous<0) uniq.push(x);
+    else if(uniq[previous].spacingCandidate&&!x.spacingCandidate) uniq[previous]=x;
+  });
   return uniq;
 };
 
-fteEquationCitationsLoose=function(text){
-  return fteEquationSpecialCitations(text);
+fteEquationCitationsLoose=function(text,fields=[]){
+  return fteEquationSpecialCitations(ftePrepareSpacedReferences(String(text||""),"equation",fields).text);
 };
 
 extractDocxStructure=async function(buf){
@@ -25540,8 +25961,8 @@ extractDocxStructure=async function(buf){
   const blocks=[]; let pos=0;
 
   const paragraphBlock=(el,extra={})=>{
-    const relationDrawings=[];
-    const rawStructuralText=fteXmlText(el,{preserveSeparators:true,relationDrawings});
+    const relationDrawings=[],relationSymbols=[];
+    const rawStructuralText=fteXmlText(el,{preserveSeparators:true,relationDrawings,relationSymbols});
     const symbolText=fteXmlText(el,{preserveSymbols:true});
     const symbolMeta=abbrWordSymbolMatches(symbolText).length?{
       abbrSymbolText:symbolText,abbrSourceText:fteXmlText(el,{omitMath:true,preserveSeparators:true})
@@ -25576,8 +25997,11 @@ extractDocxStructure=async function(buf){
     const pageBreakBefore=(!!pageBreakBeforeEl && !/^(?:0|false|off)$/i.test(attrVal(pageBreakBeforeEl))) || !!sm?.pageBreakBefore;
     const hasPageBreak=[...el.getElementsByTagNameNS(FTE_W_NS,"br")].some(br=>/^(?:page)$/i.test(attrVal(br)));
     const sectionBreakAfter=!!(pPr&&pPr.getElementsByTagNameNS(FTE_W_NS,"sectPr").length);
-    const eqBinding=fteWordParagraphEquationBinding(el,{hasMath,hasMathPara,mathCount,tabCount,textAlign,rightTabStop,style});
-    return {type:"p",pos:pos++,text,rawStructuralText,separatorMeta,...symbolMeta,...(relationDrawings.length?{hasRelationDrawing:true}:{}),style,styleName:sm?.name||"",styleBasedOn:sm?.basedOn||"",styleChain:sm?.chain||[],seqCaptionType,hasDrawing,hasImage,imageCount,hasMath,hasMathPara,mathCount,outlineLvl,directOutlineLvl,hasNumbering:!!numPr,ilvl,tabCount,tabStopCount,textAlign,rightTabStop,pageBreakBefore,hasPageBreak,sectionBreakAfter,attachedEquationId:eqBinding?.id||null,equationNumberOnlyId:eqBinding?.numberOnlyId||null,equationCoreText:eqBinding?.coreText||"",equationLabelSource:eqBinding?.source||"",...extra};
+    const eqBinding=fteWordParagraphEquationBinding(el,{hasMath,hasMathPara,mathCount,tabCount,textAlign,rightTabStop,style,hasRelationSymbol:relationSymbols.length>0});
+    const equationNumberOnlyId=fteWordNodeNumberOnlyEquationId(el);
+    const equationLabelBare=eqBinding?.id?!!eqBinding.bare:!fteTerminalOmmlParenNumber(el)&&fteEquationLabelIsBare(text);
+    const equationLabelSeq=eqBinding?.id?!!eqBinding.seq:fteWordEquationLabelSeq(el,text);
+    return {type:"p",pos:pos++,text,rawStructuralText,equationPreview:fteXmlText(el,{equationPreview:true}),separatorMeta,...symbolMeta,...(relationSymbols.length?{hasRelationSymbol:true}:{}),...(relationDrawings.length?{hasRelationDrawing:true}:{}),style,styleName:sm?.name||"",styleBasedOn:sm?.basedOn||"",styleChain:sm?.chain||[],seqCaptionType,referenceFields:fteWordReferenceFields(el),hasDrawing,hasImage,imageCount,hasMath,hasMathPara,mathCount,outlineLvl,directOutlineLvl,hasNumbering:!!numPr,ilvl,tabCount,tabStopCount,textAlign,rightTabStop,pageBreakBefore,hasPageBreak,sectionBreakAfter,attachedEquationId:eqBinding?.id||null,equationNumberOnlyId:eqBinding?.numberOnlyId||equationNumberOnlyId||null,equationNumberOnlyChecked:true,equationLabelBare,equationLabelSeq,equationLabelRejected:!!eqBinding?.rejected,equationCoreText:eqBinding?.coreText||"",equationLabelSource:eqBinding?.source||"",...extra};
   };
 
   const addEmbeddedCaptionBlocks=(p,containerAnchor)=>{
@@ -25587,7 +26011,7 @@ extractDocxStructure=async function(buf){
       if(!t) return;
       const fc=fteFigureCaption(t),tc=fteTableCaption(t),structEq=fteWordNodeNumberOnlyEquationId(box),eq=structEq||fteEquationNumberOnly(t)||fteEquationLabel(t);
       if(fc||tc||eq){
-        blocks.push({type:"p",pos:pos++,text:t,style:"TextBoxStructural",seqCaptionType:fc?"figure":tc?"table":"",hasDrawing:false,hasMath:false,hasMathPara:false,mathCount:0,outlineLvl:null,hasNumbering:false,ilvl:null,tabCount:0,textAlign:"",rightTabStop:false,fromTextBox:true,containerAnchor,equationNumberOnlyId:structEq||null,physicalAnchor:`${containerAnchor}:textbox:${bi}`});
+        blocks.push({type:"p",pos:pos++,text:t,style:"TextBoxStructural",seqCaptionType:fc?"figure":tc?"table":"",hasDrawing:false,hasMath:false,hasMathPara:false,mathCount:0,outlineLvl:null,hasNumbering:false,ilvl:null,tabCount:0,textAlign:"",rightTabStop:false,fromTextBox:true,containerAnchor,equationNumberOnlyId:structEq||null,equationNumberOnlyChecked:true,equationLabelBare:!fteTerminalOmmlParenNumber(box)&&fteEquationLabelIsBare(t),equationLabelSeq:fteWordEquationLabelSeq(box,t),physicalAnchor:`${containerAnchor}:textbox:${bi}`});
       }
     });
   };
@@ -25608,7 +26032,7 @@ extractDocxStructure=async function(buf){
     if(eqLayout.isEquationLayout){
       eqLayout.rows.forEach((r,ri)=>{
         const anchor=`equation-table:${pos}:row:${ri}`;
-        blocks.push({type:"p",pos:pos++,text:r.text,style:"EquationLayout",hasDrawing:false,hasMath:true,hasMathPara:(r.mathParaCount||0)>0,mathCount:r.mathCount||0,fromEquationTable:true,physicalAnchor:anchor,seqCaptionType:"",outlineLvl:null,hasNumbering:false,ilvl:null,tabCount:0,textAlign:"",rightTabStop:true,attachedEquationId:r.id,equationCoreText:r.expressionText||"",equationLabelSource:"equation_table_row"});
+        blocks.push({type:"p",pos:pos++,text:r.text,equationPreview:r.equationPreview||r.text,style:"EquationLayout",hasDrawing:false,hasMath:true,hasMathPara:(r.mathParaCount||0)>0,mathCount:r.mathCount||0,fromEquationTable:true,physicalAnchor:anchor,seqCaptionType:"",outlineLvl:null,hasNumbering:false,ilvl:null,tabCount:0,textAlign:"",rightTabStop:true,attachedEquationId:r.id,equationCoreText:r.expressionText||"",equationLabelSource:"equation_table_row",equationLabelBare:r.equationLabelBare,equationLabelSeq:r.equationLabelSeq,equationNumberOnlyChecked:true});
       });
       return;
     }
@@ -25649,7 +26073,44 @@ extractDocxStructure=async function(buf){
   return blocks;
 };
 
-fteSequenceCheck=function(kind,items,issues){
+
+// Bare numbers have already passed local formula/label ownership checks. Their
+// interpretation still needs independent evidence; sequence correctness is never
+// evidence, so genuine gaps, duplicate numbers and reversals remain detectable.
+function fteEquationHeadingBlock(b){
+  return !!b&&(Number.isInteger(b.outlineLvl)&&b.outlineLvl>=0&&b.outlineLvl<9||/^(?:heading[\s_-]*\d*|chapter(?:[\s_-]*(?:heading|title))?|(?:sub)?title)$/i.test(b.style||""));
+}
+function fteEquationLabelEvidence(block,index,layout="paragraph"){
+  return {blockIndex:index,labelBare:block.equationLabelBare??fteEquationLabelIsBare(block.text),labelSeq:!!block.equationLabelSeq,
+    labelProfile:[layout,String(block.style||""),String(block.textAlign||""),!!block.rightTabStop,!!block.hasMath].join("|"),
+    labelBlockIndices:[index]};
+}
+function fteConfirmEquationLabels(equations,citations,blocks,eqBlocks,captionBlocks){
+  const family=id=>{const p=fteIdParts(id);return p?[p.prefix,p.number.split('.').length,p.number.split('.').slice(0,-1).join('.')].join('|'):"";};
+  const heading=fteEquationHeadingBlock;
+  const cited=new Set(citations.filter(c=>!c.identifierUncertain&&!c.spacingCandidate&&!eqBlocks.has(c.blockIndex)&&!captionBlocks.has(c.blockIndex)&&!heading(blocks[c.blockIndex])&&!/caption/i.test(blocks[c.blockIndex]?.style||"")).map(c=>c.id));
+  const seeds=equations.filter(x=>!x.ownershipAmbiguous&&(!x.labelBare||x.labelSeq||cited.has(x.id)));
+  // Freeze the independent seeds. A label supported only by neighbours never
+  // becomes evidence for another candidate. Distinct seed IDs prevent repeats
+  // of a single equation from masquerading as an established layout convention.
+  for(const item of equations){
+    let evidence=!item.labelBare?"explicit_label":item.labelSeq?"word_equation_field":cited.has(item.id)?"exact_prose_citation":"";
+    if(!evidence&&!item.ownershipAmbiguous){
+      const anchors=seeds.filter(seed=>seed!==item&&seed.labelProfile===item.labelProfile&&family(seed.id)===family(item.id)&&Math.abs(seed.blockIndex-item.blockIndex)<=40&&
+        !blocks.slice(Math.min(seed.blockIndex,item.blockIndex)+1,Math.max(seed.blockIndex,item.blockIndex)).some(heading));
+      if(new Set(anchors.map(x=>x.id)).size>=2) evidence="independent_layout_anchors";
+    }
+    if(item.ownershipAmbiguous) evidence="";
+    item.labelEvidence=evidence||"needs_confirmation";
+    if(!evidence){item.identifierUncertain=true;item.placementReliable=false;}
+  }
+}
+function fteEquationCountSummary(res){
+  const possible=res.equations.filter(x=>x.identifierUncertain).length,count=res.equations.length-possible;
+  return `${count} numbered equation${count===1?"":"s"}${possible?` · ${possible} possible equation label${possible===1?"":"s"} to confirm`:""}`;
+}
+
+fteSequenceCheck=function(kind,items,issues,pending=[]){
   const prefix=kind.toUpperCase();
   const seen=new Map();
   items.forEach(it=>{
@@ -25678,13 +26139,46 @@ fteSequenceCheck=function(kind,items,issues){
   const grouped=new Map();
   parents.forEach(id=>{
     const p=fteIdParts(id); if(!p) return;
-    const key=`${p.prefix}|${p.parts.length}|${p.parts.length>1?p.parts.slice(0,-1).join('.'):'_'}`;
+    const parts=kind==="equation"?p.number.split('.'):p.parts;
+    const key=`${p.prefix}|${parts.length}|${parts.length>1?parts.slice(0,-1).join('.'):'_'}`;
     if(!grouped.has(key)) grouped.set(key,[]);
     grouped.get(key).push({id,p});
   });
   grouped.forEach(arr=>{
     const depths=[...new Set(arr.map(x=>x.p.parts.length))]; if(depths.length!==1) return;
     const depth=depths[0];
+    if(kind==="equation"){
+      // Walk observed neighbours, not every integer up to the largest label.
+      // BigInt also keeps unusually long identifiers exact and guarantees that
+      // incrementing a large value cannot stall through floating-point rounding.
+      const nums=[...new Set(arr.map(x=>x.p.number.split('.').at(-1)))].map(BigInt).sort((a,b)=>a<b?-1:a>b?1:0);
+      const sample=arr[0].p,parts=sample.number.split('.').slice(0,-1);
+      const idFor=n=>`${sample.prefix||''}${[...parts,String(n)].join('.')}`;
+      for(let i=1;i<nums.length;i++){
+        const first=nums[i-1]+1n,last=nums[i]-1n;
+        if(last<first) continue;
+        const uncertain=[...new Set(pending.map(x=>fteEquationParentId(x.id)).filter(id=>{
+          const p=fteIdParts(id);return p&&p.prefix===sample.prefix&&p.number.split('.').slice(0,-1).join('.')===parts.join('.')&&p.number.split('.').length===parts.length+1;
+        }))].map(id=>BigInt(fteIdParts(id).number.split('.').at(-1))).filter(n=>n>=first&&n<=last).sort((a,b)=>a<b?-1:a>b?1:0);
+        // Subtract only candidate IDs, retaining every other part of the gap.
+        // Split ranges using BigInt boundaries rather than enumerating large gaps.
+        let start=first;
+        for(const stop of [...uncertain,last+1n]){
+        const first=start,last=stop-1n,count=last-first+1n;start=stop+1n;
+        if(count<=0n) continue;
+        if(count>20n){
+          const firstId=idFor(first),lastId=idFor(last);
+          fteIssue(issues,kind,`${firstId}–${lastId}`,"EQUATION_MISSING_NUMBER",`Equation numbering jumps from (${idFor(nums[i-1])}) to (${idFor(nums[i])}). ${count} numbers in between were not found (${firstId}–${lastId}).`,`Check the two equation labels and whether this numbering gap is intentional. The full gap is shown together instead of one row per number.`,"","err");
+        }else{
+          for(let n=first;n<=last;n++){
+            const id=idFor(n);
+            fteIssue(issues,kind,id,"EQUATION_MISSING_NUMBER",`${fteDisplay(kind,id)} is missing from the observed numbering sequence.`,`Confirm whether the item is missing or whether the numbering intentionally skips this identifier.`,"","err");
+          }
+        }
+        }
+      }
+      return;
+    }
     const nums=[...new Set(arr.map(x=>x.p.parts[depth-1]))].sort((a,b)=>a-b);
     if(nums.length<2) return;
     for(let n=nums[0];n<=nums[nums.length-1];n++){
@@ -25709,7 +26203,7 @@ fteSequenceCheck=function(kind,items,issues){
     childGroups.forEach((letters,parent)=>{
       const xs=[...new Set(letters)].sort(); if(xs.length<2) return;
       const a=xs[0].charCodeAt(0),b=xs[xs.length-1].charCodeAt(0),miss=[];
-      for(let n=a;n<=b;n++){const ch=String.fromCharCode(n);if(!xs.includes(ch))miss.push(ch);}
+      for(let n=a;n<=b;n++){const ch=String.fromCharCode(n);if(!xs.includes(ch)&&!pending.some(x=>x.id===parent+ch))miss.push(ch);}
       if(miss.length) fteIssue(issues,"equation",parent,"EQUATION_CHILD_SEQUENCE",`${fteDisplay("equation",parent)} sub-equations appear to skip ${miss.join(", ")}.`,`Verify the grouped sub-equation lettering.`,letters.join(", "),"warn");
     });
   }
@@ -25749,13 +26243,24 @@ fteAnalyze=function(blocks){
     }
   });
 
+  const spacingReviews=[];
+  for(const [kind,candidates] of [["figure",figCandidates],["table",tabCandidates]]){
+    const captionIndices=new Set(candidates.filter(c=>c.ev.score>=40).map(c=>c.i));
+    const bodyIds=new Set(active.flatMap((b,i)=>b.type==="p"&&!captionIndices.has(i)&&!fteIsGeneratedFigureTableListParagraph(b,i,generatedLists)
+      ?fteCitations(b.text,kind,b.referenceFields).filter(c=>!c.spacingCandidate).map(c=>c.id):[]));
+    candidates.forEach(c=>{
+      c.label=fteResolveSpacedCaption(c,kind,bodyIds,candidates);
+      if(c.label.identifierUncertain) spacingReviews.push({kind,ids:c.label.alternativeIds,context:c.b.text,pos:c.b.pos});
+    });
+  }
+  const spacingMeta=label=>label.identifierUncertain?{identifierUncertain:true,alternativeIds:label.alternativeIds}:{};
   const figures=[],usedFigCaps=new Set();
   const drawingIndices=blocks.map((b,i)=>inFigureScope(i)&&b.type==="p"&&b.hasDrawing&&!fteIsGeneratedFigureTableListParagraph(b,i,i<refStart?generatedLists:figureLists)?i:null).filter(i=>i!=null);
   drawingIndices.forEach(di=>{
     const candidates=figCandidates.filter(c=>c.draw===di&&!usedFigCaps.has(c.i));
     const c=fteChooseCaptionCandidate(candidates,"figure",di); if(!c) return;
     usedFigCaps.add(c.i); captionBlocks.add(c.i);
-    figures.push({kind:"figure",id:c.label.id,panel:c.label.panel,pos:blocks[di].pos,caption:c.b.text,context:c.b.text,placementReliable:true,physicalAnchor:blocks[di].containerAnchor||blocks[di].physicalAnchor||`drawing:${di}`,captionIndex:c.i,objectResolved:true,confidence:.99});
+    figures.push({kind:"figure",id:c.label.id,...spacingMeta(c.label),panel:c.label.panel,pos:blocks[di].pos,caption:c.b.text,context:c.b.text,placementReliable:true,physicalAnchor:blocks[di].containerAnchor||blocks[di].physicalAnchor||`drawing:${di}`,captionIndex:c.i,objectResolved:true,confidence:.99});
   });
 
   // A high-confidence caption or SEQ Figure field is sufficient evidence of a
@@ -25765,28 +26270,32 @@ fteAnalyze=function(blocks){
     const strong=/(?:caption|figure)/i.test(c.b.style||"")||c.b.seqCaptionType==="figure"||(c.ev?.score||0)>=40||!!c.ev?.tabAfterId;
     if(!strong) return;
     usedFigCaps.add(c.i); captionBlocks.add(c.i);
-    figures.push({kind:"figure",id:c.label.id,panel:c.label.panel,pos:c.b.pos,caption:c.b.text,context:c.b.text,placementReliable:false,physicalAnchor:c.b.physicalAnchor||`caption:${c.i}`,captionIndex:c.i,objectResolved:false,confidence:.78});
+    figures.push({kind:"figure",id:c.label.id,...spacingMeta(c.label),panel:c.label.panel,pos:c.b.pos,caption:c.b.text,context:c.b.text,placementReliable:false,physicalAnchor:c.b.physicalAnchor||`caption:${c.i}`,captionIndex:c.i,objectResolved:false,confidence:.78});
     if(c.i>=refStart) fteIssue(issues,"figure",c.label.id,"FIGURE_STRUCTURAL_MATCH_REVIEW",`${fteDisplay("figure",c.label.id)} has a caption after the references, but its image or drawing could not be associated reliably.`,"Verify that the figure is included and matches this caption. End-of-manuscript placement is supported.",c.b.text,"warn");
   });
 
   const tables=[],usedTabCaps=new Set();
+  const tableMatches=fteMatchTableCaptions(active,tabCandidates);
+  const uncertainTables=new Set(tableMatches.unresolved.flatMap(x=>x.tableIndices));
   active.forEach((b,i)=>{
     if(b.type!=="table"||b.isEquationLayout||b.rows<2||b.cols<2) return;
-    const candidates=tabCandidates.filter(c=>Math.abs(c.i-i)<=3&&!usedTabCaps.has(c.i));
-    const c=fteChooseCaptionCandidate(candidates,"table",i);
+    const c=tableMatches.assigned.get(i);
     if(c){
       usedTabCaps.add(c.i); captionBlocks.add(c.i);
-      tables.push({kind:"table",id:c.label.id,pos:b.pos,caption:c.b.text,context:c.b.text,placementReliable:true,physicalAnchor:b.physicalAnchor||`table:${i}`,captionIndex:c.i,objectResolved:true,confidence:.99});
-    }else{
+      tables.push({kind:"table",id:c.label.id,...spacingMeta(c.label),pos:b.pos,caption:c.b.text,context:c.b.text,placementReliable:true,physicalAnchor:b.physicalAnchor||`table:${i}`,captionIndex:c.i,objectResolved:true,confidence:.99});
+    }else if(!uncertainTables.has(i)){
       fteIssue(issues,"table","?","TABLE_MISSING_NUMBER","A Word table was found without a nearby numbered Table caption.","Add or verify a numbered table caption if this is a manuscript data table.",b.text,"warn");
     }
   });
+  tableMatches.unresolved.forEach(({c})=>fteIssue(issues,"table",c.label.id,"TABLE_STRUCTURAL_MATCH_REVIEW",
+    `${fteDisplay("table",c.label.id)} has a caption, but its matching table could not be identified confidently.`,
+    "Check which nearby table belongs to this caption. Its position was not used for a definite first-citation warning.",c.b.text,"warn"));
   tabCandidates.forEach(c=>{
     if(usedTabCaps.has(c.i)) return;
     const strong=/(?:caption|table)/i.test(c.b.style||"")||c.b.seqCaptionType==="table"||(c.ev?.score||0)>=45||!!c.ev?.tabAfterId;
     if(!strong) return;
     usedTabCaps.add(c.i); captionBlocks.add(c.i);
-    tables.push({kind:"table",id:c.label.id,pos:c.b.pos,caption:c.b.text,context:c.b.text,placementReliable:false,physicalAnchor:c.b.physicalAnchor||`table-caption:${c.i}`,captionIndex:c.i,objectResolved:false,confidence:.72});
+    tables.push({kind:"table",id:c.label.id,...spacingMeta(c.label),pos:c.b.pos,caption:c.b.text,context:c.b.text,placementReliable:false,physicalAnchor:c.b.physicalAnchor||`table-caption:${c.i}`,captionIndex:c.i,objectResolved:false,confidence:.72});
   });
 
   const equations=[],equationConsumed=new Set();
@@ -25795,135 +26304,31 @@ fteAnalyze=function(blocks){
     const id=fteDisplayedEquationId(b); if(!id) return;
     eqBlocks.add(i); equationConsumed.add(i);
     const expr=fteEquationExpressionEvidence(fteStripTerminalEquationLabel(b.text));
-    const structural=!!(b.fromEquationTable||b.hasMathPara||/equation/i.test(b.style||"")||b.rightTabStop||(b.tabCount||0)>0||/^(?:center|both|distribute)$/i.test(b.textAlign||""));
-    equations.push({kind:"equation",id,pos:b.pos,caption:b.text,context:b.text,placementReliable:structural||expr.score>=12,physicalAnchor:b.physicalAnchor||`equation:${i}`,fromEquationTable:!!b.fromEquationTable,mathObjectPresent:!!b.hasMath,confidence:structural?.99:.88});
+    const structural=!!(b.attachedEquationId||b.fromEquationTable||b.hasMathPara||/equation/i.test(b.style||"")||b.rightTabStop||(b.tabCount||0)>0||/^(?:center|both|distribute)$/i.test(b.textAlign||""));
+    const preview=b.equationPreview||b.text;
+    equations.push({...fteEquationLabelEvidence(b,i,b.fromEquationTable?"table":"paragraph"),kind:"equation",id,pos:b.pos,caption:preview,context:preview,placementReliable:structural||expr.score>=12,physicalAnchor:b.physicalAnchor||`equation:${i}`,labelSource:b.equationLabelSource||"literal_label",fromEquationTable:!!b.fromEquationTable,mathObjectPresent:!!b.hasMath,confidence:structural?.99:.88});
   });
 
   active.forEach((b,i)=>{
     if(equationConsumed.has(i)||fteIsGeneratedFigureTableListParagraph(b,i,generatedLists)) return;
     if(!b||b.type!=="p"||!b.text) return;
-    const id=b.equationNumberOnlyId||fteEquationNumberOnly(b.text); if(!id) return;
+    // A bare section heading cannot own an equation number merely through proximity.
+    if((b.equationLabelBare??fteEquationLabelIsBare(b.text))&&fteEquationHeadingBlock(b)) return;
+    const id=b.equationNumberOnlyChecked?b.equationNumberOnlyId:(b.equationNumberOnlyId||fteEquationNumberOnly(b.text)); if(!id) return;
     const pair=fteAdjacentEquationExpression(active,i,4); if(!pair||equationConsumed.has(pair.j)) return;
     equationConsumed.add(i); equationConsumed.add(pair.j); eqBlocks.add(i); eqBlocks.add(pair.j);
-    equations.push({kind:"equation",id,pos:Math.min(b.pos,pair.b.pos),caption:`${pair.b.text} ${b.text}`.replace(/\s+/g," ").trim(),context:`${pair.b.text} ${b.text}`.replace(/\s+/g," ").trim(),placementReliable:true,physicalAnchor:`equation-pair:${Math.min(i,pair.j)}:${Math.max(i,pair.j)}`,fromEquationTable:false,mathObjectPresent:!!pair.b.hasMath,confidence:.96});
+    const preview=`${pair.b.equationPreview||pair.b.text} ${b.equationPreview||b.text}`.replace(/\s+/g," ").trim();
+    equations.push({...fteEquationLabelEvidence(b,i,"adjacent"),labelBlockIndices:[i,pair.j],ownershipAmbiguous:!!pair.ownershipAmbiguous,kind:"equation",id,pos:Math.min(b.pos,pair.b.pos),caption:preview,context:preview,placementReliable:true,physicalAnchor:`equation-pair:${Math.min(i,pair.j)}:${Math.max(i,pair.j)}`,labelSource:"adjacent_number_label",fromEquationTable:false,mathObjectPresent:!!pair.b.hasMath,confidence:.96});
   });
 
-  /*
-    Pending citation recovery
-    -------------------------
-    A citation such as "Eqs. (17) and (18)" may occur a full paragraph or page
-    before the displayed equations. Do not impose a line-distance limit.
+  // Citations resolve against locally verified labels. An unnumbered formula
+  // must never acquire an identifier merely because nearby prose cites it.
 
-    This fallback is used only for unresolved identifiers and high-confidence
-    displayed math, and it stops at a major chapter/appendix boundary or the next
-    competing unresolved equation-citation group. Local structural labels remain
-    the preferred source of truth.
-  */
-  const isMajorEquationBoundary=b=>{
-    if(!b||b.type!=="p") return false;
-    const t=String(b.text||"").trim();
-    if(!t) return false;
-    if(Number.isInteger(b.outlineLvl) && b.outlineLvl<=0) return true;
-    return /^(?:chapter|appendix)\b/i.test(t);
-  };
-
-  const unresolvedCitationGroups=[];
-  active.forEach((b,i)=>{
-    if(b.type!=="p"||!b.text||eqBlocks.has(i)||captionBlocks.has(i)) return;
-    if(fteIsGeneratedFigureTableListParagraph(b,i,generatedLists)) return;
-
-    const found=fteCitations(b.text,"equation");
-    fteEquationCitationsLoose(b.text).forEach(c=>{
-      if(!found.some(x=>x.id===c.id&&x.index===c.index)) found.push(c);
-    });
-
-    const ids=[...new Set(found.map(x=>fteCanonId(x.id)).filter(Boolean))]
-      .filter(id=>!fteEquationRegistryResolves(id,equations));
-    if(!ids.length) return;
-
-    // Do not convert an explicitly backward-looking reference into a future
-    // equation assignment.
-    if(/\b(?:above|previous|previously|earlier|preceding)\b/i.test(b.text)) return;
-
-    unresolvedCitationGroups.push({i,pos:b.pos,ids,context:b.text});
-  });
-
-  unresolvedCitationGroups.forEach((g,gi)=>{
-    const nextGroup=unresolvedCitationGroups.slice(gi+1).find(x=>x.i>g.i);
-    const stopAt=nextGroup?nextGroup.i:active.length;
-    const candidates=[];
-
-    for(let j=g.i+1;j<stopAt;j++){
-      const b=active[j];
-      if(!b) continue;
-      if(isMajorEquationBoundary(b)) break;
-      if(eqBlocks.has(j)||b.type!=="p") continue;
-      if(fteDisplayedEquationId(b)||fteEquationNumberOnly(b.text)) continue;
-      if(!fteLooksLikeUnnumberedDisplayedEquation(b)) continue;
-
-      const expr=fteEquationExpressionEvidence(String(b.text||""));
-      const prose=fteEquationProseEvidence(String(b.text||""));
-      const strong=!!(
-        b.hasMathPara ||
-        /equation/i.test(String(b.style||"")) ||
-        b.fromEquationTable ||
-        (b.hasMath && (expr.score>=9 || (expr.relationCount>=1 && prose.score<6))) ||
-        (ftePlainEquationLike(String(b.text||"")) && expr.score>=12)
-      );
-      if(!strong) continue;
-
-      candidates.push({j,b});
-      if(candidates.length>=g.ids.length) break;
-    }
-
-    if(candidates.length<g.ids.length) return;
-
-    g.ids.forEach((id,k)=>{
-      if(fteEquationRegistryResolves(id,equations)) return;
-      const c=candidates[k];
-      if(!c || equationConsumed.has(c.j)) return;
-
-      equationConsumed.add(c.j);
-      eqBlocks.add(c.j);
-      equations.push({
-        kind:"equation",
-        id,
-        pos:c.b.pos,
-        caption:c.b.text||`[Word equation object for ${id}]`,
-        context:g.context,
-        placementReliable:true,
-        physicalAnchor:c.b.physicalAnchor||`pending-citation-equation:${c.j}`,
-        fromEquationTable:!!c.b.fromEquationTable,
-        mathObjectPresent:!!c.b.hasMath,
-        numberInferredFromPriorCitation:true,
-        citationPosition:g.pos,
-        confidence:.84
-      });
-    });
-  });
-
-  // If a prose sentence explicitly introduces one equation and the immediately
-  // following Word block is a genuine unnumbered math object, bind the number to
-  // that object. This recovers Equation Editor/OMML cases where the number is
-  // visually present but lost in flattened text extraction.
-  active.forEach((b,i)=>{
-    if(b.type!=="p"||!b.text||eqBlocks.has(i)||captionBlocks.has(i)) return;
-    const refs=fteCitations(b.text,"equation");
-    const uniq=[...new Set(refs.map(x=>x.id))]; if(uniq.length!==1) return;
-    if(!/:\s*$/.test(b.text.trim())&&!/\b(?:using|given by|calculated from|derived from|defined by|expressed by|according to)\b/i.test(b.text)) return;
-    if(fteEquationRegistryResolves(uniq[0],equations)) return;
-    for(let d=1;d<=2;d++){
-      const j=i+d,mb=active[j]; if(!mb||mb.type!=="p") break;
-      if(!String(mb.text||"").trim()&&!mb.hasMath) continue;
-      if(fteLooksLikeUnnumberedDisplayedEquation(mb)){
-        equations.push({kind:"equation",id:uniq[0],pos:mb.pos,caption:mb.text||`[Word equation object for ${uniq[0]}]`,context:b.text,placementReliable:true,physicalAnchor:mb.physicalAnchor||`inferred-equation:${j}`,fromEquationTable:!!mb.fromEquationTable,mathObjectPresent:!!mb.hasMath,numberInferredFromIntroduction:true,confidence:.82});
-        equationConsumed.add(j); eqBlocks.add(j);
-      }
-      break;
-    }
-  });
-
-  fteSequenceCheck("figure",figures,issues); fteSequenceCheck("table",tables,issues); fteSequenceCheck("equation",equations,issues); ftePanelCheck(figures,issues);
+  fteSequenceCheck("figure",figures.filter(x=>!x.identifierUncertain),issues); fteSequenceCheck("table",tables.filter(x=>!x.identifierUncertain),issues); ftePanelCheck(figures.filter(x=>!x.identifierUncertain),issues);
+  for(let i=issues.length-1;i>=0;i--){
+    const issue=issues[i];
+    if(/_MISSING_NUMBER$/.test(issue.code)&&spacingReviews.some(r=>r.kind===issue.kind&&r.ids.includes(issue.id))) issues.splice(i,1);
+  }
 
   const citations={figure:[],table:[],equation:[]};
   active.forEach((b,i)=>{
@@ -25932,23 +26337,49 @@ fteAnalyze=function(blocks){
     for(const kind of ["figure","table","equation"]){
       let scanText=b.text;
       if(kind==="equation"&&eqBlocks.has(i)) scanText=fteStripTerminalEquationLabel(scanText);
-      const found=fteCitations(scanText,kind);
-      if(kind==="equation") fteEquationCitationsLoose(scanText).forEach(c=>{if(!found.some(x=>x.id===c.id&&x.index===c.index))found.push(c);});
+      const found=fteCitations(scanText,kind,b.referenceFields);
+      if(kind==="equation") fteEquationCitationsLoose(scanText,b.referenceFields).forEach(c=>{if(!found.some(x=>x.id===c.id&&x.index===c.index))found.push(c);});
       found.forEach(c=>citations[kind].push({...c,pos:b.pos,context:b.text,blockIndex:i,role:"PROSE_REFERENCE"}));
     }
   });
 
   const itemMap={figure:figures,table:tables,equation:equations};
+  for(const kind of ["figure","table","equation"]){
+    citations[kind].forEach(c=>{
+      const ids=c.spacingCandidate;
+      if(!ids) return;
+      const certain=itemMap[kind].filter(x=>!x.identifierUncertain);
+      if(certain.some(x=>x.id===ids.base)) return; // A valid sentence-ending reference stays valid.
+      if(!certain.some(x=>x.id===ids.id||x.id.startsWith(ids.base+'.'))&&!spacingReviews.some(r=>r.kind===kind&&r.ids.includes(ids.id))) return;
+      c.identifierUncertain=true;
+      if(!spacingReviews.some(r=>r.kind===kind&&r.ids.includes(ids.id))) spacingReviews.push({kind,ids:[ids.base,ids.id],context:c.context,pos:c.pos});
+    });
+  }
+  spacingReviews.forEach(r=>fteIssue(issues,r.kind,r.ids.join(" / "),`${r.kind.toUpperCase()}_IDENTIFIER_SPACING_REVIEW`,
+    `This label or reference could mean ${fteDisplay(r.kind,r.ids[0])} or ${fteDisplay(r.kind,r.ids[1])}.`,
+    "Please check the spacing and punctuation. Numbering checks for this uncertain identifier need confirmation.",r.context,"warn"));
+  const spacingPending=(kind,id)=>spacingReviews.some(r=>r.kind===kind&&r.ids.includes(id));
+
+  fteConfirmEquationLabels(equations,citations.equation,active,eqBlocks,captionBlocks);
+  const uncertainEquations=equations.filter(x=>x.identifierUncertain);
+  uncertainEquations.forEach(item=>{fteIssue(issues,"equation",item.id,"EQUATION_LABEL_REVIEW",
+    item.ownershipAmbiguous?`The number ${item.id} is near more than one formula; its matching equation needs confirmation.`:`The number ${item.id} may be an equation label, but the document does not provide enough supporting evidence to confirm it.`,
+    "Check whether this number labels the equation. If it does, place it in parentheses beside that equation; otherwise, leave it as part of the text or calculation.",item.context,"warn");
+    Object.assign(issues.at(-1),{physicalAnchor:item.physicalAnchor,pos:item.pos});
+  });
+  fteSequenceCheck("equation",equations.filter(x=>!x.identifierUncertain),issues,uncertainEquations);
+  const equationPending=id=>fteEquationRegistryResolves(id,uncertainEquations);
+
 
   // In-text equation citations are matched by identifier and document order.
   // There is deliberately no maximum paragraph, line, or page distance between
   // an earlier citation and the displayed equation.
   const matchingCitations=(kind,itemId)=>kind==="equation"
-    ? fteEquationMatchingCitations(itemId,citations[kind])
-    : citations[kind].filter(c=>c.id===itemId);
+    ? fteEquationMatchingCitations(itemId,citations[kind].filter(c=>!c.identifierUncertain))
+    : citations[kind].filter(c=>!c.identifierUncertain&&c.id===itemId);
 
   const resolves=(kind,cid,items)=>kind==="equation"
-    ? fteEquationRegistryResolves(cid,items)
+    ? fteEquationRegistryResolves(cid,items.filter(x=>!x.identifierUncertain))
     : items.some(x=>x.id===cid);
   const assignedFigureAnchors=new Set(figures.filter(x=>x.objectResolved!==false).map(x=>x.physicalAnchor).filter(Boolean));
   const assignedEquationAnchors=new Set(equations.map(x=>x.physicalAnchor).filter(Boolean));
@@ -25984,6 +26415,7 @@ fteAnalyze=function(blocks){
     const prefix=kind.toUpperCase(),items=itemMap[kind];
     const suppExists=items.some(x=>fteIdParts(x.id)?.supp);
     citations[kind].forEach(c=>{
+      if(c.identifierUncertain||spacingPending(kind,c.id)||(kind==="equation"&&equationPending(c.id))) return;
       if(resolves(kind,c.id,items)) return;
       if(fteIdParts(c.id)?.supp&&!suppExists) return;
       const ambiguity=structuralAmbiguity(kind,c);
@@ -26007,16 +26439,18 @@ fteAnalyze=function(blocks){
     });
 
     items.forEach(it=>{
+      if(it.identifierUncertain) return;
       const cs=matchingCitations(kind,it.id).sort((a,b)=>a.pos-b.pos),first=cs[0];
       if(!first){
+        if(spacingPending(kind,it.id)) return;
         const code=kind==="equation"?"EQUATION_NOT_REFERENCED":`${prefix}_NOT_CITED`;
-        fteIssue(issues,kind,it.id,code,`${fteDisplay(kind,it.id)} is present but no in-text cross-reference was found.`,kind==="equation"?"Verify whether this numbered equation should be referenced under the target journal style.":`Cite ${fteDisplay(kind,it.id)} in the manuscript text before it appears.`,it.caption,"warn");
+        fteIssue(issues,kind,it.id,code,kind==="equation"?`${fteDisplay(kind,it.id)} is present, but no reference using its number was found. It may still be introduced in words.`:`${fteDisplay(kind,it.id)} is present but no in-text cross-reference was found.`,kind==="equation"?"No change needed unless your thesis or journal requires a reference using the equation number. If required, add one.":`Cite ${fteDisplay(kind,it.id)} in the manuscript text before it appears.`,it.caption,kind==="equation"?"info":"warn");
       }else if(first.pos>=it.pos){
         if(kind==="equation"){
           // A citation in the immediately following explanatory paragraph is a
           // normal scientific construction and is not an error. More distant
           // first references are only a style note because journal practice varies.
-          if(first.pos>it.pos+1) fteIssue(issues,kind,it.id,"EQUATION_FIRST_CITATION_ORDER",`${fteDisplay(kind,it.id)} is first referred to after its display.`,`Check the target journal style only if equations are required to be introduced before display.`,fteCitationContext(first.context,first),"info");
+          if(it.placementReliable&&first.pos>it.pos+1) fteIssue(issues,kind,it.id,"EQUATION_FIRST_CITATION_ORDER",`The first reference using ${fteDisplay(kind,it.id)}'s number appears after the equation. It may be introduced in words before that.`,`No change needed unless your thesis or journal requires a numbered reference before the equation. If required, add or move the reference.`,fteCitationContext(first.context,first),"info");
         }else if(it.placementReliable){
           fteIssue(issues,kind,it.id,`${prefix}_APPEARS_BEFORE_FIRST_CITATION`,`${fteDisplay(kind,it.id)} appears before its first in-text citation.`,`Move or add the first citation so it occurs before the ${kind}'s first physical appearance.`,fteCitationContext(first.context,first),"err");
         }
@@ -26026,13 +26460,13 @@ fteAnalyze=function(blocks){
     // First-citation order. For child equations, a parent citation may introduce
     // the whole group and therefore serves as the first citation for every child.
     for(const supp of [false,true]){
-      const ordered=[...new Set(items.filter(x=>fteIdParts(x.id)?.supp===supp).map(x=>x.id))].sort(fteCmpId);
+      const ordered=[...new Set(items.filter(x=>!x.identifierUncertain&&fteIdParts(x.id)?.supp===supp).map(x=>x.id))].sort(fteCmpId);
       for(let j=1;j<ordered.length;j++){
         const a=matchingCitations(kind,ordered[j-1]).sort((x,y)=>x.pos-y.pos)[0];
         const b=matchingCitations(kind,ordered[j]).sort((x,y)=>x.pos-y.pos)[0];
         if(a&&b&&b.pos<a.pos){
           const code=kind==="equation"?"EQUATION_FIRST_CITATION_ORDER":`${prefix}_CITED_BEFORE_PREVIOUS_${prefix}`;
-          fteIssue(issues,kind,ordered[j],code,`${fteDisplay(kind,ordered[j])} is first cited before ${fteDisplay(kind,ordered[j-1])}.`,`Check the numbering or revise the first-citation order.`,fteCitationContext(b.context,b),"warn");
+          fteIssue(issues,kind,ordered[j],code,`${fteDisplay(kind,ordered[j])} is first cited before ${fteDisplay(kind,ordered[j-1])}.`,kind==="equation"?"No change needed unless your thesis or journal requires equation references in numerical order. If required, revise the first references.":`Check the numbering or revise the first-citation order.`,fteCitationContext(b.context,b),kind==="equation"?"info":"warn");
         }
       }
     }
@@ -26040,7 +26474,7 @@ fteAnalyze=function(blocks){
 
   const unverified=figures.filter(x=>!x.placementReliable).length;
   const seen=new Set();
-  const dedup=issues.filter(x=>{const k=[x.kind,x.id,x.code,x.msg].join('|');if(seen.has(k))return false;seen.add(k);return true;});
+  const dedup=issues.filter(x=>{const k=[x.kind,x.id,x.code,x.msg,...(x.code==="EQUATION_LABEL_REVIEW"?[x.physicalAnchor,x.context]:[])].join('|');if(seen.has(k))return false;seen.add(k);return true;});
   const diagnostics={
     captions:{
       figures:figCandidates.map(c=>({id:c.label?.id,pos:c.b?.pos,text:c.b?.text||"",rawStructuralText:c.b?.rawStructuralText||"",style:c.b?.style||"",seqCaptionType:c.b?.seqCaptionType||"",objectIndex:c.draw,score:c.ev?.score||0,reasons:c.ev?.reasons||[],tabAfterId:!!c.ev?.tabAfterId})),
@@ -28931,9 +29365,9 @@ fteAnalyze=function(blocks){
     if(report&&box&&report.lastElementChild!==box) report.appendChild(box);
   }
   function updateOverviewUX(){
-    const host=$u("mc-manuscript-summary");if(!host)return;const chapters=scopeInfo()?.scopeCount||0,refs=LAST_REF_OUT?.res?.count,figs=LAST_FTE?.figures?.length,tabs=LAST_FTE?.tables?.length,eqs=LAST_FTE?.equations?.length,abbr=LAST?.totalAbbr;
+    const host=$u("mc-manuscript-summary");if(!host)return;const chapters=scopeInfo()?.scopeCount||0,refs=LAST_REF_OUT?.res?.count,figs=LAST_FTE?.figures?.length,tabs=LAST_FTE?.tables?.length,eqs=LAST_FTE?.equations?.filter(x=>!x.identifierUncertain).length,possibleEqs=LAST_FTE?.equations?.filter(x=>x.identifierUncertain).length||0,abbr=LAST?.totalAbbr;
     let diag=null;try{diag=window.mcGetAbbreviationScopeDiagnostics?.()}catch(_e){} const labels=diag?.scopes?.map(x=>x.label)||scopeLabels(); const structure=labels.length?`<ol class="mc-structure-list">${labels.map(x=>`<li>${escapeHtml(x)}</li>`).join("")}</ol>`:'<p class="mc-structure-list">No independent chapter structure was used for abbreviation checking. The manuscript was assessed at document level.</p>';
-    host.innerHTML=`<div class="mc-manuscript-card"><div class="mc-manuscript-card-head"><div><h3>Document analysed</h3><p>${escapeHtml(summaryType())}${chapters?` · ${chapters} major chapter${chapters===1?"":"s"}`:""}</p></div><span class="priority-tag style">Structure detected</span></div><div class="mc-manuscript-stats"><span>${refs??0} references</span><span>${figs??0} figures</span><span>${tabs??0} tables</span><span>${eqs??0} equations</span><span>${abbr??0} abbreviations/notations</span></div><details class="mc-structure"><summary>Detected document structure</summary>${structure}</details><details class="mc-processing-summary"><summary>Processing completed</summary>Read document → abbreviations → references → numbers &amp; units → writing → figures/tables/equations → report prepared.</details></div>`;
+    host.innerHTML=`<div class="mc-manuscript-card"><div class="mc-manuscript-card-head"><div><h3>Document analysed</h3><p>${escapeHtml(summaryType())}${chapters?` · ${chapters} major chapter${chapters===1?"":"s"}`:""}</p></div><span class="priority-tag style">Structure detected</span></div><div class="mc-manuscript-stats"><span>${refs??0} references</span><span>${figs??0} figures</span><span>${tabs??0} tables</span><span>${eqs??0} equations</span>${possibleEqs?`<span>${possibleEqs} possible equation label${possibleEqs===1?"":"s"} to confirm</span>`:""}<span>${abbr??0} abbreviations/notations</span></div><details class="mc-structure"><summary>Detected document structure</summary>${structure}</details><details class="mc-processing-summary"><summary>Processing completed</summary>Read document → abbreviations → references → numbers &amp; units → writing → figures/tables/equations → report prepared.</details></div>`;
     const active=Object.keys(GROUP_REPORT).reduce((n,g)=>n+countGroup(g),0); const lede=$u("overview-lede"); if(lede)lede.textContent=active?`${active} item${active===1?"":"s"} may need your attention. Open the sections below to review the findings and manuscript instances.`:"No issues requiring attention were detected. You can still inspect each section and its ledger for completeness.";
     const remCounts={critical:0,review:0,style:0}; allIssues().forEach(i=>{if(i.classList.contains("mc-not-issue")||i.classList.contains("mc-reviewed"))return;const p=priorityOf(i);if(remCounts[p]!==undefined)remCounts[p]++}); const unitCounts=mcReportPriorityCounts("unit-report");Object.keys(remCounts).forEach(p=>remCounts[p]+=unitCounts[p]); document.querySelectorAll('#num-findings tbody tr[data-num-review="1"]').forEach(r=>{const p=r.dataset.numPriority||"review";if(remCounts[p]!==undefined)remCounts[p]++});
     document.querySelectorAll(".overview-priority-card").forEach((card,i)=>{const key=["critical","review","style"][i];const n=card.querySelector(".n");if(n)n.textContent=String(remCounts[key]||0);if(!card.querySelector(".mc-card-action"))card.insertAdjacentHTML("beforeend",'<span class="mc-card-action">Review these →</span>');card.tabIndex=0;card.setAttribute("role","button")});
@@ -29132,6 +29566,8 @@ fteAnalyze=function(blocks){
 
   function fteStatusLabel(it){
     const c=String(it?.code||"");
+    if(it?.kind==="equation"&&it.severity==="info"&&/NOT_REFERENCED|FIRST_CITATION_ORDER/.test(c)) return "Style note";
+    if(c==="EQUATION_LABEL_REVIEW") return "Confirm equation number";
     if(/DUPLICATE_NUMBER/.test(c)) return "Duplicate number";
     if(/OUT_OF_ORDER/.test(c)) return "Out of order";
     if(/MISSING_NUMBER/.test(c)) return "Number missing";
@@ -29149,6 +29585,7 @@ fteAnalyze=function(blocks){
 
   function fteCheckLabel(code){
     const c=String(code||"");
+    if(c==="EQUATION_LABEL_REVIEW") return "Equation label";
     if(/NUMBER|OUT_OF_ORDER|CHILD_SEQUENCE/.test(c)) return "Numbering";
     if(/NOT_CITED|NOT_REFERENCED|APPEARS_BEFORE_FIRST_CITATION|FIRST_CITATION_ORDER|CITED_BEFORE_PREVIOUS/.test(c)) return "Citation / order";
     if(/CITATION_WITHOUT|REFERENCE_WITHOUT|STRUCTURAL_MATCH/.test(c)) return "Cross-reference";
@@ -29196,6 +29633,7 @@ fteAnalyze=function(blocks){
     const code=String(it?.code||"");
     const msg=String(it?.msg||"");
     const item=fteItemLabel(it);
+    if(it?.kind==="equation"&&it.severity==="info"&&/NOT_REFERENCED|FIRST_CITATION_ORDER/.test(code)) return String(it.suggestion||"");
 
     // Keep the ledger action-oriented. Diagnostic explanations belong in the
     // Finding column and Open details panel, not in the Recommendation column.
@@ -29243,6 +29681,8 @@ fteAnalyze=function(blocks){
     if(/STRUCTURAL_MATCH/.test(code))
       return "Verify this item against the Word document structure.";
 
+    if(code==="EQUATION_LABEL_REVIEW") return String(it.suggestion||"");
+
     const original=String(it?.suggestion||"").replace(/\s+/g," ").trim();
     if(!original) return "Review and correct this item in the manuscript.";
 
@@ -29272,7 +29712,7 @@ fteAnalyze=function(blocks){
 
   window.renderFteReport=function(res){
     LAST_FTE=res;
-    $("fte-report-sub").textContent=!res.reliable?"Unable to verify document structure reliably.":`${res.issues.length} item${res.issues.length===1?"":"s"} to review · ${res.figures.length} figure${res.figures.length===1?"":"s"} · ${res.tables.length} table${res.tables.length===1?"":"s"} · ${res.equations.length} numbered equation${res.equations.length===1?"":"s"}`;
+    $("fte-report-sub").textContent=!res.reliable?"Unable to verify document structure reliably.":`${fteReviewSummary(res.issues)} · ${res.figures.length} figure${res.figures.length===1?"":"s"} · ${res.tables.length} table${res.tables.length===1?"":"s"} · ${fteEquationCountSummary(res)}`;
 
     if(!res.reliable){
       $("fte-summary").innerHTML="";
@@ -29286,8 +29726,9 @@ fteAnalyze=function(blocks){
     $("fte-summary").innerHTML="";
 
     const help=`<p class="sec-label">Figures, tables &amp; equations ledger <button type="button" class="info-help" id="fte-ledger-info" aria-label="Explain the figures tables and equations ledger" aria-expanded="false" title="What do these columns mean?">i</button></p><div class="ledger-help" id="fte-ledger-help" hidden><div class="ledger-help-grid"><b>Item</b><span>The Figure, Table, Equation, or structural item associated with the finding.</span><b>Check</b><span>The structural rule being assessed, such as numbering, citation order, cross-reference resolution, or panel lettering.</span><b>Finding</b><span>A concise description of what was detected.</span><b>Status</b><span>A short factual status for the detected condition.</span><b>Recommendation</b><span>The suggested next step. Select <b>View instances</b> when manuscript context is available.</span></div></div>`;
-    const body=res.issues.length?res.issues.map(fteFindingRow).join(""):`<tr><td colspan="5"><span class="verdict clean">No figure, table, or numbered-equation consistency issues detected.</span></td></tr>`;
-    const legacy=res.issues.map(fteLegacyIssue).join("");
+    const orderedIssues=ftePrioritizedIssues(res.issues);
+    const body=orderedIssues.length?orderedIssues.map(it=>fteFindingRow(it,res.issues.indexOf(it))).join(""):`<tr><td colspan="5"><span class="verdict clean">No figure, table, or numbered-equation consistency issues detected.</span></td></tr>`;
+    const legacy=orderedIssues.map(fteLegacyIssue).join("");
     $("fte-findings").innerHTML=`${help}<div class="ledger-scroll"><table class="ledger fte-reporting-table"><thead><tr><th>Item</th><th>Check</th><th>Finding</th><th>Status</th><th>Recommendation</th></tr></thead><tbody>${body}</tbody></table></div><div class="fte-ledger-legacy" aria-hidden="true">${legacy}</div>`;
     bindInfoHelp("fte-ledger-info","fte-ledger-help");
     bindLedgerButtons("#fte-findings","fte-view-instances");
@@ -30516,7 +30957,7 @@ fteAnalyze=function(blocks){
   function mcPrecisionGroupKey(q){
     if(!q?.parsed?.valid)return null;
     const unitKey=unitConsistencyKey(q); if(!unitKey)return null;
-    const scope=String(q.context||"").startsWith("Table ")?String(q.context).split(",")[0]:"Body";
+    const scope=q.precisionTable?`Table ${q.precisionTable.tableIndex}`:String(q.context||"").startsWith("Table ")?String(q.context).split(",")[0]:"Body";
     const c=q.measurementContext||{};
     const comparisonScope=q.precisionRole==="literature"&&!q.precisionTable
       ?`${q.precisionScope||""}|clause:${c.clauseStart??q.index}|${c.precisionRole||"result"}`
@@ -32546,10 +32987,11 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
     // Some FTE details contain a short/structural context that cannot be matched
     // by text alone. In those cases use the issue's existing structural position,
     // but still place the location only inside the hidden details panel.
-    root.querySelectorAll(".fte-instance-row").forEach((panel,i)=>{
+    root.querySelectorAll(".fte-instance-row").forEach(panel=>{
       const example=panel.querySelector(".fte-instance-example");
       if(!example || example.querySelector(":scope > .mc-manuscript-location")) return;
-      const it=Array.isArray(res?.issues)?res.issues[i]:null;
+      const i=Number(panel.id.replace(/^fte-instance-row-/,""));
+      const it=Array.isArray(res?.issues)&&Number.isInteger(i)?res.issues[i]:null;
       let loc=null;
       if(it){
         if(Number.isInteger(it.blockIndex)) loc=resolve("",{blockIndex:it.blockIndex});
