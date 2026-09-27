@@ -15470,23 +15470,29 @@ async function extractDocxStructuredReferences(buf){
   // to expose the paragraphs underneath; otherwise the whole bibliography is missed.
   // Paragraphs that came from inside an sdt are recorded, because a block-level sdt
   // full of reference entries is itself a bibliography anchor even without a heading.
-  const sdtSet=new Set();
-  const fteFlattenSdt=(nodes,inSdt)=>{
+  const sdtSet=new Set(),bibliographySdt=new Map();
+  const fteFlattenSdt=(nodes,inSdt,bibContainer=null)=>{
     const out=[];
     for(const n of nodes){
       if(n.nodeType!==1) continue;
       if((n.localName||"").toLowerCase()==="sdt"){
         const content=[...n.childNodes].find(c=>c.nodeType===1 && (c.localName||"").toLowerCase()==="sdtcontent");
-        if(content){ out.push(...fteFlattenSdt([...content.childNodes],true)); continue; }
+        const pr=[...n.childNodes].find(c=>c.nodeType===1 && (c.localName||"").toLowerCase()==="sdtpr");
+        const tagged=pr && [...pr.childNodes].some(c=>{
+          if(!/^(?:tag|alias)$/i.test(c.localName||"")) return false;
+          const value=c.getAttributeNS(FTE_W_NS,"val")||c.getAttribute("w:val")||"";
+          return /^(?:(?:mendeley|zotero|endnote|refworks)[ _:-]*)?bibliography(?:[ _:-].*)?$/i.test(value);
+        });
+        if(content){ out.push(...fteFlattenSdt([...content.childNodes],true,tagged?n:bibContainer)); continue; }
       }
       if(inSdt) sdtSet.add(n);
+      if(bibContainer) bibliographySdt.set(n,bibContainer);
       out.push(n);
     }
     return out;
   };
   const children=fteFlattenSdt([...body.childNodes],false);
   const refHead=/^\s*(?:\d+(?:\.\d+)*\.?\s*)?(?:references?|reference\s+list|bibliography|works\s+cited|literature\s+cited|cited\s+literature|references\s+cited|notes\s+and\s+references|references\s+and\s+notes|literature\s+references)\s*:?\.?\s*$/i;
-  const afterRef=/^\s*(?:appendix|appendices|supplementary\s+(?:material|materials|information)|supporting\s+information|acknowledg(?:e)?ments?|funding|data\s+availability|author\s+contributions?|conflicts?\s+of\s+interest|competing\s+interests?|declarations?|disclaimer(?:\/publisher(?:’|'|s)?\s+note)?|publisher(?:’|'|s)?\s+note)\b/i;
   const normStyle=st=>String(st||"").toLowerCase().replace(/[^a-z0-9]+/g,"");
   const isBibliographyStyle=st=>{
     const n=normStyle(st);
@@ -15498,18 +15504,48 @@ async function extractDocxStructuredReferences(buf){
     if((el.localName||"").toLowerCase()!=="p") return null;
     const text=fteXmlText(el).replace(/\s+/g," ").trim();
     const style=ftePStyle(el)||"";
-    return {el,i,text,style,bibStyle:isBibliographyStyle(style)};
+    return {el,i,text,style,bibStyle:isBibliographyStyle(style),bibContainer:bibliographySdt.get(el)};
   }).filter(Boolean);
 
-  let hi=-1,heading="";
-  for(const m of metas){
-    if(refHead.test(m.text) || (typeof isReferenceHeading==="function" && isReferenceHeading(m.text))){ hi=m.i; heading=m.text; }
+  let hi=-1,heading="",headingEnd=-1,professionalSection=false;
+  for(let mi=0;mi<metas.length;mi++){
+    const m=metas[mi];
+    if(/^curriculum\s+vitae\s*[:.]?$/i.test(m.text)) professionalSection=true;
+    if(/^chapter\s+/i.test(m.text) && refIsEndHeading(m.text)) professionalSection=false;
+    if(/^(?:toc\d*|tableofcontents)$/.test(normStyle(m.style))) continue;
+    if(!refHead.test(m.text) && !isReferenceHeading(m.text)) continue;
+    // A heading must introduce references locally. A later CV/contents heading
+    // must not displace the bibliography, nor borrow evidence from a later section.
+    const preview=[];
+    let end=children.length;
+    for(let j=mi+1;j<metas.length;j++){
+      const p=metas[j];
+      if(!p.text) continue;
+      if(!p.bibStyle && !p.bibContainer && refIsEndHeading(p.text)){end=p.i;break;}
+      if(isReferenceHeading(p.text)){
+        if(!preview.some(q=>q.bibStyle||q.bibContainer||refHasEntryEvidence(q.text))){end=p.i;break;}
+        continue; // repeated running heading after actual entries
+      }
+      if(preview.length<8) preview.push(p);
+    }
+    const support=preview.filter(p=>p.bibStyle||p.bibContainer||refHasEntryEvidence(p.text)).length;
+    if(support<2) continue;
+    if(professionalSection && hi>=0 && !preview.some(p=>p.bibStyle||p.bibContainer)) continue;
+    // Preserve the first heading of one uninterrupted list; later independent
+    // sections retain the existing preference for the later bibliography.
+    if(hi>=0 && m.i<headingEnd) continue;
+    hi=m.i; heading=m.text; headingEnd=end;
   }
 
   // Headingless bibliography support: citation-manager bibliography styles are
   // stronger evidence than generic reference-like text elsewhere in the document.
   let styleStart=-1,styleName="";
   if(hi<0){
+    const tagged=metas.find(m=>m.text && m.bibContainer &&
+      metas.filter(p=>p.text && p.bibContainer===m.bibContainer).length>=2);
+    if(tagged){styleStart=tagged.i;styleName="sdt-bibliography";}
+  }
+  if(hi<0 && styleStart<0){
     let best=null,cur=null;
     const commit=()=>{ if(cur && (!best || cur.count>best.count || (cur.count===best.count && cur.strong>best.strong))) best=cur; cur=null; };
     for(const m of metas){
@@ -15614,8 +15650,9 @@ async function extractDocxStructuredReferences(buf){
     if(ln!=="p") continue;
     const txt=fteXmlText(el).replace(/\s+/g," ").trim();
     if(!txt) continue;
-    if(afterRef.test(txt)||fteFigureSectionBoundary(txt,ftePStyle(el))){ finish(); break; }
-    const style=ftePStyle(el)||"",bibStyle=isBibliographyStyle(style);
+    const style=ftePStyle(el)||"",bibStyle=isBibliographyStyle(style),bibContainer=bibliographySdt.get(el);
+    if(!bibStyle && !bibContainer && (refIsEndHeading(txt)||fteFigureSectionBoundary(txt,style))){ finish(); break; }
+    if(isReferenceHeading(txt)) continue;
     const paraRuns=refWordFormattedRuns(el);
 
     const numPr=el.getElementsByTagNameNS(FTE_W_NS,"numPr")[0];
@@ -15645,8 +15682,11 @@ async function extractDocxStructuredReferences(buf){
     if(n!=null){
       finish(); cur={num:n,raw:rest||txt,numSource:literal!=null?"literal":"word_auto",runs:paraRuns.slice()}; continue;
     }
-    if(bibStyle){
-      finish(); cur={num:null,raw:txt,numSource:"word_bibliography_style",style,runs:paraRuns.slice()}; continue;
+    if(cur && (publisherMetaOnly(txt) || refIsEntryContinuation(cur.raw,txt))){
+      cur.raw=(cur.raw+" "+txt).replace(/\s+/g," ").trim(); cur.runs=(cur.runs||[]).concat(paraRuns); continue;
+    }
+    if(bibStyle || bibContainer){
+      finish(); cur={num:null,raw:txt,numSource:bibStyle?"word_bibliography_style":"word_bibliography_container",style,runs:paraRuns.slice()}; continue;
     }
     if(cur){
       if(publisherMetaOnly(txt) || /^(?:doi\s*:|https?:\/\/(?:dx\.)?doi\.org\/)/i.test(txt)){
@@ -15657,7 +15697,7 @@ async function extractDocxStructuredReferences(buf){
       }
       if(mode==="word_bibliography_style" && entries.length>=2){ finish(); break; }
       cur.raw=(cur.raw+" "+txt).replace(/\s+/g," ").trim(); cur.runs=(cur.runs||[]).concat(paraRuns);
-    }else if(strongAuthorStart(txt)){
+    }else if(strongAuthorStart(txt) || (refStartsAuthor(txt) && /(?:[,;&]|\band)\s*$/i.test(txt))){
       cur={num:null,raw:txt,numSource:"word_paragraph_boundary",style,runs:paraRuns.slice()};
     }
   }
@@ -17862,6 +17902,20 @@ function refIsNumericDoiContinuation(previous,line){
   if(!/^(?:\d{5,}\.?|\d+[./_-]\d[\w./()-]*)$/.test(next) || !/[./_-]$/.test(before)) return false;
   const tail=before.match(/\b10\.\s*\d{4,9}\s*\/\s*[^\s<>"']*$/i);
   return !!tail && !!refNormalizeDoiCandidate(tail[0]+next);
+}
+
+// Positive continuation evidence takes precedence over a paragraph's bibliography
+// style. A manual paragraph break may split a DOI, an author list, or a title.
+function refIsEntryContinuation(previous,line){
+  const before=String(previous||"").trim(),next=String(line||"").trim();
+  if(/^(?:doi\s*:\s*)?(?:https?:\/\/\S+|10\.\d{4,9}\/\S+)\s*$/i.test(next)) return true;
+  if(/(?:[,;&]|\band)\s*$/i.test(before) && !/\b(?:19|20)\d{2}\b|10\.\d{4,9}\//.test(before)){
+    const author=detectAuthorRegion(before);
+    const tail=author.hasAuthors?before.slice(author.authorRegion.length).replace(/\band\b|[\s,;.&]/gi,""):before;
+    if(!tail && refStartsAuthor(next)) return true;
+  }
+  return /\b(?:19|20)\d{2}\b/.test(before) && /[\p{L},\-–]$/u.test(before) &&
+    /^[\p{Ll}]/u.test(next) && !/\b(?:19|20)\d{2}\b/.test(next) && !refStartsAuthor(next) && !refHasEntryEvidence(next);
 }
 
 /* Author parser revision: supports surname+initials, initials+surname, complex surnames and corporate authors. */
@@ -23557,6 +23611,22 @@ function detectCiteStyle(body){
 
 const AFTER_REF=/^\s*(\d+\.?\s*)?(appendix|appendices|supplementary(\s+(information|materials?|data))?|supporting\s+information|author\s+contributions?|author\s+statements?|credit\s+author|conflicts?\s+of\s+interest|competing\s+interests?|declarations?(\s+of\s+interest)?|data\s+availability|funding|acknowledge?ments?|notes?)\s*:?\s*$/i;
 
+function refIsEndHeading(text){
+  const t=String(text||"").replace(/\s+/g," ").trim().replace(/^\d+(?:\.\d+)*\.?\s+/,"");
+  if(AFTER_REF.test(t)) return true;
+  // Match heading syntax, never an arbitrary first-word prefix in a reference.
+  if(/^(?:appendix|appendices)(?:\s+(?:\d+(?:\.\d+)*|[A-Z](?:\.\d+)*))?(?:\s*:\s*.+|\s+[–—-]\s+.+)?\s*[.:]?$/i.test(t)) return true;
+  if(/^(?:(?:list\s+of\s+)?publications|curriculum\s+vitae|graphical\s+abstract|(?:entry\s+for\s+)?(?:the\s+)?table\s+of\s+contents)\s*[:.]?$/i.test(t)) return true;
+  if(/^(?:disclaimer(?:\s*\/\s*publisher(?:’s|'s|s)?\s+note)?|publisher(?:’s|'s|s)?\s+note)(?:\s*:\s*.*)?\s*\.?$/i.test(t)) return true;
+  return /^chapter\s+(?:\d+|[IVXLCDM]+)(?:\s*[:.–—-]\s*.+)?\s*[.:]?$/i.test(t);
+}
+
+function refHasEntryEvidence(text){
+  const t=String(text||"");
+  return refScore(t)>=4 && /\b(?:19|20)\d{2}[a-z]?\b|10\.\d{4,9}\//i.test(t) &&
+    (refStartsAuthor(t)||/^\s*(?:\[\d+\]|\(\d+\)|\d+[.)])/.test(t)||/10\.\d{4,9}\//.test(t));
+}
+
 function toParagraphs(text){
   const parts=[];
   if(/\n\s*\n/.test(text)){
@@ -23583,19 +23653,33 @@ function refSplitManuscript(text){
   // gather refs text from a heading line to the next end-boundary heading (or doc end)
   const gather=(fromLine)=>{
     let endLine=lines.length;
-    for(let j=fromLine;j<lines.length;j++){ if(AFTER_REF.test(lines[j])||fteFigureSectionBoundary(lines[j])){ endLine=j; break; } }
-    return lines.slice(fromLine,endLine).join("\n").trim();
+    const preview=[];
+    for(let j=fromLine;j<lines.length;j++){
+      const l=lines[j].trim();
+      if(!l) continue;
+      if(refIsEndHeading(l)||fteFigureSectionBoundary(l)){ endLine=j; break; }
+      if(isReferenceHeading(l)){
+        if(!preview.some(refHasEntryEvidence) && !refHasEntryEvidence(preview.join(" "))){endLine=j;break;}
+        continue;
+      }
+      if(preview.length<8) preview.push(l);
+    }
+    const supported=preview.some(refHasEntryEvidence)||refHasEntryEvidence(preview.join(" "));
+    return {text:lines.slice(fromLine,endLine).filter(l=>!isReferenceHeading(l)).join("\n").trim(),endLine,supported};
   };
 
   // CASE A: standalone reference heading with reference-like content after it.
   // Prefer a canonical/fuzzy bibliography heading that occurs later in the document over
   // an earlier singular "Reference" table-column label whose gathered text happens to
   // include the true bibliography farther below.
-  let best=null;
+  let best=null,professionalSection=false;
   for(let i=0;i<lines.length;i++){
+    if(/^\s*curriculum\s+vitae\s*[:.]?\s*$/i.test(lines[i])) professionalSection=true;
+    if(/^\s*chapter\s+/i.test(lines[i]) && refIsEndHeading(lines[i])) professionalSection=false;
     if(!HEAD.test(lines[i]) && !isReferenceHeading(lines[i])) continue;
-    const refsText=gather(i+1);
-    if(refsText.length<20) continue;
+    if(best && professionalSection) continue;
+    const gathered=gather(i+1),refsText=gathered.text;
+    if(refsText.length<20 || !gathered.supported) continue;
     const yearN=(refsText.match(/\b(?:19|20)\d{2}\b/g)||[]).length;
     const doiN=(refsText.match(/10\.\d{4,9}\//g)||[]).length;
     const numN=(refsText.match(/(?:^|\n)\s*(?:\[\d{1,4}\]|\(\d{1,4}\)|\d{1,4}[.)])\s*/g)||[]).length;
@@ -23607,7 +23691,8 @@ function refSplitManuscript(text){
       const strength=referenceHeadingStrength(lines[i]);
       const position=off[i]/Math.max(1,N);
       const density=signal/Math.max(1,refsText.length/500);
-      const cand={i,refsText,signal,strength,position,density};
+      const cand={i,refsText,signal,strength,position,density,endLine:gathered.endLine};
+      if(best && i<best.endLine && strength===best.strength) continue;
       if(!best || strength>best.strength ||
          (strength===best.strength && i>best.i) ||
          (strength===best.strength && i===best.i && density>best.density)) best=cand;
