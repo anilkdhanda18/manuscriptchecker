@@ -7164,7 +7164,7 @@ function unitParseExpression(raw,opts={}){
     return m?[m[1],m[2]]:[t];
   });
   let dim={},scale=1,analyte=null,components=[],annotations=[],numericFactors=[],physical=0,pos=0,unknown="";
-  const analyteKey=t=>t.replace(/[₀-₉]/g,c=>String("₀₁₂₃₄₅₆₇₈₉".indexOf(c))).toUpperCase();
+  const analyteKey=t=>t.replace(/_\{(\d+)\}/g,"$1").replace(/[₀-₉]/g,c=>String("₀₁₂₃₄₅₆₇₈₉".indexOf(c))).toUpperCase();
   const analyteBasis=c=>c&&(["M:1","L:3","N:1","Count:1"].includes(unitDimKey(c.dim))||(unitDimKey(c.dim)==="L:1"&&Math.abs(c.exp)===3));
   const annotate=(label,basis,direction)=>{
     analyte=analyte||label;
@@ -7297,15 +7297,15 @@ function unitCandidatePrefixes(rest,rangeContext=false){
     // Do not retreat across an unfinished divisor or exponent and then
     // certify only its numerator as a complete unit.
     const remainder=cut.slice(prefix.length);
-    const power=remainder.match(/^\s+([A-Za-zµμΩ]+)(\s*)(?:\^|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]|[−‐‑‒–—-]\s*\d)/);
+    const power=remainder.match(/^\s+([A-Za-zµμΩ]+|\p{Sc})(\s*)(?:\^|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]|[−‐‑‒–—-]\s*\d)/u);
     const per=remainder.match(/^\s*per\b\s*(.*)/);
     // "and -0.46 V" starts another value, not a powered word "and".
     // Likewise "per scan" supplies prose context; "per 1000 mL" is a divisor.
     // A second explicitly unit-bearing endpoint is not an exponent of this unit.
     const endpoint=remainder.match(new RegExp('^\\s+[−‐‑‒–—-]\\s*('+UNIT_NUM_CORE+')\\s+(.+)$'));
     const nextQuantity=endpoint&&unitParseExpression(prefix)?.valid&&unitCandidatePrefixes(endpoint[2]).some(x=>unitParseExpression(x)?.valid);
-    const continued=!nextQuantity&&(/^\s*(?:\/|\^|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]|[−‐‑‒–—-]\s*\d|[·⋅×]\s*[A-Za-zµμΩ])/.test(remainder)||
-      (power&&(!power[2]||unitParseComponent(power[1])))||
+    const continued=!nextQuantity&&(/^\s*(?:\/|\^|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]|[−‐‑‒–—-]\s*\d|[·⋅×]\s*[A-Za-zµμΩ\p{Sc}])/u.test(remainder)||
+      (power&&(!power[2]||/\p{Sc}/u.test(power[1])||ABBR_CURRENCY_CODES.has(power[1])||unitParseComponent(power[1])))||
       (per&&(!per[1]||/^[\d(.]/.test(per[1])||unitParseComponent(per[1].split(/\s/)[0]))));
     if(valid&&!closers.length&&prefix&&!continued)out.push(prefix);
     if(stop)break;
@@ -7507,11 +7507,15 @@ function unitExtractQuantities(text,context="body"){
       // its numerator alone must not become a valid measurement.
       const divided=candidates.slice().reverse().filter(c=>/(?:\/|\bper\b)/.test(c)&&unitParseExpression(c.split(/\/|\bper\b/)[0])?.valid);
       const powered=candidates.slice().reverse().find(c=>{
-        const m=c.match(/^(.+?)\s+([A-Za-zµμΩ]+\s*(?:\^|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]|[−‐‑‒–—-]\s*\d)\S*)/);
+        const m=c.match(/^(.+?)(?:\s*[·⋅×]\s*|\s+)((?:[A-Za-zµμΩ]+|\p{Sc})\s*(?:\^|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]|[−‐‑‒–—-]\s*\d)\S*)/u);
         return m&&unitParseExpression(m[1])?.valid;
       });
       const incomplete=divided.find(c=>/(?:\/|\bper\b)\s*\S/.test(c))||divided[0]||powered;
-      if(incomplete){parsed=unitParseExpression(incomplete,{allowUnknown:true});rawUnit=incomplete;}
+      if(incomplete){
+        parsed=unitParseExpression(incomplete,{allowUnknown:true});rawUnit=incomplete;
+        if(parsed&&!parsed.valid&&(/\p{Sc}/u.test(rawUnit)||[...rawUnit.matchAll(/\b[A-Z]{3}\b/g)].some(m=>ABBR_CURRENCY_CODES.has(m[0]))))
+          parsed.unsupportedCurrency=true;
+      }
     }
     if(!parsed){
       const one=(rest.match(/^[A-Za-zµμΩ°%][A-Za-z0-9µμΩ°%⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻−‐‑‒–—^/·+-]{0,24}/)||[])[0];
@@ -7692,6 +7696,25 @@ function unitTableTargetName(header,value){
   if(/\([^)]*\)|\[[^\]]*\]/.test(header))name=name.replace(/\s*\(\s*[~≈<>≤≥]?\s*\d+(?:\.\d+)?(?:\s*[-–—]\s*\d+(?:\.\d+)?)?(?:\s+[\wµμ/⁻¹²³.-]+)?\s*\)\s*$/u,"").trim();
   return name;
 }
+function unitTableOperatingRatios(block,blocks,caption,introduction,headers){
+  // A table-specific declaration establishes chosen inputs, not every number
+  // near operating prose. Only named load-ratio headings or defined aliases apply.
+  const declared=/^\s*(?:Table\s+[S\d.]+\s*[:.\-]?\s*)?(?:(?:summary|list|overview)\s+of\s+(?:the\s+)?)?(?:(?:selected|chosen|applied|specified|experimental)\s+)?operating\s+(?:conditions?|parameters?)\b/i.test(caption)||
+    /\b(?:summari[sz]es?|lists?|details?|presents?|shows?|reports?)\s+(?:the\s+)?(?:(?:selected|chosen|applied|specified|different|experimental)\s+)?operating\s+(?:conditions?|parameters?)\b/i.test(introduction);
+  if(!declared||/\b(?:measured|observed|recorded|determined|estimated|results?|outputs?|performance)\b/i.test(caption+" "+introduction))return [];
+  const normalize=s=>String(s).normalize("NFKC").replace(/[_{}\s]/g,"").toLowerCase();
+  const aliases=new Set();
+  if(block){
+    const definitions=new Map();
+    for(const b of blocks.slice(0,blocks.indexOf(block)))for(const m of String(b.abbrSourceText||b.text||"").matchAll(/\b(?:(load)|([A-Za-z-]+))\s+ratios?\s*\(\s*([A-Za-z][A-Za-z0-9_{}₀-₉]{0,14})\s*\)/g)){
+      const key=normalize(m[3]);
+      if(!definitions.has(key))definitions.set(key,new Set());
+      definitions.get(key).add((m[1]||m[2]).toLowerCase());
+    }
+    for(const [key,names] of definitions)if(names.size===1&&names.has("load"))aliases.add(key);
+  }
+  return headers.map((h,c)=>/^load\s+ratios?$/i.test(String(h).trim())||aliases.has(normalize(h))?c:-1).filter(c=>c>=0);
+}
 function unitPrecisionTableInfo(table){
   const info=tableHeaderInfo(table),rows=table.rows||[],blocks=typeof DOCX_FTE_BLOCKS!=="undefined"?(DOCX_FTE_BLOCKS||[]):[];
   const clean=s=>String(s||"").normalize("NFKC").replace(/[−‐‑–—]/g,"-").replace(/\s+/g,"");
@@ -7754,6 +7777,7 @@ function unitPrecisionTableInfo(table){
   const parameterColumn=parameterColumns[0]??-1;
   const targetColumns=headers.map((h,c)=>/^(?:(?:adsorbed|target|targeted)\s+(?:species|pollutants?|contaminants?|analytes?)|pollutants?|contaminants?|analytes?|adsorbates?|PFAS|per-?\s+and\s+polyfluoroalkyl\s+substances)(?:\s*\([^()]*\)|\s*\[[^\[\]]*\])?[*#†‡\s]*$/i.test(h.trim())?c:-1).filter(c=>c>=0);
   const introduction=unitTableLocalIntroduction(table,block,blocks,caption);
+  const operatingRatios=unitTableOperatingRatios(block,blocks,caption,introduction,headers);
   const introductionSource=/\b(?:displays?|summari[sz]es?|compiles?|contains?|reports?|lists?|presents?|shows?)\b[^.!?]{0,240}\b(?:values?|results?|data|measurements?)\b[^.!?]{0,160}\b(?:from|in|of)\s+(?:the\s+)?(?:previous|prior|earlier|published|other)\s+(?:research|studies|reports?|work)\b/i.test(introduction)&&
     !/\b(?:our|this\s+(?:study|work)|present\s+(?:study|work)|current\s+(?:study|work)|measured\s+here|methods?|protocols?|procedures?)\b/i.test(introduction);
   const preparation=block?String(blocks[blocks.indexOf(block)-2]?.text||""):"";
@@ -7808,7 +7832,7 @@ function unitPrecisionTableInfo(table){
   const conditionHeader=rowOriented&&info.dataStart===0&&!String(rows[0]?.[0]||"").trim()&&rows[0]?.slice(1).every(cell=>String(cell||"").trim());
   const numericHeaders=conditionHeader?rows[0].map(cell=>String(cell||"").trim()):headers;
   const numericPaths=conditionHeader?numericHeaders.map(h=>h?[h]:[]):headerPaths;
-  return {...info,headers:numericHeaders,headerPaths:numericPaths,dataStart:conditionHeader?1:info.dataStart,caption,introduction,introductionSource,formulation,referenceColumn,parameterColumn,parameterColumns,targetColumns,referenceSources,noteMarkers,noteDefinitions,allValuesConversion,logicalCells,continuationCells,rowOriented,financialBasisColumn};
+  return {...info,headers:numericHeaders,headerPaths:numericPaths,dataStart:conditionHeader?1:info.dataStart,caption,introduction,introductionSource,operatingRatios,formulation,referenceColumn,parameterColumn,parameterColumns,targetColumns,referenceSources,noteMarkers,noteDefinitions,allValuesConversion,logicalCells,continuationCells,rowOriented,financialBasisColumn,cellParagraphs:table.cellParagraphs||block?.cellParagraphs};
 }
 function unitTableCellText(table,info,r,c){
   if(info.continuationCells?.has(`${r}:${c}`))return "";
@@ -7839,6 +7863,41 @@ function unitTableValueText(table,info,r,c){
     if(descriptor&&!unitParseExpression(descriptor[1])?.valid)text=text.slice(descriptor[0].length);
   }
   return text;
+}
+// Paragraph boundaries belong to the source cell, not to neighbouring rows.
+// Join only a scalar/complete measurement followed by a unit-only continuation;
+// otherwise every paragraph must be a complete numeric subentry before splitting.
+function unitTableValueParts(table,info,r,c){
+  const fallback=[{text:unitTableValueText(table,info,r,c)}];
+  const paragraphs=info.cellParagraphs?.[r]?.[c];
+  if(!Array.isArray(paragraphs)||paragraphs.length<2||info.logicalCells?.has(`${r}:${c}`)||info.continuationCells?.has(`${r}:${c}`))return fallback;
+  const clean=s=>String(s||"").normalize("NFKC").replace(/[−‐‑–—]/g,"-").replace(/\s+/g,"");
+  if(clean(paragraphs.join(""))!==clean(table.rows[r]?.[c]))return fallback;
+  const complete=text=>{
+    const quantities=unitExtractQuantities(text);
+    return quantities.length===1&&quantities[0].index===0&&
+      quantities[0].value.length+quantities[0].space.length+quantities[0].rawUnit.length===text.length?quantities[0]:null;
+  };
+  const parts=[];
+  for(let i=0;i<paragraphs.length;i++){
+    const sourceText=String(paragraphs[i]||"").trim(),text=tableMeasurementCell(sourceText,info);
+    if(!text)continue;
+    const previous=parts.at(-1);
+    if(previous&&!previous.qualifier&&unitParseExpression(text)?.valid&&
+      (UNIT_CELL_VALUE_RE.test(previous.text)||complete(previous.text)?.parsed?.valid)){
+      const joined=`${previous.text} ${text}`;
+      if(complete(joined)?.parsed?.valid){previous.text=joined;previous.sourceText+=` ${sourceText}`;previous.paragraphIndices.push(i);continue;}
+    }
+    const descriptor=text.match(/^([A-Za-z][A-Za-z\s,-]*?)\/\s*(?=[<>≤≥~≈+−‐‑‒–—-]?(?:\d|\.\d))/);
+    const numeric=descriptor&&!unitParseExpression(descriptor[1])?.valid?text.slice(descriptor[0].length):text;
+    const explicit=complete(numeric);
+    if(!UNIT_CELL_VALUE_RE.test(numeric)&&!explicit)return fallback;
+    // A descriptor is removed only from a complete, explicitly unit-bearing
+    // measurement. Keep its wording as evidence; never invent a header unit.
+    if(descriptor&&!explicit?.parsed?.valid)return fallback;
+    parts.push({text:numeric,sourceText,paragraphIndices:[i],qualifier:descriptor?.[1]?.trim()||""});
+  }
+  return parts.length?parts:fallback;
 }
 function unitTableFinancialScope(table,info,r,c){
   const header=info.headers[c]||"",row=table.rows[r]||[];
@@ -7897,7 +7956,7 @@ function unitPrecisionTableCell(table,info,r,c){
   const loadTarget=plainHeader.match(/^(.+?)\s+(?:feed\s+)?load$/i)?.[1];
   const feedInput=!inputResult&&loadTarget&&info.headers.some(h=>new RegExp("^"+escapeRegExp(loadTarget)+"\\s+(?:retention|removal)(?:\\s|$)","i").test(h))&&
     /^(?:L:-3\|M:1|L:-3\|N:1)$/.test((unitFindHeaderUnit(header)?.parsed||unitExtractQuantities(String(row[c]||""))[0]?.parsed)?.dimKey||"");
-  const describedSetting=operatingInput||feedInput||!explicitResult&&(/^(?:experimental conditions?|electrolytes?)$/i.test(header.trim())||
+  const describedSetting=operatingInput||feedInput||!inputResult&&info.operatingRatios?.includes(c)||!explicitResult&&(/^(?:experimental conditions?|electrolytes?)$/i.test(header.trim())||
     /\b(?:dosages?|photocatalysts?\s+(?:concentrations?|loading))\b/i.test(header)||
     /^preparation(?: and use)?$/i.test(header.trim())&&/\b(?:added|mixed|blended|wt\.?|weight|loading|composition)\b/i.test(String(row[c]||"")));
   const setting=formulation||specification||describedSetting||/^operating conditions?$/i.test(header.trim())||/\b(?:initial|applied|setpoint|dose|loading|incubation|synthesis|reaction time)\b/i.test(header)||
@@ -8174,11 +8233,44 @@ function unitTablePercentValues(cell,headerUnit){
   if(condition&&!unitExtractQuantities(cell.slice(end+condition[0].length)).some(q=>q.parsed?.valid))return null;
   return {values,conditionStart:condition?end+condition[0].length:null};
 }
+function unitTableFieldSchemas(info){
+  const schemas=new Map(),paths=info.headerPaths;
+  // Only a unique explicit Field/Parameter/Quantity, Unit and Value within
+  // the same complete parent heading may supply a row's measurement.
+  paths.forEach((path,c)=>{
+    if(!/^values?$/i.test(path.at(-1)||""))return;
+    const parent=path.slice(0,-1).join(" / "),members=paths.map((p,i)=>p.slice(0,-1).join(" / ")===parent?i:-1).filter(i=>i>=0);
+    const fields=members.filter(i=>/^(?:fields?|parameters?|quantit(?:y|ies))$/i.test(paths[i].at(-1)||""));
+    const units=members.filter(i=>/^units?$/i.test(paths[i].at(-1)||""));
+    if(fields.length!==1||units.length!==1||members.filter(i=>/^values?$/i.test(paths[i].at(-1)||"")).length!==1)return;
+    schemas.set(c,{fieldColumn:fields[0],unitColumn:units[0],group:parent,
+      phaseColumns:paths.map((p,i)=>/^(?:phase|stage|process|scenario)$/i.test(p.at(-1)||"")&&
+        (p.length===1||p.slice(0,-1).join(" / ")===parent)?i:-1).filter(i=>i>=0)});
+  });
+  return schemas;
+}
+function unitTableFieldValue(table,info,r,c,schema){
+  if(!schema)return null;
+  const row=table.rows[r],field=String(row[schema.fieldColumn]||"").trim(),raw=String(row[schema.unitColumn]||"").trim();
+  const parsed=unitParseExpression(raw);
+  if(!field||!parsed?.valid||unitTableIdentifierParameter(field)||tableHeaderIsPH(field))return null;
+  const phase=schema.phaseColumns.map(i=>String(row[i]||"").trim()).filter(Boolean).join(" / ");
+  const parameter=[schema.group,phase,field].filter(Boolean).join(" / ");
+  // Reuse source, conversion and condition decisions with the actual field as
+  // its header. The generic word "Value" cannot identify the measurement.
+  const headers=info.headers.slice(),headerPaths=info.headerPaths.slice();
+  headers[c]=`${field} (${raw})`;headerPaths[c]=[schema.group,headers[c]].filter(Boolean);
+  const precision=unitPrecisionTableCell(table,{...info,headers,headerPaths,rowOriented:false},r,c);
+  precision.field=field;precision.group=schema.group;precision.phase=phase;precision.unitColumn=schema.unitColumn;
+  precision.parameterEstablished=true;
+  precision.scope+=`:field:${JSON.stringify([schema.group,phase,field])}`;
+  return {unit:{raw,parsed,parameter:field},parameter,precision};
+}
 function unitAnalyzeTables(tables){
   const qs=[];
   (tables||[]).forEach(t=>{
     if(!t.rows||t.rows.length<2)return;
-    const tableInfo=unitPrecisionTableInfo(t),{headers,headerPaths,dataStart}=tableInfo;
+    const tableInfo=unitPrecisionTableInfo(t),{headers,headerPaths,dataStart}=tableInfo,fieldSchemas=unitTableFieldSchemas(tableInfo);
     for(let c=0;c<headers.length;c++){
       const header=headers[c];
       if(!header||tableHeaderIsPH(header))continue;
@@ -8188,13 +8280,18 @@ function unitAnalyzeTables(tables){
       const columnParameter=hi?path.map((part,h)=>h===unitPart?(hi.parameter==="Table column"?"":hi.parameter):part).filter(Boolean).join(" / ")||"Table column":header;
       for(let r=dataStart;r<t.rows.length;r++){
         if(t.dataCells?.[r]?.[c]===false)continue;
-        const sourceCell=unitTableCellText(t,tableInfo,r,c),cell=unitTableValueText(t,tableInfo,r,c);if(!cell)continue;
+        const parts=unitTableValueParts(t,tableInfo,r,c);
+        const sourceCell=parts.some(part=>part.paragraphIndices)?parts.map(part=>part.sourceText).join("; "):unitTableCellText(t,tableInfo,r,c);
+        for(const [subentryIndex,part] of parts.entries()){
+        const cell=part.text;if(!cell)continue;
         const cellHeader=tableInfo.rowOriented?String(t.rows[r][0]||""):header;
         if(tableInfo.rowOriented&&unitTableIdentifierParameter(cellHeader))continue;
-        const cellUnit=tableInfo.rowOriented?unitTableRowUnit(cellHeader):hi;
-        const parameter=tableInfo.rowOriented?(cellUnit?.parameter||cellHeader):columnParameter;
+        const fieldValue=unitTableFieldValue(t,tableInfo,r,c,fieldSchemas.get(c));
+        const cellUnit=fieldValue?.unit||(tableInfo.rowOriented?unitTableRowUnit(cellHeader):hi);
+        const parameter=fieldValue?.parameter||(tableInfo.rowOriented?(cellUnit?.parameter||cellHeader):columnParameter);
         if(tableHeaderIsPH(cellHeader))continue;
-        const precisionTable=unitPrecisionTableCell(t,tableInfo,r,c);
+        const precisionTable={...(fieldValue?.precision||unitPrecisionTableCell(t,tableInfo,r,c)),
+          ...(part.paragraphIndices?{subentryIndex,sourceParagraphs:part.paragraphIndices,subentryQualifier:part.qualifier}: {})};
         const pair=tableUncertainty(cell,cellUnit,cellHeader);
         if(pair&&(pair.parsed||cellUnit)){
           qs.push(unitInheritedHeaderMetadata({
@@ -8259,6 +8356,7 @@ function unitAnalyzeTables(tables){
             space:" ",
             inherited:true,precisionTable
           },cellUnit));
+        }
         }
       }
     }
@@ -8713,7 +8811,7 @@ function engMaskStructuralParagraphs(rawText,records,shouldMask){
     const block=record?.block||record||{},excluded=!!shouldMask(record,index);
     // Match complete converter projections, including native Word scripts.
     // Retained records participate too: equal text does not imply equal roles.
-    for(const value of record?.cleanupProjections||[record?.text,block.text,block.abbrSourceText,block.abbrSymbolText,block.abbrText]){
+    for(const value of record?.cleanupProjections||[record?.text,block.text,block.rawStructuralText,block.abbrSourceText,block.abbrSymbolText,block.abbrText]){
       const phrase=String(value||"").replace(/\r\n?/g,"\n").replace(/[^\S\n]+/g," ").trim();
       if(!phrase) continue;
       if(!projections.has(phrase)) projections.set(phrase,new Map());
@@ -8787,6 +8885,20 @@ function engIsWordStructuralExclusion(block){
   return !proseHeading;
 }
 
+// These are narrative clauses, even when a conversion splits the sentence
+// before its final punctuation. Explicit Word heading roles remain authoritative.
+function engHeadingContainsNarrative(text){
+  const s=String(text||"").normalize("NFKC").replace(/\s+/g," ").trim();
+  const authorClause=/\b[A-Z][\p{L}'’-]+\s+(?:et\s+al\.?|and\s+(?:co[- ]?workers|colleagues))\s+(?:reported|used|found|showed|observed|demonstrated|developed|prepared|obtained|synthesi[sz]ed|measured|investigated)\b/u;
+  if(authorClause.test(s)) return true;
+  // A sentence-ending chemical token may be followed by a superscript citation
+  // flattened against the period, then the start of the next narrative clause.
+  if(/[.!?](?:\s*\d{1,4}(?:[–—,-]\d{1,4})*)?\s+(?:By|After|Before)\s+[a-z]+ing\b/u.test(s)) return true;
+  // A measured value followed by a new sentence is not a section number.
+  const quantity=s.match(/^\d+(?:\.\d+)?\s+([A-Za-zµμΩ]+)\.\s+[A-Z]/);
+  return !!(quantity && unitParseComponent(quantity[1]));
+}
+
 function engLooksHeadingForScan(line){
   const s=String(line||"").replace(/\s+/g," ").trim();
   if(!s || s.length>180) return false;
@@ -8801,6 +8913,7 @@ function engLooksHeadingForScan(line){
   if(/^(?:abstract|keywords?|key\s+words?|index\s+terms?|highlights?|graphical\s+abstract|introduction|background|literature\s+review|materials?\s+and\s+methods?|methodology|methods?|experimental(?:\s+(?:section|analysis))?|results?|discussion|results?\s+and\s+discussion|conclusions?|summary|recommendations?|acknowledg(?:e)?ments?|funding|data\s+availability|author\s+contributions?|conflicts?\s+of\s+interest|competing\s+interests?|declarations?|supplementary\s+(?:material|materials|information)|supporting\s+information|appendix|appendices|nomenclature)\s*:?\s*$/i.test(s))
     return true;
 
+  if(engHeadingContainsNarrative(s)) return false;
   if(/^\d+(?:\.\d+){0,4}\.?\s+\S+/.test(s) && s.split(/\s+/).length<=22) return true;
   if(/^[A-Z0-9][A-Z0-9 ,;:/&()\-–—]+$/.test(s) && s.split(/\s+/).length<=18) return true;
 
@@ -9127,14 +9240,52 @@ function engLooksLikeCaptionContinuation(text){
   return false;
 }
 
+// Administrative appendices have explicit source scope. This does not discard
+// arbitrary text merely because it follows a bibliography.
+function mcAdministrativeParagraphInfo(blocks){
+  const src=Array.isArray(blocks)?blocks:[],mask=new Set(),norm=b=>engNormStructuralText(b?.text||"");
+  const resume=/^(?:curriculum\s+vitae|c\.?\s*v\.?|biographical\s+sketch|author(?:'s|’s)?\s+biograph(?:y|ies))\s*:?$/i;
+  const publications=/^(?:(?:list\s+of|author(?:'s|’s)?)\s+)?publications\s*:?$/i;
+  const resumeSection=/^(?:research\s+interests?|education(?:\s+and\s+work\s+experi[ae]nce)?|work\s+experience|employment|responsibilities\s+served|awards?(?:\s+and\s+honou?rs?)?|honou?rs?|achievements?|professional\s+memberships?|journal\s+publications?.*|book\s+chapter\s+contributions?|publications|instrument\s+proficiency|software\s+skills|academic\s+contributions?|references|skills|contact(?:\s+(?:information|details))?|personal\s+(?:information|details))\s*:?$/i;
+  const scientificHeading=s=>/^(?:appendi(?:x|ces)|chapter)\b/i.test(s)||/^(?:(?:\d+(?:\.\d+)*\.?|[A-Z])\s+)?(?:appendi(?:x|ces)|chapter\b|abstract|introduction|materials?(?:\s+and\s+methods?)?|methods?|methodology|experimental(?:\s+.*)?|results?(?:\s+and\s+discussion)?|discussion|conclusions?|supporting\s+information|supplementary\s+(?:information|materials?))\s*(?::|$)/i.test(s);
+  let active="",bibliographySeen=false;
+  src.forEach((b,i)=>{
+    const s=norm(b);
+    if(isReferenceHeading(s)&&src.slice(i+1,i+10).filter(x=>refHasEntryEvidence(norm(x))).length>=2)bibliographySeen=true;
+    if(resume.test(s)){
+      const next=src.slice(i+1,i+30).map(norm).join("\n");
+      const evidence=[/\b(?:email|e-mail|contact)\s*[:.]/i,/\b(?:education|work\s+experience|research\s+scholar|professor|researcher)\b/i,/\b(?:Ph\.?D\.?|bachelor|master|university|institute)\b/i].filter(re=>re.test(next)).length;
+      if(evidence>=2)active="resume";
+    }else if(publications.test(s)&&src.slice(i+1,i+10).filter(x=>refHasEntryEvidence(norm(x))).length>=2&&
+      (active==="resume"||bibliographySeen&&(/^(?:list\s+of|author)/i.test(s)||src.slice(i+1,i+4).some(x=>/^(?:journal\s+)?publications?\s+(?:from|arising\s+from)\s+(?:Ph\.?D\.?|doctoral|thesis|collaborative\s+research)/i.test(norm(x))))))active="publications";
+    else if(active&&scientificHeading(s))active="";
+    else if(active&&s&&(b.outlineLvl!=null||/^(?:heading|title)/i.test(b.style||""))&&!resumeSection.test(s))active="";
+    if(active){mask.add(i);return;}
+    const disclaimer=/^(?:disclaimer\s*\/\s*)?publisher[’']?s\s+note\s*:/i.test(s)&&/\b(?:opinions?|statements?)\b/i.test(s)&&/\b(?:authors?|contributors?|editors?)\b/i.test(s);
+    const supportingFile=/^(?:supporting|supplementary)\s+files?\s*:\s*\S+\.(?:docx?|pdf|xlsx?|zip|txt|csv)(?:[.;]|\s*)$/i.test(s);
+    const preceding=src.slice(0,i).findLast(x=>norm(x));
+    const supportingNotice=/^(?:additional\s+)?(?:supporting|supplementary)\s+(?:information|materials?|data)\s+(?:is|are|can\s+be)\s+(?:available|found|provided)\s+online(?:\s+in\s+(?:the\s+)?(?:supporting|supplementary)\s+(?:information|materials?|data)\s+section)?[.!]?$/i.test(s)&&
+      /^(?:supporting|supplementary)\s+(?:information|materials?|data)\s*:?$/i.test(norm(preceding));
+    if(disclaimer||supportingFile||supportingNotice)mask.add(i);
+  });
+  return mask;
+}
+function mcExcludeAdministrativeMaterial(text){
+  const records=DOCX_FTE_BLOCKS||[],mask=mcAdministrativeParagraphInfo(records);
+  return mask.size?engMaskStructuralParagraphs(text,records,(_r,i)=>mask.has(i)):String(text||"");
+}
+
 function engClassifyStructuralBlocks(blocks){
   const src=Array.isArray(blocks)?blocks:[];
   const out=src.map((b,i)=>({index:i,block:b,text:engNormStructuralText(b?.text||""),type:"BODY_PROSE",confidence:0.5,reasons:[]}));
 
   // First pass: strong intrinsic classifications.
+  const administrative=mcAdministrativeParagraphInfo(src);
   out.forEach((r,i)=>{
     const b=r.block, s=r.text;
     if(!b){ r.type="OTHER_STRUCTURAL"; r.confidence=1; return; }
+    if(administrative.has(i)){r.type="OTHER_STRUCTURAL";r.confidence=1;r.reasons.push("source-owned administrative content");return;}
+    if(/^TableOfContentText$/i.test(b.style||"")&&src.slice(Math.max(0,i-6),i).some(x=>/^Entry for the Table of Contents$/i.test(engNormStructuralText(x.text)))){r.writingGraphicalAbstract=true;r.confidence=1;r.reasons.push("Word graphical abstract entry");return;}
     if(b.wordContentRole){ r.type=b.wordContentRole==="index"?"STRUCTURED_INDEX":"OTHER_STRUCTURAL"; r.confidence=1; r.reasons.push("Word content-control role"); return; }
     if(b.type==="table"){ r.type=b.isEquationLayout?"EQUATION":"TABLE"; r.confidence=1; r.reasons.push("Word table structure"); return; }
     if(b.type!=="p"){ r.type="OTHER_STRUCTURAL"; r.confidence=1; return; }
@@ -9380,7 +9531,7 @@ function engExcludeNonBodyMaterial(text){
       return {...r,writingWholeEquation:true,cleanupProjections:[r.text,b.text,b.abbrSourceText,b.abbrSymbolText,...matches]};
     });
     body=engMaskStructuralParagraphs(body,records,r=>
-      engIsStructuralProseExcludedType(r.type)||r.writingWholeEquation);
+      engIsStructuralProseExcludedType(r.type)||r.writingWholeEquation||r.writingGraphicalAbstract);
   }catch(e){}
 
   let lines=body.split(/\n/);
@@ -9437,6 +9588,24 @@ function engIsPlacementMarker(text){
   return !!(m && engIsStandaloneCaptionParagraph(m[1]));
 }
 
+// A crystal index needs an immediate grammatical role or a connected list
+// with that role. Nearby crystallographic prose does not protect a citation.
+function engIsCrystallographicIndex(text,index,length){
+  const s=String(text||""),token=/\([−-]?\d{1,3}(?:\s+[−-]?\d{1,2}){0,3}\)/g;
+  const spans=[...s.matchAll(token)],at=spans.findIndex(m=>m.index===index&&m[0].length===length);
+  if(at<0)return false;
+  let first=at,last=at;
+  const connector=/^\s*(?:[,;]\s*)?(?:(?:and|or)\s*)?$/;
+  while(first>0&&connector.test(s.slice(spans[first-1].index+spans[first-1][0].length,spans[first].index)))first--;
+  while(last+1<spans.length&&connector.test(s.slice(spans[last].index+spans[last][0].length,spans[last+1].index)))last++;
+  const left=s.slice(Math.max(0,spans[first].index-180),spans[first].index);
+  const end=spans[last].index+spans[last][0].length,right=s.slice(end,end+100);
+  return /^\s*(?:(?:crystal|crystallographic|lattice|diffraction|interplanar)\s+)?(?:planes?|indices|orientations?|reflections?|facets?|diffraction\s+peaks?|lattice\s+spacing)\b/i.test(right)||
+    /\b(?:Miller\s+indices|crystal(?:lographic)?\s+(?:planes?|indices|orientations?)|(?:indexed|assigned)\s+(?:as|to))\s*:?\s*$/i.test(left)||
+    /\b(?:XRD|diffraction)\b[^.!?\n]{0,120}\b(?:correspond(?:s|ing)?\s+to|typical)\s*(?:the\s*)?$/i.test(left)||
+    first<last&&/^\)/.test(right)&&/\b(?:XRD|diffraction)\b[^.!?\n]{0,100}\b(?:presence|existence)\s+of\s+[A-Za-z][A-Za-z0-9-]*\s*\($/i.test(left);
+}
+
 function engMaskCitations(text){
   const body=String(text||"");
   const blank=m=>m.replace(/[^\n]/g," ");
@@ -9459,7 +9628,7 @@ function engMaskCitations(text){
     const left=body.slice(Math.max(0,index-90),index),right=body.slice(index+m.length,index+m.length+60);
     if(/\b(?:eq(?:uation)?s?\.?|fig(?:ure)?s?\.?|tables?|coordinates?|interval|range|values?|temperatures?|concentrations?|measurements?|ratios?|dimensions?|pH|at|between|from|to|were|was|are|is|n\s*=)\s*$/i.test(left)||/[=±×÷]\s*$/.test(left))return m;
     if(/^\s*(?:%|°|(?:mg|kg|g|mL|L|mM|M|mm|cm|m|s|h|K|Pa|kPa|MPa|eV|V|A|Hz|ppm|ppb)\b)/.test(right))return m;
-    if(m[0]==='(' && (/\b(?:Miller|indices|planes|coordinates?|orientations?)\b/i.test(left+right) || /\(\s*\d+\s*\)\s*(?:,|and|or)\s*$/.test(left) || /^\s*[,;]\s*(?:and\s+)?\(\s*\d/.test(right)))return m;
+    if(m[0]==='(' && engIsCrystallographicIndex(body,index,m.length))return m;
     const nums=raw.match(/\d+/g).map(Number);
     if(m[0]==='(' && (!refs.size||!nums.every(n=>refs.has(n))))return m;
     if(m[0]==='(' && raw.split(/[,;]/).some(part=>{
@@ -9985,11 +10154,15 @@ function engBuildStructuralParagraphSections(classified,start,end){
     if(current.paragraphs.length) sections.push(current);
   };
   let proseNo=0;
+  // The structural path must use the same bounded address ownership as prose
+  // preparation. Addresses can be interleaved with body paragraphs in Word.
+  const affiliations=mcFrontMatterScope(classified.map(r=>clean(r?.text)).join("\n"),true).affiliations;
 
   for(let i=start;i<end;i++){
+    if(affiliations.has(i)) continue;
     const r=classified[i], p=clean(r?.text);
     if(!r || !p) continue;
-    if(engIsPlacementMarker(p) || engIsTableFootnoteRecord(classified,i) || engIsCaptionLegendRecord(classified,i) || engLooksLikeDisplayedEquationRecord(r) || engFollowsEquationIntroduction(classified[i-1]?.text,r) || /^(?:FIGURE_CAPTION|TABLE_CAPTION|SCHEME_CAPTION|OTHER_CAPTION|CAPTION_CONTINUATION|FIGURE_NOTE|TABLE_NOTE|STRUCTURED_INDEX)$/.test(r.type)) continue;
+    if(r.writingGraphicalAbstract || engIsPlacementMarker(p) || engIsTableFootnoteRecord(classified,i) || engIsCaptionLegendRecord(classified,i) || engLooksLikeDisplayedEquationRecord(r) || engFollowsEquationIntroduction(classified[i-1]?.text,r) || /^(?:FIGURE_CAPTION|TABLE_CAPTION|SCHEME_CAPTION|OTHER_CAPTION|CAPTION_CONTINUATION|FIGURE_NOTE|TABLE_NOTE|STRUCTURED_INDEX)$/.test(r.type)) continue;
     if(r.type==="HEADING" || (r.block?.type==="p" && engIsHeadingLike(p))){
       finish();
       current={
@@ -10221,8 +10394,37 @@ function engJoinQuantitativeSentenceContinuations(text){
   return out;
 }
 
+// Join only source-proven adjacent body records with an incomplete local
+// phrase. Equal-length spaces preserve report offsets, including blank breaks.
+function engJoinSourceSentenceContinuations(text){
+  const records=DOCX_STRUCTURAL_PARAGRAPHS||[],pairs=new Set();
+  const key=s=>engNormStructuralText(engMaskCitations(s));
+  for(let i=1;i<records.length;i++){
+    const a=records[i-1],b=records[i],left=a.text||"",right=b.text||"";
+    if(a.type!=="BODY_PROSE"||b.type!=="BODY_PROSE"||a.writingGraphicalAbstract||b.writingGraphicalAbstract||a.block?.type!=="p"||b.block?.type!=="p"||
+       a.block.hasNumbering||b.block.hasNumbering||a.block.sectionBreakAfter||b.block.pageBreakBefore||/[.!?]["'”’)]?$/.test(left))continue;
+    const splitUnit=/\d(?:\.\d+)?$/.test(left)&&/^(?:[munpµμkM]?[smgLAWV]|min|mol|Pa|Hz)(?:[−⁻-]?[¹²³\d]+)?(?:[\/·][A-Za-zµμ]+(?:[−⁻-]?[¹²³\d]+)?)?(?=[\s),;])/u.test(right);
+    const compound=/\b(?:sodium|potassium|calcium|magnesium|ammonium|lithium|barium|iron|copper|zinc)$/i.test(left)&&/^[a-z][a-z-]+\s*\([A-Za-z][A-Za-z0-9+−-]{1,20}[,)]/.test(right);
+    const appositive=/[a-z]$/i.test(left)&&/^\([A-Z][A-Za-z0-9+−-]{1,20},\s+(?:a|an|the)\s+/i.test(right);
+    const dimension=/\b(?:size|diameter|thickness|length|width|height|spacing|distance)$/i.test(left)&&/^with\s+(?:an?|the)\s+(?:diameter|thickness|length|width|height|size)\s+(?:ranging\s+from|of|between)\s+[\d.]/i.test(right);
+    if(splitUnit||compound||appositive||dimension){
+      const aKey=key(left),bKey=key(right);
+      if(records.filter(r=>r.text===left).length===1&&records.filter(r=>r.text===right).length===1)pairs.add(aKey+"\u0000"+bKey);
+    }
+  }
+  if(!pairs.size)return String(text||"");
+  const s=String(text||""),lines=[...s.matchAll(/[^\n]+/g)].filter(m=>m[0].trim()),ranges=[],keys=lines.map(m=>key(m[0])),counts=new Map();
+  keys.forEach(k=>counts.set(k,(counts.get(k)||0)+1));
+  for(let i=1;i<lines.length;i++){
+    const a=lines[i-1],b=lines[i],start=a.index+a[0].length;
+    if(counts.get(keys[i-1])===1&&counts.get(keys[i])===1&&pairs.has(keys[i-1]+"\u0000"+keys[i])&&/^\s*$/.test(s.slice(start,b.index)))ranges.push([start,b.index]);
+  }
+  let out=s;for(const [start,end] of ranges.reverse())out=out.slice(0,start)+out.slice(start,end).replace(/\n/g," ")+out.slice(end);
+  return out;
+}
+
 function engReadableSentences(text){
-  const body=engJoinQuantitativeSentenceContinuations(text);
+  const body=engJoinQuantitativeSentenceContinuations(engJoinSourceSentenceContinuations(text));
   const out=[];
   let cursor=0;
 
@@ -11604,7 +11806,9 @@ function abbrParentheticalNotDefinition(inner){
   const idList=s.match(/\b[A-Z]{1,10}\d+[A-Z0-9-]*\b/g)||[];
   if(idList.length>=2) return true;
 
-  if(ABBR_CORP_SUFFIX_RE && ABBR_CORP_SUFFIX_RE.test(s)) return true;
+  // A legal suffix closes a company name. Scientific modifiers such as
+  // hydrochar-incorporated must not veto the lexical phrase that follows.
+  if(ABBR_CORP_SUFFIX_RE && new RegExp(ABBR_CORP_SUFFIX_RE.source+'\\s*[.,]?\\s*$','i').test(s)) return true;
   if(ABBR_COUNTRY_HINT_RE && ABBR_COUNTRY_HINT_RE.test(s) && /,/.test(s)) return true;
   return false;
 }
@@ -12150,7 +12354,6 @@ function abbrStripPublisherBoilerplateLine(line){
 /* Remove the references / bibliography section */
 function excludeReferences(text,enabled){
   if(!enabled) return {text,excluded:false};
-  if(abbrLooksReferencesOnlyDocument(text)) return {text:"",excluded:true,referencesOnly:true};
 
   /*
     Use the SAME publisher-independent reference-section detector as the
@@ -12165,53 +12368,14 @@ function excludeReferences(text,enabled){
   try{
     const split=refSplitManuscript(text);
     if(split && split.found){
-      return {text:split.body, excluded:true};
+      if(abbrLooksReferencesOnlyDocument(text)) return {text:"",excluded:true,referencesOnly:true};
+      return {text:mcExcludeAdministrativeMaterial(split.body), excluded:true};
     }
   }catch(err){
-    // Keep conservative legacy fallbacks below if structural detection fails.
+    // Preserve source text when the shared detector cannot establish a boundary.
   }
 
-  // Legacy fallback A: exact heading on its own line.
-  const lines=text.split(/\n/);
-  const headRe=/^\s*(\d+(?:\.\d+)*\.?\s*)?(references?|reference list|bibliography|literature cited|literature references|references cited|cited literature|works cited|notes\s+and\s+references|references\s+and\s+notes)\s*:?\s*$/i;
-  for(let i=Math.floor(lines.length*0.25);i<lines.length;i++){
-    if(headRe.test(lines[i]) || isReferenceHeading(lines[i])){
-      return {text:lines.slice(0,i).join("\n"),excluded:true};
-    }
-  }
-
-  // Legacy fallback B: reference-heading phrase in the latter part immediately
-  // followed by a plausible first reference.
-  const reHead=/\b(references?|bibliography|literature cited|literature references|references cited|cited literature|works cited|reference list|notes and references|references and notes)\b\s*:?\s*/ig;
-  let hm,lastHead=null;
-  while((hm=reHead.exec(text))!==null){
-    if(hm.index>text.length*0.35) lastHead=hm;
-  }
-  if(lastHead){
-    const after=text.slice(lastHead.index+lastHead[0].length,lastHead.index+lastHead[0].length+100);
-    if(/^\s*(?:\[\s*\d+\s*\]|\(\s*\d+\s*\)|\d{1,4}[.)]\s+|[\p{Lu}][\p{L}'’.\-]+(?:,\s*|\s+)[\p{Lu}])/u.test(after)){
-      return {text:text.slice(0,lastHead.index),excluded:true};
-    }
-  }
-
-  // Legacy fallback C: dense final numeric bibliography block.
-  const marks=[...text.matchAll(/\[\d{1,4}\]/g)];
-  if(marks.length>=4){
-    let start=marks[marks.length-1].index;
-    for(let k=marks.length-1;k>0;k--){
-      if(marks[k].index-marks[k-1].index<=700) start=marks[k-1].index;
-      else break;
-    }
-    const region=text.slice(start);
-    const size=marks.filter(x=>x.index>=start).length;
-    const looksRef=/doi\.org|\bdoi\b|et al\.?|\(\d{4}\)|\b(?:19|20)\d{2}\b/i.test(region);
-    if(size>=4 && looksRef && start>text.length*0.30 &&
-       marks[marks.length-1].index>text.length*0.70){
-      return {text:text.slice(0,start),excluded:true};
-    }
-  }
-
-  return {text,excluded:false};
+  return {text:mcExcludeAdministrativeMaterial(text),excluded:false};
 }
 
 /* Remove tabular data blocks (numeric rows and their header line) */
@@ -12270,6 +12434,8 @@ function stripHeadings(text){
     // Common manuscript section labels, numbered or unnumbered.
     if(/^(?:\d+(?:\.\d+){0,5}\.?\s+)?(?:abstract|introduction|background|literature\s+review|materials?\s+and\s+methods?|methodology|methods?|experimental(?:\s+section)?|results?|discussion|results?\s+and\s+discussion|conclusions?|summary|recommendations?|acknowledg(?:e)?ments?|funding|data\s+availability|author\s+contributions?|conflicts?\s+of\s+interest|competing\s+interests?|declarations?|supplementary\s+(?:material|materials|information)|supporting\s+information|appendix|appendices|nomenclature|references?)\s*:?\s*$/i.test(l))
       return true;
+
+    if(engHeadingContainsNarrative(l)) return false;
 
     // Numbered headings such as:
     // 2 NON-ORDINARY STATE BASED (NOSB) PERIDYNAMIC FRAMEWORK
@@ -14792,7 +14958,11 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
         warnings.push({abbr:disp, msg:`An apostrophe appears to be used to form a plural ("${disp}'s"). Use "${disp}s" for the plural. Possessive forms such as "${disp}’s performance" are valid and are not flagged.`, snip:null});
       }
 
-      const initOcc=g.occ.filter(o=>o.initial);
+      // A validated inventory entry is a declaration, not a sentence opening.
+      // Match this occurrence exactly; later prose uses still receive the warning.
+      const initOcc=g.occ.filter(o=>o.initial && !orderedDefs.some(d=>
+        d.definitionRole==='list_style_definition' && d.validatedDefinition===true &&
+        d.sent===o.sent && d.shortStart===o.index && d.shortEnd===o.index+o.raw.length));
       if(!std && initOcc.length && !scientificDefinition){
         if(status==="ok") status="warn";
         warnings.push({abbr:disp, msg:`Begins a sentence. Rephrase so a sentence does not open with an abbreviation.`, snip:buildSnippet(sentences[initOcc[0].sent]||"", disp)});
@@ -14805,27 +14975,43 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
       // conflict against the main-text definition.
       const listDefIsLocalLegend=!!listDef && /inline abbreviation key|table legend/i.test(String(listDef.section||"")+" "+String(listDef.location||""));
       if(!std && listDef && defined && !listDefIsLocalLegend){
-        const conflictingDefs=orderedDefs.filter(d=>
-          String(d?.long||"").trim() &&
-          !abbrDefinitionsEquivalent(listDef.long,d.long,disp)
-        );
-        if(conflictingDefs.length){
-          status="err";
-          const proseForms=[...new Set(conflictingDefs.map(d=>String(d.long||"").trim()).filter(Boolean))];
+        const conflictingDefs=orderedDefs.filter(d=>{
+          const scope=sentenceDefinitionScope[d.sent]||'main';
+          const aliases=[...groups.values()].flatMap(x=>x.defs).filter(a=>
+            a.form!==disp && a.definitionType==='conventional_acronym' &&
+            (sentenceDefinitionScope[a.sent]||'main')===scope);
+          return String(d?.long||"").trim() &&
+            abbrDefinitionMeaningGroups([{long:listDef.long},d],disp,aliases).length>1;
+        });
+        const wordingReviews=conflictingDefs.filter(d=>{
+          const scope=sentenceDefinitionScope[d.sent]||'main';
+          const aliases=[...groups.values()].flatMap(x=>x.defs).filter(a=>
+            a.form!==disp && a.definitionType==='conventional_acronym' &&
+            (sentenceDefinitionScope[a.sent]||'main')===scope);
+          return abbrCompositeWordingNeedsReview([{long:listDef.long},d],disp,aliases);
+        });
+        for(const [definitions,wordingReview] of [[conflictingDefs.filter(d=>!wordingReviews.includes(d)),false],[wordingReviews,true]]){
+          if(!definitions.length) continue;
+          if(!wordingReview) status="err";
+          else if(status==="ok") status="warn";
+          const proseForms=[...new Set(definitions.map(d=>String(d.long||"").trim()).filter(Boolean))];
           const contexts=[];
           const listCtx=abbrListDeclarationContext(listDef,disp);
           if(listCtx) contexts.push(listCtx);
-          conflictingDefs.forEach((d,idx)=>{
+          definitions.forEach((d,idx)=>{
             const h=buildSnippet(sentences[d.sent]||"",d.form||disp);
             if(h) contexts.push({label:`Prose definition ${idx+1}`,sentenceIndex:d.sent,html:h});
           });
-          errors.push({
+          (wordingReview?warnings:errors).push({
             abbr:disp,
-            msg:`Conflicting definitions. The abbreviation list defines ${disp} as "${listDef.long}", while eligible prose defines it as ${proseForms.slice(0,3).map(x=>`"${x}"`).join("; ")}. Use one correct full form consistently.`,
+            msg:wordingReview
+              ?`Check the wording for ${disp}. The abbreviation list gives "${listDef.long}", while the text gives ${proseForms.slice(0,3).map(x=>`"${x}"`).join("; ")}. Confirm that these describe the same material and make the wording consistent if they do.`
+              :`Conflicting definitions. The abbreviation list defines ${disp} as "${listDef.long}", while eligible prose defines it as ${proseForms.slice(0,3).map(x=>`"${x}"`).join("; ")}. Use one correct full form consistently.`,
             snip:contexts[0]?.html||snippet,
             contexts,
             semanticConflict:true,
-            ...(MC_ABBR_CONFIRMED_LOCAL_SCOPE?.id?{listConflictSourcePairs:conflictingDefs.map(d=>abbrListConflictSourceKey(
+            ...(wordingReview?{materialTerminologyReview:true}:{}),
+            ...(MC_ABBR_CONFIRMED_LOCAL_SCOPE?.id?{listConflictSourcePairs:definitions.map(d=>abbrListConflictSourceKey(
               listDef,disp,MC_ABBR_CONFIRMED_LOCAL_SCOPE,sentences[d.sent],d.shortStart,d.long,d.sent)).filter(Boolean)}:{})
           });
         }
@@ -14849,9 +15035,9 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
           if(orderedScopeDefs.length<2) return;
 
           const label=scope==="abstract"?"the Abstract":scope==="unresolved"?"text whose section is unclear":"the main text";
-          const nestedAliases=abbrLooksExplicitMixedCaseAcronym(disp)?[...groups.values()].flatMap(x=>x.defs).filter(d=>
+          const nestedAliases=[...groups.values()].flatMap(x=>x.defs).filter(d=>
             d.form!==disp && d.definitionType==='conventional_acronym' &&
-            (sentenceDefinitionScope[d.sent]||'main')===scope):[];
+            (sentenceDefinitionScope[d.sent]||'main')===scope);
           const meaningGroups=abbrDefinitionMeaningGroups(orderedScopeDefs,disp,nestedAliases);
           const definitionContexts=orderedScopeDefs.map((d,idx)=>({
             label:`Definition ${idx+1}`,
@@ -14861,7 +15047,8 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
             html:buildSnippet(sentences[d.sent]||"",d.form||disp)
           })).filter(x=>x.html);
 
-          const terminologyReview=meaningGroups.length>1&&abbrScientificTerminologyNeedsReview(orderedScopeDefs,disp,sentences);
+          const materialReview=meaningGroups.length>1&&abbrCompositeWordingNeedsReview(orderedScopeDefs,disp,nestedAliases);
+          const terminologyReview=meaningGroups.length>1&&(materialReview||abbrScientificTerminologyNeedsReview(orderedScopeDefs,disp,sentences));
           if(!terminologyReview&&(scope!=="unresolved" || meaningGroups.length>1)) status="err";
           else if(status==="ok") status="warn";
 
@@ -14870,12 +15057,15 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
             (terminologyReview?warnings:errors).push({
               abbr:disp,
               msg:terminologyReview
-                ?`${disp} has different descriptions in ${label}: ${forms.slice(0,3).map(x=>`"${x}"`).join("; ")}. Check that they mean the same quantity and use consistent wording if they do.`
+                ?(materialReview
+                  ?`${disp} has different descriptions in ${label}: ${forms.slice(0,3).map(x=>`"${x}"`).join("; ")}. Confirm that these describe the same material and make the wording consistent if they do.`
+                  :`${disp} has different descriptions in ${label}: ${forms.slice(0,3).map(x=>`"${x}"`).join("; ")}. Check that they mean the same quantity and use consistent wording if they do.`)
                 :`Conflicting definitions. ${disp} is defined with materially different full forms in ${label}: ${forms.slice(0,3).map(x=>`"${x}"`).join("; ")}. Use one correct full form consistently.`,
               snip:definitionContexts[0]?.html||buildSnippet(sentences[orderedScopeDefs[0].sent]||"",disp),
               contexts:definitionContexts,
               semanticConflict:true,
               ...(terminologyReview?{scientificTerminologyReview:true}:{}),
+              ...(materialReview?{materialTerminologyReview:true}:{}),
               definitionScope:scope
             });
           }else{
@@ -16356,8 +16546,8 @@ function abbrDefinitionsEquivalent(a,b,abbr=""){
   return false;
 }
 
-function abbrDefinitionMeaningGroups(defs,abbr="",aliases=[]){
-  const expand=value=>String(value||'').replace(/\b[A-Za-z][A-Za-z0-9-]{1,20}\b/g,token=>{
+function abbrExpandValidatedDefinitionAliases(value,aliases=[]){
+  return String(value||'').replace(/\b[A-Za-z][A-Za-z0-9-]{1,20}\b/g,token=>{
     // Compare a locally defined nested alias without changing source wording
     // or borrowing a definition from another scope. Ambiguous aliases and
     // chemical formulae cannot establish equivalence.
@@ -16368,6 +16558,9 @@ function abbrDefinitionMeaningGroups(defs,abbr="",aliases=[]){
     if(words.some(word=>aliases.some(d=>d.form===word)))return token;
     return ds[0].long;
   });
+}
+function abbrDefinitionMeaningGroups(defs,abbr="",aliases=[]){
+  const expand=value=>abbrExpandValidatedDefinitionAliases(value,aliases);
   const groups=[];
   (defs||[]).forEach(d=>{
     const long=String(d?.long||"").trim();
@@ -16382,6 +16575,24 @@ function abbrDefinitionMeaningGroups(defs,abbr="",aliases=[]){
   return groups;
 }
 
+function abbrCompositeWordingNeedsReview(defs,form,aliases=[]){
+  // This is uncertainty, not equivalence: retain both author-written forms.
+  // Only one modified/incorporated relation may differ after resolving a
+  // validated local component alias. Every chemical/material qualifier stays.
+  if(!/^[A-Z]{2,}(?:-[A-Z]{2,})+$/.test(form)||defs.length<2)return false;
+  const phrases=defs.map(d=>{
+    const raw=String(d.long||''),expanded=abbrExpandValidatedDefinitionAliases(raw,aliases);
+    const text=abbrNormalizeDefinitionFullForm(expanded,form);
+    const relations=text.match(/\b(?:modified|incorporated)\b/g)||[];
+    const tail=text.match(/\s+(membrane|composite|electrode|film|matrix|material)$/);
+    return {expanded:expanded!==raw,relations,tail:tail?.[1]||'',
+      core:text.replace(/\b(?:modified|incorporated)\b/,'<relation>').replace(/\s+(?:membrane|composite|electrode|film|matrix|material)$/,'')};
+  });
+  if(!phrases.some(p=>p.expanded)||phrases.some(p=>p.relations.length!==1||p.core.split(' ').length<4))return false;
+  if(new Set(phrases.map(p=>p.relations[0])).size!==2)return false;
+  const tails=new Set(phrases.map(p=>p.tail).filter(Boolean));
+  return tails.size<=1&&phrases.every(p=>p.core===phrases[0].core);
+}
 function abbrScientificTerminologyNeedsReview(defs,form,sentences=[]){
   // Similar scientific descriptions are not proof of conflicting meanings.
   // Keep them visible for author review; unrelated quantity descriptions and
@@ -17457,7 +17668,8 @@ async function extractDocxEnglishText(buf){
       if(inTextBox){
         const stamp=clean([...node.getElementsByTagNameNS(W,"t"),...node.getElementsByTagNameNS(FTE_A_NS,"t")].map(x=>x.textContent||"").join(""));
         if(/^(?:[\d, ]+)?Downloaded\s+from\s+https?:\/\//i.test(stamp)&&/\bterms\s+and\s+conditions\b/i.test(stamp)&&
-          /\b(?:Online\s+Library|publisher|journal)\b/i.test(stamp)&&/\b(?:license|licence)\s*[.!]?$/i.test(stamp))return "\n";
+          /\b(?:Online\s+Library|publisher|journal)\b/i.test(stamp)&&/\b(?:license|licence)\s*[.!]?$/i.test(stamp) ||
+          /^Published\s+on\s+\d{1,2}\s+[A-Za-z]+\s+\d{4}\s+Licen[cs]e\s+and\s+permissions[.!]?$/i.test(stamp))return "\n";
       }
     }
 
@@ -19293,7 +19505,9 @@ function extractNumericTable(tbl,index){
       while(r+height<htmlRows.length&&htmlRows[r+height].parentElement===tr.parentElement&&(rowSpan===0||height<rowSpan))height++;
       const content=td.querySelector("table")?td.cloneNode(true):td;
       if(content!==td)content.querySelectorAll("table").forEach(t=>t.remove());
-      const raw=(content.textContent||"").replace(/\s+/g," ").trim();
+      const paragraphTexts=[...content.querySelectorAll("p")].map(p=>(p.textContent||"").replace(/\s+/g," ").trim()).filter(Boolean);
+      const ownsParagraphs=paragraphTexts.length>1&&paragraphTexts.join("").replace(/\s+/g,"")===(content.textContent||"").replace(/\s+/g,"");
+      const raw=(ownsParagraphs?paragraphTexts.join(" "):(content.textContent||"")).replace(/\s+/g," ").trim();
       const text=typeof numberTextWithoutCitationMarkers==="function"?numberTextWithoutCitationMarkers(raw).replace(/\s+/g," ").trim():raw;
       // Mammoth often emits Word headings as bold TDs rather than THs.
       // A bold bullet or one emphasized word is not a bold cell heading.
@@ -19303,7 +19517,7 @@ function extractNumericTable(tbl,index){
         unbold.querySelectorAll("strong,b").forEach(el=>el.remove());
         bold=!/[\p{L}\p{N}]/u.test(unbold.textContent||"");
       }
-      const cell={text,row:r,col:c,width,bold};
+      const cell={text,row:r,col:c,width,bold,paragraphs:ownsParagraphs?paragraphTexts.map(p=>numberTextWithoutCitationMarkers(p)):null};
       for(let y=r;y<r+height;y++)for(let x=c;x<c+width;x++){
         if(grid[y][x])cell.ambiguous=grid[y][x].ambiguous=true;
         else grid[y][x]=cell;
@@ -19313,6 +19527,7 @@ function extractNumericTable(tbl,index){
   });
   const width=Math.max(0,...grid.map(row=>row.length));
   const table={index,rows:grid.map(row=>Array.from({length:width},(_,c)=>row[c]?.text||""))};
+  table.cellParagraphs=grid.map(row=>Array.from({length:width},(_,c)=>row[c]?.paragraphs||null));
   table.reportSourceRows=grid.map((row,r)=>[...new Set(row)].filter(cell=>cell?.row===r).map(cell=>cell.text));
   table.headerFlags=htmlRows.map((tr,r)=>tr.parentElement.tagName==="THEAD"||(htmlCells[r].length>0&&htmlCells[r].every(td=>td.tagName==="TH")));
   table.headerHints=grid.map((row,r)=>{
@@ -20598,9 +20813,34 @@ function inferDoiConvention(parsed){
 }
 
 /* ---- Publication-year detection anchored to bibliographic structure ---- */
+function refQuotedTitleSpans(text){
+  const s=String(text||'');
+  const spans=[...s.matchAll(/"[^"\n]{2,700}"|“[^”\n]{2,700}”|(?:^|(?<=[\s,.;:]))'(?:[^'\n]|(?<=\p{L})'(?=\p{L})|(?<=[sS])'(?=\s+\p{L})){2,700}'(?=\s*[,.;:]|\s+[\p{L}\[]|$)|‘(?:[^’\n]|(?<=\p{L})’(?=\p{L})|(?<=[sS])’(?=\s+\p{L})){2,700}’(?=\s*[,.;:]|\s+[\p{L}\[]|$)/gu)].filter(m=>/\p{L}/u.test(m[0]));
+  for(const m of spans){
+    if(!/^[‘']/.test(m[0]))continue;
+    // A title ending in s can be followed by a possessive journal name. Resolve
+    // that earlier closing quote from the written container and publication tail.
+    const close=m[0][0]==='‘'?'’':"'";
+    for(let i=3;i<m[0].length-1;i++){
+      if(m[0][i]!==close || !/\s/u.test(m[0][i+1]))continue;
+      const tail=s.slice(m.index+i+1),boundary=tail.search(/\s*[,;]\s*(?:vol(?:ume)?\.?\s*)?\d|\s+\d{1,6}\b/iu);
+      const source=refCleanField(boundary<0?tail:tail.slice(0,boundary));
+      if(!/^[\p{L}][\p{L} .&'’:-]{1,160}$/u.test(source) || /['’]$/.test(source) || /['‘’"“”]/u.test(boundary<0?'':tail.slice(boundary)))continue;
+      if(journalDbMatch(source,true).matched || /\b(?:Journal|Review|Bulletin|Transactions|Proceedings|Annals|Archives)\b/u.test(source)){
+        m[0]=m[0].slice(0,i+1);break;
+      }
+    }
+  }
+  return spans;
+}
 function refMaskQuotedTitleText(text){
-  return String(text||'').replace(/"[^"\n]{4,700}"|“[^”\n]{4,700}”|(?:^|(?<=[\s,.;:]))'(?:[^'\n]|'(?=\p{L})){4,700}'(?=\s*[,.;:]|$)|‘(?:[^’\n]|’(?=\p{L})){4,700}’/gu,
-    span=>/\p{L}/u.test(span)?' '.repeat(span.length):span);
+  let s=String(text||'');
+  for(const m of refQuotedTitleSpans(s))s=s.slice(0,m.index)+' '.repeat(m[0].length)+s.slice(m.index+m[0].length);
+  return s;
+}
+function refLeadingQuotedTitle(text){
+  const s=String(text||''),m=refQuotedTitleSpans(s)[0];
+  return m && /^[\s,.;:]*$/.test(s.slice(0,m.index)) ? [m[0],m[0].slice(1,-1),s.slice(m.index+m[0].length).replace(/^\s*[,.;:]?\s*/,'')] : null;
 }
 // Access/retrieval dates describe consulting a source, not publishing it. Mask
 // only explicitly labelled date clauses, preserving offsets and the written URL.
@@ -21041,10 +21281,9 @@ function refNJStrongJournalEvidence(raw, authorInfo){
 }
 
 function refExplicitMagazineLabel(raw){
-  const s=refStripDoiUrl(refMaskAccessDates(raw));
+  const s=refMaskQuotedTitleText(refStripDoiUrl(refMaskAccessDates(raw)));
   for(const m of s.matchAll(/\[\s*magazine(?:\s+article)?\s*\](?=\s*(?:[.,;]|$))/giu)){
-    // A bracketed phrase inside a quoted title is title text, not a type label.
-    if((s.slice(0,m.index).match(/["“”]/g)||[]).length%2===0)return {text:m[0],index:m.index};
+    return {text:m[0],index:m.index};
   }
   return null;
 }
@@ -21340,12 +21579,12 @@ function refParseNonJournalEntry(raw, detection, baseAuthorInfo){
     issuingOrganisation=refNJInstitutionFromTail(rawTrim,corporateAuthor,title);
     sourceRegion=issuingOrganisation;
   } else if(type==='web page'){
-    title=refNJFirstSentenceTitle(rest);
+    title=refNJFirstSentenceTitle(refStripDoiUrl(rest));
     // Webpage/fact-sheet titles can legitimately be a single lexical item, e.g.
     // "Drinking-water". The general title heuristic requires two words, so use
     // this conservative webpage-only fallback.
     if(!title){
-      const one=(rest.match(/^([^.;]{4,160})(?:[.;]|$)/u)||[])[1];
+      const one=(refStripDoiUrl(rest).match(/^([^.;]{4,160})(?:[.;]|$)/u)||[])[1];
       if(one && /^[\p{L}\d][\p{L}\d'’&()/:+\-\s]{3,159}$/u.test(one.trim())) title=one.trim();
     }
     issuingOrganisation=refNJWebsite(rawTrim,corporateAuthor,url,title)||refNJLeadingEntityBeforeYear(rawTrim);
@@ -21382,6 +21621,7 @@ function refParseNonJournalEntry(raw, detection, baseAuthorInfo){
     const segs=noUrl.split(/\s*[.;]\s+/).map(x=>x.trim()).filter(Boolean);
     sourceRegion=segs.length>=2?segs[segs.length-1].replace(/[.,;:]+$/g,'').trim():refNJWebsite(rawTrim,corporateAuthor,url);
     if(type==='magazine article'){
+      const quoted=refLeadingQuotedTitle(rest);if(quoted)title=refCleanField(quoted[1]);
       const fields=refParseStructuredFields(noUrl,ai,'journal article');
       const sourceAt=fields?.source?noUrl.lastIndexOf(fields.source):-1;
       const titleAt=fields?.title?noUrl.indexOf(fields.title):-1;
@@ -21401,7 +21641,9 @@ function refParseNonJournalEntry(raw, detection, baseAuthorInfo){
       // A lone title is not a magazine container. Explicit type declarations
       // also delimit where an independently written container can begin.
       if(sourceRegion&&(refCleanField(sourceRegion)===refCleanField(title)||declaration&&noUrl.lastIndexOf(sourceRegion)<declaration.index+declaration.text.length))sourceRegion=null;
-      title=title?.replace(/\s*\[\s*magazine(?:\s+article)?\s*\]\s*$/iu,'').trim()||null;
+      const titleStart=title?noUrl.indexOf(title):-1;
+      if(declaration && titleStart>=0 && declaration.index>=titleStart && declaration.index+declaration.text.length<=titleStart+title.length)
+        title=(title.slice(0,declaration.index-titleStart)+title.slice(declaration.index-titleStart+declaration.text.length)).trim()||null;
     }
   } else if(type==='legislation/regulation'){
     title=refNJFirstSentenceTitle(rest)||rawTrim.replace(/[.;\s]+$/g,'');
@@ -21435,6 +21677,7 @@ function refApplyNonJournalStates(p,doiConvention,issues,i,label){
   const req=REF_NJ_REQUIREMENTS[p.type]||p.requirements||REF_NJ_REQUIREMENTS['uncertain non-journal'];
   p._authorState=refNJState(p.hasAuthors,req.author);
   p._yearState=refNJState(!!p.year,req.year);
+  if(p.type==='web page' && !refQuotedTitleSpans(p.raw).some(m=>refCleanField(m[0].slice(1,-1))===p.title) && /^(?:\[\s*web\s*page\s*\])?[\s.,;:]*$/iu.test(refStripDoiUrl(p.title||''))){p.title=null;p.hasTitle=false;if(p.structured)p.structured.title=null;}
   p._titleState=refNJState(p.hasTitle,req.title);
   p._sourceState=refNJState(p.hasSource,req.source);
   p._pagesState=refNJState(p.hasPages,req.pages);
@@ -21587,7 +21830,7 @@ function refProtectDoiUrl(raw){
 // Identifiers and complete numeric publication dates cannot supply bibliographic metadata.
 // Blank spans rather than changing the reference text or its character offsets.
 function refNumericMetadataText(raw){
-  return refProtectDoiUrl(raw)
+  return refMaskQuotedTitleText(refProtectDoiUrl(raw))
     .replace(/\bISBN(?:-1[03])?\s*:?\s*(?:97[89][\s-]*)?(?:\d[\s-]*){9}[\dX]\b/giu,m=>" ".repeat(m.length))
     .replace(/\(\s*(?:(?:19|20)\d{2}[a-z]?\s*(?:,|[-/])\s*(\d{1,2})\s*[-/]\s*(\d{1,2})|(\d{1,2})\s*[-/]\s*(\d{1,2})\s*[-/]\s*(?:19|20)\d{2})\s*\)/giu,(m,a,b,c,d)=>{
       const x=+(a||c),y=+(b||d);
@@ -21992,7 +22235,12 @@ function refSourceScore(text, structural=true){
   if(!t || t.length>180 || /10\.\d{4,9}\//i.test(t) || !/\p{L}/u.test(t) || refLocatorOnlySourceShape(t) || /^(?:vol(?:ume)?s?|pp?|pages?|issue|no|number|article)\.?$/i.test(t)) return -99;
   const hasYear=/\b(?:19|20)\d{2}[a-z]?\b/i.test(t);
   const yearAllowedContainer=/\b(?:conference|conf\.?|symposium|symp\.?|proceedings|proc\.?|congress|workshop|meeting|annual|society|transactions|trans\.?|series)\b/i.test(t);
-  if(hasYear && !(structural && yearAllowedContainer)) return -99;
+  // Imported journal names can carry a catalogue-year qualifier, e.g. Science
+  // (1979). Accept only a complete known journal name before the parentheses;
+  // historical years in titles and volume (publication year) tails stay excluded.
+  const journalQualifier=structural && t.match(/^(.+?)\s*\(\s*(?:18|19|20)\d{2}\s*\)$/);
+  const qualifiedJournal=journalQualifier ? journalDbMatch(journalQualifier[1],false) : null;
+  if(hasYear && !(structural && (yearAllowedContainer || qualifiedJournal?.matched))) return -99;
   const words=t.split(/\s+/).filter(Boolean);
   if(!words.length || words.length>14) return -99;
 
@@ -22001,7 +22249,7 @@ function refSourceScore(text, structural=true){
 
   // A confirmed database match is strong source evidence. The database is only
   // a validator/recovery layer; absence from it never makes a source invalid.
-  const dbEvidence=journalDbMatch(t,true);
+  const dbEvidence=qualifiedJournal?.matched ? qualifiedJournal : journalDbMatch(t,true);
   if(dbEvidence.matched) score += dbEvidence.type==="normalized-abbreviation" ? 7 : 11;
 
   const dotted=(t.match(/\b[\p{L}]{1,12}\./gu)||[]).length;
@@ -22094,7 +22342,14 @@ function refKnownJournalPrefix(text){
   return REF_JOURNAL_BOUNDARY_CACHE.get(key);
 }
 
-function refSplitTitleSource(prefix){
+function refTitlePlaceSuffix(title,source){
+  // A comma after a named location can continue the article title. Without a
+  // locator or an established journal name, this boundary needs author review.
+  const candidate=refCleanField(source).replace(/\s+\d{1,6}$/,'');
+  return /^[\p{Lu}][\p{L}’'-]{2,}$/u.test(candidate) && !journalDbMatch(candidate,true).matched && refSourceScore(candidate,true)<10 &&
+    /\b(?:in|at|near|from|across|within)\s+(?:[\p{Lu}][\p{L}’'-]*\s+){0,4}[\p{Lu}][\p{L}’'-]*$/u.test(refCleanField(title));
+}
+function refSplitTitleSource(prefix,reviewPlaceSuffix=false){
   const rawP=String(prefix||"").replace(/\u00a0/g," ").replace(/\s+/g," ").trim();
   if(!rawP) return {title:null,source:null,confidence:0};
 
@@ -22104,9 +22359,8 @@ function refSplitTitleSource(prefix){
   //   “Article title,” Journal...
   // or
   //   "Article title," Journal...
-  let q=rawP.match(/^[“"]([^”"]{4,700})[”"]\s*[,.;:]?\s*(.+)$/u);
-  if(!q) q=rawP.match(/^[‘']([^’']{4,700})[’']\s*[,.;:]?\s*(.+)$/u);
-  if(q){
+  const q=refLeadingQuotedTitle(rawP);
+  if(q && q[2]){
     const title=refCleanField(q[1]);
     const source=refCleanField(q[2]);
     const quotedTitleOK=!!title && !/^(?:19|20)\d{2}[a-z]?$/i.test(title);
@@ -22117,10 +22371,8 @@ function refSplitTitleSource(prefix){
   // A quoted field with no following container is explicit title evidence.
   // Do not let a journal database collision convert a quoted article title
   // such as “Carbon” into a source merely because a journal named Carbon exists.
-  let qOnly=rawP.match(/^[“"]([^”"]{2,700}?)[,.;:]?[”"]\s*[,.;:]?\s*$/u);
-  if(!qOnly) qOnly=rawP.match(/^[‘']([^’']{2,700}?)[,.;:]?[’']\s*[,.;:]?\s*$/u);
-  if(qOnly){
-    const title=refCleanField(qOnly[1]);
+  if(q && !q[2]){
+    const title=refCleanField(q[1]);
     if(title && !/^(?:19|20)\d{2}[a-z]?$/i.test(title))
       return {title,source:null,confidence:0.995,explicitQuotedTitle:true};
   }
@@ -22205,7 +22457,9 @@ function refSplitTitleSource(prefix){
         /^(?:\p{Lu}\p{Ll}+\.\s+)+$/u.test(best.source.slice(0,-c.source.length))&&
         !refKnownJournalPrefix(best.source.slice(0,-c.source.length)+"J.");
     }).sort((a,b)=>b.source.length-a.source.length)[0]:null;
-    return {...(complete||introduced||best),confidence:0.92};
+    const chosen=complete||introduced||best;
+    if(reviewPlaceSuffix && p.startsWith(chosen.title) && /^,\s*/.test(p.slice(chosen.title.length)) && refTitlePlaceSuffix(chosen.title,chosen.source))return {title:chosen.title+', '+chosen.source.replace(/\s+\d{1,6}$/,''),source:null,confidence:0.65,sourceBoundaryReview:true};
+    return {...chosen,confidence:0.92};
   }
 
   // No title/source split. If the complete span is strongly source-like,
@@ -22271,7 +22525,7 @@ function refParseLocatorFields(rest, yearInfo){
   // All DOI/URL spans have already been blanked before numeric parsing. Leading
   // separator punctuation (e.g. the "." in "Journal. 254-255, 236-241") is stripped
   // so a range volume immediately after it is anchored correctly.
-  const s=refStripDoiUrl(rest).replace(/^[\s.,;:]+/,"");
+  const s=refMaskQuotedTitleText(refStripDoiUrl(rest)).replace(/^[\s.,;:]+/,"");
   let volume=null, issue=null, locator=null, locatorKind=null;
 
   let m=s.match(/\bvol(?:ume)?\.?\s*(\d{1,6}(?:\s*[-–—]\s*\d{1,6})?)\b/i);
@@ -22534,7 +22788,7 @@ function refParseStructuredFields(raw, authorInfo, type){
   const yearInfo=refFindYearLandmark(rest);
   const loc=refParseLocatorFields(rest,yearInfo);
 
-  let title=null, source=null, confidence=0, layout="unknown";
+  let title=null, source=null, confidence=0, layout="unknown", sourceBoundaryReview=false;
 
   if(yearInfo && /^[\s,.;:(]*$/.test(rest.slice(0,yearInfo.index))){
     // Author-year / APA/IWA family:
@@ -22551,7 +22805,7 @@ function refParseStructuredFields(raw, authorInfo, type){
       /\s+\d{1,6}\s*\(\s*\d{1,6}\s*\)\s*[,;:]/,
       /\s*[,;]\s*pp?\.?\s*\d/i
     ];
-    for(const re of patterns){ const m=afterYear.match(re); if(m && m.index<cut) cut=m.index; }
+    for(const re of patterns){ const m=refMaskQuotedTitleText(afterYear).match(re); if(m && m.index<cut) cut=m.index; }
     // A final volume + strong locator may follow a journal's period or a space.
     // Require a separate plausible title/source pair before accepting this boundary.
     const terminal=afterYear.match(/(?:\s*[.,;]\s*|\s+)(?:vol(?:ume)?\.?\s*)?\d{1,6}(?:\s*\([^)]{1,40}\s*\))?\s*[,;:]\s*(?:[eE]\d{3,12}|\d{1,8}\s*[-–—]\s*\d{1,8}|\d{5,12})\s*[.;]?\s*$/i);
@@ -22560,14 +22814,14 @@ function refParseStructuredFields(raw, authorInfo, type){
       if(pair.title && pair.source && refSourceScore(pair.source,true)>=4) cut=terminal.index;
     }
     const prefix=refCleanStructuralPrefix(afterYear.slice(0,cut));
-    const split=refSplitTitleSource(prefix);
-    title=split.title; source=split.source; confidence=split.confidence;
+    const split=refSplitTitleSource(prefix,!loc.locator);
+    title=split.title; source=split.source; confidence=split.confidence; sourceBoundaryReview=!!split.sourceBoundaryReview;
   }else{
     // Title/source before publication-year tail.
     const prefix=refPrefixBeforePublicationTail(rest,yearInfo,loc);
     if(prefix){
-      const split=refSplitTitleSource(prefix);
-      title=split.title; source=split.source; confidence=split.confidence;
+      const split=refSplitTitleSource(prefix,!loc.locator);
+      title=split.title; source=split.source; confidence=split.confidence; sourceBoundaryReview=!!split.sourceBoundaryReview;
       layout="title-source-year";
     }
   }
@@ -22575,8 +22829,7 @@ function refParseStructuredFields(raw, authorInfo, type){
   // If the source/title split did not resolve but a quoted title exists,
   // retain it and parse the following source up to the publication tail.
   if(!title){
-    let q=rest.match(/^[\s,.;:]*[“"]([^”"]{4,700})[”"]\s*[,.;:]?\s*(.+)$/u);
-    if(!q) q=rest.match(/^[\s,.;:]*[‘']([^’']{4,700})[’']\s*[,.;:]?\s*(.+)$/u);
+    const q=refLeadingQuotedTitle(rest);
     if(q && refTitleScore(q[1])>0){
       title=refCleanField(q[1]);
       let qtail=q[2];
@@ -22607,7 +22860,8 @@ function refParseStructuredFields(raw, authorInfo, type){
     locator:loc.locator||null,
     locatorKind:loc.locatorKind||null,
     confidence,
-    layout
+    layout,
+    ...(sourceBoundaryReview?{sourceBoundaryReview:true}:{})
   };
 }
 
@@ -23080,6 +23334,7 @@ function refParseEntry(raw,confirmedJournal=false){
     sourceRegion=refNJWebsite(raw,null,refNJUrl(raw),title)||sourceRegion;
     if(structured)structured.source=sourceRegion;
   }
+  if(type==='journal article' && structured?.sourceBoundaryReview){sourceRegion=null;sourceDbMatch=null;structured.source=null;}
   const hasTitle=!!title;
   const hasSource=!!sourceRegion;
 
@@ -25719,6 +25974,41 @@ function refHasEntryEvidence(text){
     (refStartsAuthor(t)||/^\s*(?:\[\d+\]|\(\d+\)|\d+[.)])/.test(t)||/10\.\d{4,9}\//.test(t));
 }
 
+// A boundary needs publication evidence, not merely a cited author and year.
+function refHasPublicationEvidence(text,explicit=false){
+  const t=String(text||"").replace(/^\s*(?:\[\d{1,4}\]|\(\d{1,4}\)|\d{1,4}[.)])\s*/,"").trim();
+  if(!t || refLooksLikeTableNoteOrAbbreviationKey(t)) return false;
+  const author=detectAuthorRegion(t),rest=refRestAfterAuthors(t,author);
+  // A reporting verb without a title delimiter is citation-led narrative.
+  if(author.hasAuthors && /^\s*[,;]?\s*\(?(?:19|20)\d{2}[a-z]?\)?\s+(?:reports?|reported|finds|found|shows?|showed|observes?|observed|demonstrates?|demonstrated|suggests?|suggested|concludes?|concluded|indicates?|indicated|proposes?|proposed|describes?|described|investigates?|investigated|confirms?|confirmed)\b/.test(rest)) return false;
+  if(explicit && author.hasAuthors && /^\(?(?:19|20)\d{2}[a-z]?\)?(?:[.;,:]\s*|$)/.test(rest)) return true;
+  const link=/\b(?:https?:\/\/|www\.)\S+|\b10\.\d{4,9}\//i.test(t);
+  if(!author.hasAuthors){
+    if(link && /^\S[\s\S]{3,240}[.?!]\s+/.test(t)) return true;
+    // An explicit bibliography may contain an entry whose authors are missing.
+    // Require a separate title, plausible journal and complete dated numeric tail;
+    // the missing-author field must reach the reference checker, not become prose.
+    if(explicit && /\b(?:19|20)\d{2}[a-z]?\b/i.test(t)){
+      const tail=t.match(/(?:[,.;:]\s*|\s)(?:(?:19|20)\d{2}[a-z]?\s*[,;]\s*)?(?:\d{1,6}\s*\(\d{1,6}\)\s*[,;:]?\s*|\d{1,6}\s*[,;:]\s*)[A-Za-z]?\d{1,10}(?:\s*[-–—]\s*[A-Za-z]?\d{1,10})?(?:\s*[,.;]?\s*\((?:19|20)\d{2}[a-z]?\))?\s*[.]?\s*$/);
+      const before=tail?t.slice(0,tail.index).trim():"";
+      const parts=before.match(/^(.{4,240}[.!?])\s+([\p{L}][^!?]{1,160})$/u);
+      const sourceWords=parts?parts[2].split(/\s+/).filter(Boolean):[];
+      const sourceShape=sourceWords.length>0 && sourceWords.every(word=>/^(?:of|the|and|for|in|on|de|des|du|&)$/.test(word) || /^[\p{Lu}]/u.test(word) || /^[\p{Ll}]{1,12}\.$/u.test(word));
+      const sourceScore=parts?refSourceScore(parts[2],true):-99;
+      const sourceProse=parts && /\b(?:is|are|was|were|has|have|had)\b/i.test(parts[2]);
+      // Full lowercase journal names need independent journal vocabulary/database
+      // evidence; capitalization alone must not decide bibliography ownership.
+      if(parts && !sourceProse && sourceScore>=(sourceShape?4:7)) return true;
+    }
+    return false;
+  }
+  if(!/\b(?:19|20)\d{2}[a-z]?\b|\bn\.?\s*d\.?\b/i.test(t) && !link) return false;
+  if(link || refCompactTitlelessSource(t,author) || (author.authorType==="corporate" && refNJInstitutionFromTail(rest,null))) return true;
+  // Journal numeric tails and explicit publication types are independent signals.
+  return /(?:[,.;:]\s*|\s)(?:\d{1,6}\s*\(\d{1,6}\)\s*[,;:]?\s*|\d{1,6}\s*[,;:]\s*)[A-Za-z]?\d{1,10}(?:\s*[-–—]\s*[A-Za-z]?\d{1,10})?(?:\s*[,.;]?\s*\(?(?:19|20)\d{2}\)?)?\s*[.]?\s*$/.test(refStripDoiUrl(rest)) ||
+    /(?:^|[.;,]\s*)(?:[^.!?]{0,120}\s)?(?:Press|Publishers?|Publishing|Thesis|Dissertation|Proceedings|Conference|Technical\s+Report|ISO|ASTM)\b/i.test(rest);
+}
+
 function toParagraphs(text){
   const parts=[];
   if(/\n\s*\n/.test(text)){
@@ -25742,22 +26032,45 @@ function refSplitManuscript(text){
   // line char offsets
   const off=[]; let acc=0; for(const l of lines){ off.push(acc); acc+=l.length+1; }
 
+  const sourceEndLines=new Set(),sourceBlocks=Array.isArray(DOCX_FTE_BLOCKS)?DOCX_FTE_BLOCKS:[];
+  const lineKey=s=>String(s||"").replace(/[^\S\n]+/g," ").trim();
+  const linePositions=new Map();
+  lines.forEach((line,i)=>{const key=lineKey(line);if(key){if(!linePositions.has(key))linePositions.set(key,[]);linePositions.get(key).push(i);}});
+  const sourcePositions=b=>[...new Set([b?.text,b?.rawStructuralText,b?.abbrSourceText,b?.abbrSymbolText].flatMap(t=>linePositions.get(lineKey(t))||[]))];
+  sourceBlocks.forEach((heading,i)=>{
+    if(!refIsEndHeading(heading?.text)||sourcePositions(heading).length) return;
+    let before=i-1,after=i+1;
+    while(before>=Math.max(0,i-8)&&!lineKey(sourceBlocks[before]?.text)) before--;
+    while(after<Math.min(sourceBlocks.length,i+9)&&!lineKey(sourceBlocks[after]?.text)) after++;
+    if(before<Math.max(0,i-8)||after>=Math.min(sourceBlocks.length,i+9)) return;
+    const last=sourceBlocks[before],next=sourceBlocks[after];
+    if(last?.type!=="p"||next?.type!=="p"||!refHasEntryEvidence(last.text)||refHasEntryEvidence(next.text)||refIsEndHeading(next.text)) return;
+    const prior=sourcePositions(last),following=sourcePositions(next);
+    // Both complete paragraphs must occur once, in source order, with no
+    // intervening native prose. A repeated or reordered quotation is ambiguous.
+    if(prior.length!==1||following.length!==1||prior[0]>=following[0]||lines.slice(prior[0]+1,following[0]).some(line=>line.trim())) return;
+    sourceEndLines.add(following[0]);
+  });
+
   // gather refs text from a heading line to the next end-boundary heading (or doc end)
-  const gather=(fromLine)=>{
+  const gather=(fromLine,firstEntry="")=>{
     let endLine=lines.length;
-    const preview=[];
+    const preview=firstEntry?[firstEntry]:[];
     for(let j=fromLine;j<lines.length;j++){
       const l=lines[j].trim();
       if(!l) continue;
-      if(refIsEndHeading(l)||fteFigureSectionBoundary(l)){ endLine=j; break; }
+      if(refIsEndHeading(l)||fteFigureSectionBoundary(l)||sourceEndLines.has(j)){ endLine=j; break; }
       if(isReferenceHeading(l)){
         if(!preview.some(refHasEntryEvidence) && !refHasEntryEvidence(preview.join(" "))){endLine=j;break;}
         continue;
       }
       if(preview.length<8) preview.push(l);
     }
-    const supported=preview.some(refHasEntryEvidence)||refHasEntryEvidence(preview.join(" "));
-    return {text:lines.slice(fromLine,endLine).filter(l=>!isReferenceHeading(l)).join("\n").trim(),endLine,supported};
+    const first=preview.slice(0,3).join(" ");
+    const supported=refHasPublicationEvidence(preview[0]||"",true) ||
+      (/^\s*\[\d{1,4}\]\s*$/.test(preview[0]||"") && refHasPublicationEvidence(preview[1]||"",true)) ||
+      ((refStartsAuthor(preview[0]||"") || /^\s*\[\d{1,4}\]\s*$/.test(preview[0]||"")) && refHasPublicationEvidence(first,true));
+    return {text:((firstEntry?firstEntry+"\n":"")+lines.slice(fromLine,endLine).filter(l=>!isReferenceHeading(l)).join("\n")).trim(),endLine,supported};
   };
 
   // CASE A: standalone reference heading with reference-like content after it.
@@ -25768,22 +26081,23 @@ function refSplitManuscript(text){
   for(let i=0;i<lines.length;i++){
     if(/^\s*curriculum\s+vitae\s*[:.]?\s*$/i.test(lines[i])) professionalSection=true;
     if(/^\s*chapter\s+/i.test(lines[i]) && refIsEndHeading(lines[i])) professionalSection=false;
-    if(!HEAD.test(lines[i]) && !isReferenceHeading(lines[i])) continue;
+    const sameLine=lines[i].match(/^\s*((?:\d+(?:\.\d+)*\.?\s*)?(?:references?|reference list|bibliography|works cited|literature cited|cited literature|references cited|references and notes|notes and references|literature references))(?:\s*:\s*|\s+(?=\[\d{1,4}\]))(\S.+)$/i);
+    if(!HEAD.test(lines[i]) && !isReferenceHeading(lines[i]) && !sameLine) continue;
     if(best && professionalSection) continue;
-    const gathered=gather(i+1),refsText=gathered.text;
+    const gathered=gather(i+1,sameLine?sameLine[2]:""),refsText=gathered.text;
     if(refsText.length<20 || !gathered.supported) continue;
     const yearN=(refsText.match(/\b(?:19|20)\d{2}\b/g)||[]).length;
     const doiN=(refsText.match(/10\.\d{4,9}\//g)||[]).length;
     const numN=(refsText.match(/(?:^|\n)\s*(?:\[\d{1,4}\]|\(\d{1,4}\)|\d{1,4}[.)])\s*/g)||[]).length;
     const authorN=(refsText.match(/[A-Z][A-Za-z'’-]+,?\s+[A-Z]\.?[A-Z]?\.?/g)||[]).length;
     const etalN=(refsText.match(/\bet al\.?/gi)||[]).length;
-    const hasSignal=(yearN>=1 && (doiN>=1||authorN>=1||numN>=1||etalN>=1)) || numN>=2 || doiN>=2;
+    const hasSignal=(yearN>=1 && (doiN>=1||authorN>=1||numN>=1||etalN>=1)) || numN>=2 || doiN>=2 || /\b(?:https?:\/\/|www\.)/i.test(refsText);
     if(hasSignal){
       const signal=yearN + doiN*2 + numN + etalN + Math.min(authorN,12);
-      const strength=referenceHeadingStrength(lines[i]);
+      const strength=referenceHeadingStrength(sameLine?sameLine[1]:lines[i]);
       const position=off[i]/Math.max(1,N);
       const density=signal/Math.max(1,refsText.length/500);
-      const cand={i,refsText,signal,strength,position,density,endLine:gathered.endLine};
+      const cand={i,refsText,signal,strength,position,density,endLine:gathered.endLine,heading:sameLine?sameLine[1]:lines[i].trim()};
       if(best && i<best.endLine && strength===best.strength) continue;
       if(!best || strength>best.strength ||
          (strength===best.strength && i>best.i) ||
@@ -25791,51 +26105,67 @@ function refSplitManuscript(text){
     }
   }
   if(best){
-    return {found:true, refs:best.refsText, body:lines.slice(0,best.i).join("\n"),
-            heading:lines[best.i].trim(), method:"explicit_heading", citeStyle,
+    return {found:true, refs:best.refsText, body:[lines.slice(0,best.i).join("\n"),lines.slice(best.endLine).join("\n")].filter(Boolean).join("\n\n"),
+            heading:best.heading, method:"explicit_heading", citeStyle,
             confidence:Math.min(96, 60+Math.min(35,best.signal))};
   }
 
-  // CASE B1: headingless numeric references = final strictly increasing [1],[2],[3]... run
-  const M=[...text.matchAll(/\[(\d{1,3})\]/g)].map(m=>({index:m.index,num:+m[1]}));
-  if(M.length>=4){
-    let k=M.length-1;
-    while(k>0 && M[k-1].num<=M[k].num) k--;
-    const start=M[k].index, runLen=M.length-k, region=text.slice(start);
-    const looksRef=/doi\.org|\bdoi\b|et al\.?|\(\d{4}\)|\b(19|20)\d{2}\b/i.test(region);
-    if(runLen>=4 && M[k].num<=2 && looksRef && start>N*0.35 && M[M.length-1].index>N*0.55)
-      return {found:true, refs:text.slice(start), body:text.slice(0,start), heading:null, method:"headingless_pattern", citeStyle, confidence:74};
-  }
-
-  // CASE B2: headingless author-year bibliography. Generic reference-like
-  // density is too permissive because table notes and citation-rich body prose can
-  // contain years and publication-like numbers. Each core paragraph in the run
-  // must independently look like an author-year reference.
-  const paras=toParagraphs(text); const cut=N*0.45;
-  const strongAuthorRef=p=>{
-    const t=p.text;
-    return !refLooksLikeTableNoteOrAbbreviationKey(t) && refStartsAuthor(t) &&
-      /\b(?:19|20)\d{2}[a-z]?\b/i.test(t) && refScore(t)>=4;
+  // Headingless lists must start at paragraph boundaries. Inline citation density
+  // never establishes a bibliography, and a following appendix remains body text.
+  const paras=lines.map((line,i)=>({text:line.trim(),start:off[i],line:i})).filter(p=>p.text),cut=N*0.45;
+  const numbered=p=>p.text.match(/^\s*\[(\d{1,4})\](?:\s+|$)/);
+  const entryEnd=(i,explicit=false)=>{
+    const p=paras[i];
+    if(!(numbered(p)||refStartsAuthor(p.text))) return i;
+    // Extraction may put a bracketed label on its own line. Attach it only
+    // to an immediately following publication-like entry, never arbitrary prose,
+    // another marker or a section boundary. The normal bounded entry test below
+    // still decides whether that continuation supplies publication evidence.
+    if(/^\[\d{1,4}\]$/.test(p.text)){
+      const next=paras[i+1];
+      if(!next || numbered(next) || refIsEndHeading(next.text) || fteFigureSectionBoundary(next.text) || sourceEndLines.has(next.line)) return i;
+      if(refHasPublicationEvidence(next.text,explicit)) return i+2;
+      if(!refStartsAuthor(next.text)) return i;
+      const end=entryEnd(i+1,explicit);
+      return end>i+1?end:i;
+    }
+    if(refHasPublicationEvidence(p.text,explicit)) return i+1;
+    // A separately extracted author/year header may continue across at most
+    // two following paragraphs; do not concatenate complete narrative paragraphs.
+    if(!/^(?:\(?(?:19|20)\d{2}[a-z]?\)?[.]?)?$/.test(refRestAfterAuthors(p.text).trim())) return i;
+    let joined=p.text;
+    for(let j=i+1;j<Math.min(paras.length,i+3);j++){
+      const next=paras[j].text;
+      if(refStartsAuthor(next)||numbered(paras[j])||refIsEndHeading(next)||fteFigureSectionBoundary(next)||sourceEndLines.has(paras[j].line)) break;
+      joined+=" "+next;
+      if(refHasPublicationEvidence(joined,explicit)) return j+1;
+    }
+    return i;
   };
   let bestRun=null;
   for(let i=0;i<paras.length;i++){
-    if(paras[i].start<cut || !strongAuthorRef(paras[i])) continue;
-    let j=i,strong=0,total=0,weakAllowance=1;
+    const marker=numbered(paras[i]);
+    if((i>0 && paras[i].start<cut) || entryEnd(i,!!marker)===i) continue;
+    let j=i,strong=0,incomplete=0,previous=0;
     while(j<paras.length){
-      const p=paras[j];
-      if(strongAuthorRef(p)){strong++;total++;j++;continue;}
-      if(weakAllowance>0 && total>0 && (/^(?:doi\s*:|https?:\/\/|\[?(?:CrossRef|PubMed|Scopus)\]?)/i.test(p.text) || p.text.length<90)){
-        weakAllowance--;total++;j++;continue;
+      const p=paras[j],next=numbered(p);
+      if(refIsEndHeading(p.text)||fteFigureSectionBoundary(p.text)||sourceEndLines.has(p.line)) break;
+      const supportedEnd=entryEnd(j),endEntry=supportedEnd>j?supportedEnd:(marker?entryEnd(j,true):j);
+      if((!!marker===!!next) && (!next||+next[1]>previous) && endEntry>j){
+        if(next) previous=+next[1];
+        if(supportedEnd>j) strong++;else incomplete++;
+        j=endEntry;continue;
       }
+      if(j>i && refIsEntryContinuation(paras[j-1].text,p.text)){j++;continue;}
       break;
     }
-    if(strong>=4 || (strong>=3 && j===paras.length)){
-      const cand={strong,total,start:paras[i].start};
-      if(!bestRun || cand.strong>bestRun.strong || (cand.strong===bestRun.strong && cand.start>bestRun.start)) bestRun=cand;
-    }
+    if(strong<3 || (strong+incomplete<4 && !(j===paras.length||refIsEndHeading(paras[j].text)||fteFigureSectionBoundary(paras[j].text)||sourceEndLines.has(paras[j].line)))) continue;
+    const end=j<paras.length?paras[j].start:N;
+    const cand={strong,start:paras[i].start,end,numeric:!!marker};
+    if(!bestRun || cand.strong>bestRun.strong || (cand.strong===bestRun.strong && cand.start<bestRun.start)) bestRun=cand;
   }
   if(bestRun){
-    return {found:true,refs:text.slice(bestRun.start),body:text.slice(0,bestRun.start),heading:null,method:"headingless_author_run",citeStyle,confidence:82};
+    return {found:true,refs:text.slice(bestRun.start,bestRun.end).trim(),body:[text.slice(0,bestRun.start).trimEnd(),text.slice(bestRun.end)].filter(Boolean).join("\n\n"),heading:null,method:bestRun.numeric?"headingless_pattern":"headingless_author_run",citeStyle,confidence:bestRun.numeric?74:82};
   }
 
   return {found:false, refs:"", body:text, heading:null, method:null, citeStyle, confidence:0};
@@ -25946,7 +26276,7 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
     // Defensive final pass: the ledger must not report Journal/source = no
     // or Title = yes when the entire post-author field is structurally a
     // titleless journal/source.
-    if(isArt){
+    if(isArt && !p.structured?.sourceBoundaryReview){
       const ai=detectAuthorRegion(p.raw);
       const compact=refCompactTitlelessSource(p.raw,ai);
 
@@ -26128,7 +26458,7 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
     if(!p.year) issues.push({level:"warn",idx:i,label:L,msg:"No publication year found."});
     if(!p.hasAuthors) issues.push({level:"warn",idx:i,label:L,msg:"No author or organisation detected at the start of the entry."});
     if(titleReq && !p.hasTitle) issues.push({level:"warn",idx:i,label:L,msg:"No article title detected, though this list normally includes titles."});
-    if(isArt && !p.hasSource) issues.push({level:"warn",idx:i,label:L,msg:"No journal or source name detected."});
+    if(isArt && !p.hasSource) issues.push({level:"warn",idx:i,label:L,msg:p.structured?.sourceBoundaryReview?"The journal or source name could not be identified separately from the title. Check the original reference and add the source name.":"No journal or source name detected."});
     if(!p.hasPages && !na.pages) issues.push({level:"warn",idx:i,label:L,msg:"No page range or article number found."});
     if(!p.hasVolume && !na.vol) issues.push({level:"info",idx:i,label:L,msg:"No volume or issue number found."});
     if(p._doiState==="no") issues.push({level:"info",idx:i,label:L,msg:"No DOI, though most references in this list include one."});
@@ -26554,7 +26884,17 @@ function precisionBodyCheck(text){
       const approximatePreparation=/\b(?:approximately|about|around)\s*$/i.test(rangeBefore)&&
         !/\b(?:measured|recorded|observed|determined)\b/i.test(rangeBefore)&&
         /^\s*(?:of\s+(?:[A-Za-z-]+\s+){1,10})?(?:(?:was|were)\s+)?(?:then\s+)?(?:collected|added|mixed|dissolved|transferred|prepared)\b/i.test(rangeAfter);
-      if(first&&last&&q.precisionRole!=="setting"&&!approximatePreparation&&unitPrecisionDiffers(endpoints)&&!q.measurementContext?.precisionSource&&!q.precisionConversion)precisionIssue(out,"range",`Range endpoints use different decimal precision (${m[1]} and ${m[2]} ${q.rawUnit}). Verify the source resolution and use compatible precision if these endpoints are directly comparable.`,s,q.index,q.value.length+q.space.length+q.rawUnit.length);
+      let rangeSource=q.measurementContext?.precisionSource;
+      if(rangeSource?.backgroundRange){
+        // Sentence-local extraction must not discard a preceding current-study
+        // declaration. Recheck only this new source inference in its uniquely
+        // matched original paragraph; ambiguous matches remain eligible.
+        const paragraphs=String(text).split(/\n+/).map(p=>p.replace(/\s+/g," ").trim()).filter(p=>p.includes(s));
+        const paragraph=paragraphs.length===1?paragraphs[0]:"",at=paragraph.indexOf(s);
+        rangeSource=at>=0&&paragraph.indexOf(s,at+1)<0&&window.MC_MEASUREMENT_CONTEXT?.classifyQuantity
+          ?window.MC_MEASUREMENT_CONTEXT.classifyQuantity(paragraph,{...q,index:at+q.index}).precisionSource:null;
+      }
+      if(first&&last&&q.precisionRole!=="setting"&&!approximatePreparation&&unitPrecisionDiffers(endpoints)&&!rangeSource&&!q.precisionConversion)precisionIssue(out,"range",`Range endpoints use different decimal precision (${m[1]} and ${m[2]} ${q.rawUnit}). Verify the source resolution and use compatible precision if these endpoints are directly comparable.`,s,q.index,q.value.length+q.space.length+q.rawUnit.length);
     }
 
     // p-values: never report p = 0.000; review excessive software precision.
@@ -30239,6 +30579,10 @@ fteAnalyze=function(blocks){
         const matrix=tableCellMatrixFromWordTable(el);
         const border=tableBorderEvidence(el);
         b.cellMatrix=matrix;
+        // Preserve original cell paragraphs for the numerical parser without
+        // altering the structural/abbreviation projection or merged ownership.
+        b.cellParagraphs=rows.map(r=>fteWordContentChildren(r).filter(n=>n.namespaceURI===FTE_W_NS&&n.localName==="tc").map(tc=>
+          fteWordContentChildren(tc).filter(n=>n.namespaceURI===FTE_W_NS&&n.localName==="p").map(p=>norm(fteXmlText(p,{includeEmbedded:true}))).filter(Boolean)));
         b.fullText=norm(matrix.flat().join(" | "));
         b.tableStyle=tableWordStyle(el);
         b.hasBorders=border.hasBorders;
@@ -31099,12 +31443,23 @@ fteAnalyze=function(blocks){
         r.definitionSource==="scientific" && r.definitionInstances?.some(d=>d.definitionConfidence==="high" && d.definitionEventId)));
       const localScopeRows=all.filter(hasLocalDefinition);
       const missingScopeRows=all.filter(r=>!hasLocalDefinition(r) && !["nested"].includes(r.definitionSource));
+      // Resolve meaning with the aliases validated in each definition's own
+      // chapter. This comparison never supplies a missing definition event.
+      const aliasesIn=scope=>[...definitionsByKey.values()].flat().filter(d=>
+        d.form!==base && d.definitionType==='conventional_acronym' && d.scope?.id===scope?.id);
+      const meaningMatches=(a,b)=>{
+        const aa=aliasesIn(a.scope?.kind==='list'?b.scope:a.scope);
+        const bb=aliasesIn(b.scope?.kind==='list'?a.scope:b.scope);
+        return abbrDefinitionsEquivalent(abbrExpandValidatedDefinitionAliases(a.long,aa),
+          abbrExpandValidatedDefinitionAliases(b.long,bb),base);
+      };
       const meanings=[];
       bucket.defs.forEach(d=>{if(d.long) meanings.push({long:d.long,key:meaningKey(d.long),scope:d.scope});});
       const listDef=DECLARED_ABBR_MAP.get(bucket.key)||null;
-      if(listDef?.long) meanings.push({long:listDef.long,key:meaningKey(listDef.long),scope:{id:"list",label:"List of Abbreviations",kind:"list",order:-1}});
-      const uniqueMeaningMap=new Map(); meanings.forEach(m=>{if(m.key&&!uniqueMeaningMap.has(m.key))uniqueMeaningMap.set(m.key,m);});
-      const uniqueMeanings=[...uniqueMeaningMap.values()];
+      const listMeaning=listDef?.long?{long:listDef.long,key:meaningKey(listDef.long),scope:{id:"list",label:"List of Abbreviations",kind:"list",order:-1}}:null;
+      if(listMeaning) meanings.push(listMeaning);
+      const uniqueMeanings=[];
+      meanings.forEach(m=>{if(m.key&&!uniqueMeanings.some(other=>meaningMatches(other,m)))uniqueMeanings.push(m);});
       const conflict=uniqueMeanings.length>1;
       const localScopes=[...new Map(localScopeRows.map(r=>[r.scope.id,r.scope])).values()];
       const allFirstOk=missingScopeRows.length===0 && all.every(r=>r.firstUseOK!==false);
@@ -31141,10 +31496,10 @@ fteAnalyze=function(blocks){
 
       if(conflict){
         const detail=uniqueMeanings.map(m=>`"${m.long}" (${m.scope.label})`).join("; ");
-        const listConflict=!!listDef && uniqueMeanings.some(m=>m.scope.kind!=="list" && m.key!==meaningKey(listDef.long));
+        const listConflict=!!listMeaning && uniqueMeanings.some(m=>m.scope.kind!=="list" && !meaningMatches(m,listMeaning));
         if(listConflict){
-          const coveredPairs=new Set(reconciledErrors.flatMap(e=>norm(e.abbr||"")===bucket.key?(e.listConflictSourcePairs||[]):[]));
-          const unmatched=bucket.defs.filter(d=>meaningKey(d.long)!==meaningKey(listDef.long)).filter(d=>{
+          const coveredPairs=new Set([...reconciledErrors,...warnings].flatMap(e=>norm(e.abbr||"")===bucket.key?(e.listConflictSourcePairs||[]):[]));
+          const unmatched=bucket.defs.filter(d=>!meaningMatches(d,listMeaning)).filter(d=>{
             const pair=abbrListConflictSourceKey(listDef,base,d.scope,d.sourceSentence,d.shortStart,d.long,d.sent);
             return !pair || !coveredPairs.has(pair);
           });
@@ -31355,7 +31710,11 @@ fteAnalyze=function(blocks){
     'THE','THIS','THAT','THESE','THOSE','OTHER','VARIOUS','DIFFERENT','COMMERCIAL',
     'COMMON','AVAILABLE','ALTERNATIVE','ALTERNATIVES','USING','USED','WITH','WITHOUT',
     'AND','OR','FOR','FROM','IN','ON','AT','BY','AS','SUCH','INCLUDING','MODEL','TYPE',
-    'GRADE','SERIES','MEMBRANE','MEMBRANES','ELECTRODE','ELECTRODES','MATERIAL','MATERIALS'
+    'GRADE','SERIES','MEMBRANE','MEMBRANES','ELECTRODE','ELECTRODES','MATERIAL','MATERIALS',
+    'OVER','UNDER','THROUGH','WITHIN','BETWEEN','BEYOND','DURING','AFTER','BEFORE',
+    'PURE','SOLE','PRISTINE','NEW','NOVEL','LOW','HIGH','SINGLE','DUAL','MULTIPLE',
+    'FIRST','SECOND','THIRD','FOURTH','FIFTH','FEW','MANY','EACH','EVERY','SEVERAL',
+    'HYBRID','STANDARD','CONTROL','REMOTE','LOCAL','BARE','BULK'
   ]);
 
   function norm(s){return String(s||'').replace(/\u00a0/g,' ').replace(/\s+/g,' ').trim();}
@@ -31384,17 +31743,26 @@ fteAnalyze=function(blocks){
     if(!m) return null;
     const raw=m[1],key=raw.toUpperCase();
     if(GENERIC_BRAND_STOP.has(key)) return null;
-    // Product-family spelling is often title/mixed case. Pure ALL CAPS is accepted
-    // only when it contains a digit; this avoids interpreting adjacent acronyms as
-    // a brand-grade pair without other evidence.
-    const brandLike=/[a-z]/.test(raw) || (/\d/.test(raw)&&/[A-Z]/.test(raw));
+    // A lowercase adjective/preposition is not evidence of a brand. A proper
+    // name also needs a product noun/list; ordinary grammar is never a brand.
+    if(/^(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)(?:-(?:one|two|three|four|five|six|seven|eight|nine))?$/i.test(raw)) return null;
+    if(/(?:ed|ing|ical|ic|ous|ive|ary|ory|able|ible|al)$/i.test(raw)) return null;
+    const brandLike=/^[A-Z][A-Za-z0-9&.'’\-]*[a-z][A-Za-z0-9&.'’\-]*$/.test(raw) ||
+      (/\d/.test(raw)&&/[A-Z]/.test(raw));
     return brandLike?{raw,start:index-m[0].length+m[0].indexOf(raw)}:null;
   }
-  function attachedModelSuffix(sent,index,raw){
+  function attachedModelSuffix(sent,index,raw,allowSpaced=false){
     const tail=String(sent||'').slice(index+String(raw||'').length,index+String(raw||'').length+28);
-    const m=tail.match(/^\s*(?:[-–—]\s*)?(\d{2,}[A-Za-z0-9-]*)/);
+    // A following citation/measurement (ORR 23; COD – 3000 mg/L) is not a
+    // model suffix. Spaced model numbers need independent naming evidence.
+    const m=tail.match(allowSpaced?/^\s*(?:[-–—]\s*)?(\d{2,}[A-Za-z0-9-]*)/:/^(?:[-–—])?(\d{2,}[A-Za-z0-9-]*)/);
     return m?m[0]:null;
   }
+  function commercialContext(sent,index){
+    const near=sentenceClauseBefore(sent,index,200)+' '+String(sent||'').slice(index,index+130);
+    return /\b(?:commercial(?:ly)?|purchased|procured|bought|supplied|manufacturer|supplier|brand|catalog(?:ue)?|trademark)\b/i.test(near) || /[®™]/.test(near);
+  }
+  function categoryKey(value){return String(value||'').toLowerCase().replace(/^commercial\s+|^ion[-\s]?exchange\s+/g,'').replace(/s$/,'');}
   function designatorBefore(sent,index){
     return PRODUCT_DESIGNATOR_RE.test(String(sent||'').slice(Math.max(0,index-55),index));
   }
@@ -31454,27 +31822,31 @@ fteAnalyze=function(blocks){
 
     const list=productListContext(s,index);
     const brand=immediateBrandBefore(s,index);
-    const suffix=attachedModelSuffix(s,index,token);
     const afterCat=categoryAfter(s,index,token);
     const prior=STATE.grades.get(token.toUpperCase())||null;
     const parallel=list?nearbyParallelProductEvidence(s,index):0;
     const designator=designatorBefore(s,index);
+    const commercial=commercialContext(s,index);
+    const namedBrand=!!brand && (!!afterCat || commercial || (!!list && parallel>=2));
+    const suffix=attachedModelSuffix(s,index,token,namedBrand||designator);
+    const sameProduct=!!prior && !!afterCat && categoryKey(prior.category)===categoryKey(afterCat);
 
     let score=0;
     const reasons=[];
     let category=(list?.category||afterCat||prior?.category||'').toLowerCase();
 
     if(list){score+=4;reasons.push('technical-product-list');}
-    if(brand){score+=4;reasons.push('brand-or-family-prefix');}
+    if(namedBrand){score+=4;reasons.push('commercial-brand-or-family-prefix');}
     if(suffix){score+=5;reasons.push('attached-model-code');}
     if(afterCat){score+=3;reasons.push('technical-product-noun');}
     if(designator){score+=4;reasons.push('model-or-grade-designator');}
     if(parallel>=2){score+=3;reasons.push('parallel-model-items');}
-    if(prior && afterCat){score+=6;reasons.push('previously-introduced-product-grade');}
+    if(sameProduct){score+=6;reasons.push('previously-introduced-product-grade');}
 
     // Pure-letter grades are accepted only when phrase/list semantics are strong.
     // This is what protects "Selemion AMV" without globally whitelisting AMV.
-    const high=score>=7 && (!!brand || !!suffix || !!designator || !!afterCat || parallel>=2 || !!prior);
+    const identity=namedBrand || !!suffix || (designator&&commercial) || sameProduct;
+    const high=score>=7 && identity;
     if(!high) return null;
 
     const span=brand?`${brand.raw} ${token}${suffix||''}`:`${token}${suffix||''}`;
@@ -31865,6 +32237,13 @@ fteAnalyze=function(blocks){
     const authorDefined=!!standardOverrideKeys?.has?.(k);
     const container=abbrStructuredIdentifierContainerAt(scopeText,index,String(raw||'').length);
     if(container && /^[A-Z]{2,}(?:-[A-Z]{2,})+-\d+[A-Za-z0-9]*$/.test(abbrCanonicalIdentifier(container.raw).replace(/[.,]$/,'')))return false;
+    // A mixed-prefix material label stays whole in captions and tables as in prose.
+    // Require an adjacent material noun; slash compounds and standalone acronyms
+    // remain eligible, and an explicit complete abbreviation remains authoritative.
+    if(container && !authorDefined && /^[A-Z][a-z][A-Za-z0-9]*-[A-Z]{2,}(?:-[A-Z]{2,})*$/.test(abbrCanonicalIdentifier(container.raw).replace(/[.,]$/,'')) &&
+      !abbrExplicitDefinitionEvidence(scopeText,container.start,container.raw) &&
+      (/\b(?:films?|composites?|materials?|samples?|specimens?|electrodes?|catalysts?|membranes?|adsorbents?)\s*\(?\s*$/i.test(scopeText.slice(0,container.start)) ||
+       /^\s*\)?\s+(?:films?|composites?|materials?|samples?|specimens?|electrodes?|catalysts?|membranes?|adsorbents?)\b/i.test(scopeText.slice(container.end))))return false;
     if(!authorDefined && abbrIsNamedMissionOccurrence(scopeText,index,raw))return false;
     if(!authorDefined && (standardSet?.has?.(k)||standardSet?.has?.(norm(raw))))return false;
     try{if(abbrOverlapsProtectedSpan(protectedDesignationSuffixSpans||[],index,String(raw||'').length))return false;}catch(_e){}
@@ -32427,8 +32806,9 @@ fteAnalyze=function(blocks){
     mcPlaceCombinedExportAtOverviewBottom();
     mcRenderModuleStatusNotices();
   }
-  function jumpToPriority(p){const ar=document.querySelector(`#abbr-reporting-table tbody tr[data-abbr-review="1"][data-abbr-priorities~="${p}"]`);if(ar){showTab("abbr");setTimeout(()=>ar.scrollIntoView({behavior:"smooth",block:"center"}),60);return}for(const g of Object.keys(GROUP_REPORT)){if(g==="abbr")continue;if(g==="ref"){const item=mcReferenceAttentionItems().find(x=>x.priority===p);if(item){showTab("ref");setTimeout(()=>item.element.scrollIntoView({behavior:"smooth",block:"center"}),60);return}continue}if(allIssues(g).some(i=>priorityOf(i)===p&&!i.classList.contains("mc-not-issue"))){showTab(g);setTimeout(()=>{const bar=$u(GROUP_REPORT[g])?.querySelector(".mc-review-toolbar"),b=bar?.querySelector(`[data-filter="${p}"]`);b?.click();visibleIssues(g)[0]?.scrollIntoView({behavior:"smooth",block:"center"})},60);return}}const nr=document.querySelector(`#num-findings tbody tr[data-num-review="1"][data-num-priority="${p}"]`);if(nr){showTab("num");setTimeout(()=>nr.scrollIntoView({behavior:"smooth",block:"center"}),60);return}const ur=document.querySelector(`#unit-ledger-wrap tr[data-unit-review="1"][data-unit-priority="${p}"]`);if(ur){showTab("unit");setTimeout(()=>ur.scrollIntoView({behavior:"smooth",block:"center"}),60)}}
-  function startReviewing(){const arCrit=document.querySelector('#abbr-reporting-table tbody tr[data-abbr-review="1"][data-abbr-priorities~="critical"]');if(arCrit){showTab("abbr");setTimeout(()=>arCrit.scrollIntoView({behavior:"smooth",block:"center"}),50);return}const refItems=mcReferenceAttentionItems(),refCrit=refItems.find(x=>x.priority==="critical");if(refCrit){showTab("ref");setTimeout(()=>refCrit.element.scrollIntoView({behavior:"smooth",block:"center"}),50);return}const crit=allIssues().find(i=>groupFor(i)!=="abbr"&&priorityOf(i)==="critical"&&!i.classList.contains("mc-not-issue"));const first=crit||allIssues().find(i=>groupFor(i)!=="abbr"&&!i.classList.contains("mc-not-issue"));if(first){const g=groupFor(first);showTab(g);setTimeout(()=>first.scrollIntoView({behavior:"smooth",block:"center"}),50);return}if(refItems.length){showTab("ref");setTimeout(()=>refItems[0].element.scrollIntoView({behavior:"smooth",block:"center"}),50);return}const ar=document.querySelector('#abbr-reporting-table tbody tr[data-abbr-review="1"]');if(ar){showTab("abbr");setTimeout(()=>ar.scrollIntoView({behavior:"smooth",block:"center"}),50);return}const nr=document.querySelector('#num-findings tbody tr[data-num-review="1"]');if(nr){showTab("num");setTimeout(()=>nr.scrollIntoView({behavior:"smooth",block:"center"}),50);return}if(countGroup("unit")>0){showTab("unit");setTimeout(()=>document.querySelector('#unit-ledger-wrap tbody tr[data-unit-review="1"]')?.scrollIntoView({behavior:"smooth",block:"center"}),50)}}
+  function ledgerTarget(issue){return issue?.dataset?.ledgerTarget?document.getElementById(issue.dataset.ledgerTarget):issue;}
+  function jumpToPriority(p){const ar=document.querySelector(`#abbr-reporting-table tbody tr[data-abbr-review="1"][data-abbr-priorities~="${p}"]`);if(ar){showTab("abbr");setTimeout(()=>ar.scrollIntoView({behavior:"smooth",block:"center"}),60);return}for(const g of Object.keys(GROUP_REPORT)){if(g==="abbr")continue;if(g==="ref"){const item=mcReferenceAttentionItems().find(x=>x.priority===p);if(item){showTab("ref");setTimeout(()=>item.element.scrollIntoView({behavior:"smooth",block:"center"}),60);return}continue}const issue=allIssues(g).find(i=>priorityOf(i)===p&&!i.classList.contains("mc-not-issue")&&!i.classList.contains("mc-reviewed"));if(issue){showTab(g);setTimeout(()=>ledgerTarget(issue)?.scrollIntoView({behavior:"smooth",block:"center"}),60);return}}const nr=document.querySelector(`#num-findings tbody tr[data-num-review="1"][data-num-priority="${p}"]`);if(nr){showTab("num");setTimeout(()=>nr.scrollIntoView({behavior:"smooth",block:"center"}),60);return}const ur=document.querySelector(`#unit-ledger-wrap tr[data-unit-review="1"][data-unit-priority="${p}"]`);if(ur){showTab("unit");setTimeout(()=>ur.scrollIntoView({behavior:"smooth",block:"center"}),60)}}
+  function startReviewing(){const arCrit=document.querySelector('#abbr-reporting-table tbody tr[data-abbr-review="1"][data-abbr-priorities~="critical"]');if(arCrit){showTab("abbr");setTimeout(()=>arCrit.scrollIntoView({behavior:"smooth",block:"center"}),50);return}const refItems=mcReferenceAttentionItems(),refCrit=refItems.find(x=>x.priority==="critical");if(refCrit){showTab("ref");setTimeout(()=>refCrit.element.scrollIntoView({behavior:"smooth",block:"center"}),50);return}const crit=allIssues().find(i=>groupFor(i)!=="abbr"&&priorityOf(i)==="critical"&&!i.classList.contains("mc-not-issue")&&!i.classList.contains("mc-reviewed"));const first=crit||allIssues().find(i=>groupFor(i)!=="abbr"&&!i.classList.contains("mc-not-issue")&&!i.classList.contains("mc-reviewed"));if(first){const g=groupFor(first);showTab(g);setTimeout(()=>ledgerTarget(first)?.scrollIntoView({behavior:"smooth",block:"center"}),50);return}if(refItems.length){showTab("ref");setTimeout(()=>refItems[0].element.scrollIntoView({behavior:"smooth",block:"center"}),50);return}const ar=document.querySelector('#abbr-reporting-table tbody tr[data-abbr-review="1"]');if(ar){showTab("abbr");setTimeout(()=>ar.scrollIntoView({behavior:"smooth",block:"center"}),50);return}const nr=document.querySelector('#num-findings tbody tr[data-num-review="1"]');if(nr){showTab("num");setTimeout(()=>nr.scrollIntoView({behavior:"smooth",block:"center"}),50);return}if(countGroup("unit")>0){showTab("unit");setTimeout(()=>document.querySelector('#unit-ledger-wrap tbody tr[data-unit-review="1"]')?.scrollIntoView({behavior:"smooth",block:"center"}),50)}}
 
   function ensureFloatingNav(){if($u("mc-floating-nav"))return;const d=document.createElement("div");d.className="mc-floating-nav";d.id="mc-floating-nav";d.innerHTML='<button type="button" id="mc-back-overview" hidden>← Overview</button><button type="button" id="mc-back-top" hidden>↑ Back to top</button>';document.body.appendChild(d);$u("mc-back-overview")?.addEventListener("click",()=>{showTab("overview");$u("results-tabs")?.scrollIntoView({behavior:"smooth",block:"start"})});$u("mc-back-top")?.addEventListener("click",()=>window.scrollTo({top:0,behavior:"smooth"}));window.addEventListener("scroll",updateFloating,{passive:true})}
   function updateFloating(){if(!$u("mc-floating-nav"))return;const active=document.querySelector('#results-tabs .rtab.active')?.dataset?.tab||"overview";$u("mc-back-overview").hidden=$u("results-tabs")?.hidden||active==="overview";$u("mc-back-top").hidden=window.scrollY<700}
@@ -32501,15 +32881,15 @@ fteAnalyze=function(blocks){
     return String(it?.snippet||"").trim() || e(it?.msg||"");
   }
 
-  function engLegacyIssue(it){
+  function engLegacyIssue(it,rowIndex){
     const sev=it?.severity==="warn"?"warn":"info";
-    return `<div class="issue"><span class="badge ${sev}">${sev==="warn"?"!":"i"}</span><div class="body"><p class="msg"><span class="abbr">${e(humanIssueCode(it.code||""))}</span> ${e(it.msg||"")}</p><div class="snip">${engSafeSnippet(it)}</div>${it.suggestion?`<p class="std-note"><b>Recommendation:</b> ${e(it.suggestion)}</p>`:""}</div></div>`;
+    return `<div class="issue" data-ledger-target="eng-finding-row-${rowIndex}"><span class="badge ${sev}">${sev==="warn"?"!":"i"}</span><div class="body"><p class="msg"><span class="abbr">${e(humanIssueCode(it.code||""))}</span> ${e(it.msg||"")}</p><div class="snip">${engSafeSnippet(it)}</div>${it.suggestion?`<p class="std-note"><b>Recommendation:</b> ${e(it.suggestion)}</p>`:""}</div></div>`;
   }
 
   function engGroupRow({check,location,finding,recommendation,instances,instanceHtml,rowIndex,title,note}){
     const has=(instances&&instances.length)||String(instanceHtml||"").trim();
     const view=has?`<button type="button" class="eng-view-instances" data-target="eng-instance-row-${rowIndex}" aria-expanded="false" aria-controls="eng-instance-row-${rowIndex}">View instances</button>`:"";
-    const main=`<tr><td class="t-abbr">${e(check)}</td><td>${e(location||"Body")}</td><td>${e(finding)}</td><td>${e(recommendation||"No action needed.")}${view}</td></tr>`;
+    const main=`<tr id="eng-finding-row-${rowIndex}"><td class="t-abbr">${e(check)}</td><td>${e(location||"Body")}</td><td>${e(finding)}</td><td>${e(recommendation||"No action needed.")}${view}</td></tr>`;
     if(!has) return main;
     const panel=`<tr class="eng-instance-row" id="eng-instance-row-${rowIndex}" hidden><td colspan="4"><div class="eng-instance-panel"><p class="eng-instance-panel-title">${e(title||"Manuscript instances")}</p><p class="eng-instance-panel-note">${e(note||"Review the highlighted manuscript context for this finding.")}</p>${instanceHtml||listInstances(instances||[],"eng")}</div></td></tr>`;
     return main+panel;
@@ -32563,9 +32943,10 @@ fteAnalyze=function(blocks){
     $("eng-summary").innerHTML="";
     $("eng-summary").hidden=true;
 
-    const rows=[];
+    const rows=[],legacy=[];
     let rowIndex=0;
     if(sentenceIssues.length){
+      sentenceIssues.forEach(it=>legacy.push(engLegacyIssue(it,rowIndex)));
       rows.push(engGroupRow({
         check:"Sentence length",location:"Body",
         finding:sentenceIssues.length===1
@@ -32580,13 +32961,16 @@ fteAnalyze=function(blocks){
     const longParas=paraIssues.filter(x=>x.code==="PARAGRAPH_TOO_LONG");
     const shortParas=paraIssues.filter(x=>x.code==="PARAGRAPH_TOO_SHORT");
     if(longParas.length){
+      longParas.forEach(it=>legacy.push(engLegacyIssue(it,rowIndex)));
       rows.push(engGroupRow({check:"Paragraph length",location:"Body",finding:longParas.length===1?`1 paragraph exceeds the ${paragraphMax}-word limit`:`${longParas.length} paragraphs exceed the ${paragraphMax}-word limit`,recommendation:"Consider dividing long paragraphs into focused paragraphs at logical transitions.",instances:longParas.map(it=>`<div class="eng-instance-label">${e(`${it.sectionTitle||"Body"} · Paragraph ${it.paragraph||""} · ${it.wordCount||""} words`)}</div>${engSafeSnippet(it)}`),rowIndex:rowIndex++,title:"Long-paragraph instances",note:`These eligible narrative paragraphs exceed the selected ${paragraphMax}-word maximum.`}));
     }
     if(shortParas.length){
+      shortParas.forEach(it=>legacy.push(engLegacyIssue(it,rowIndex)));
       rows.push(engGroupRow({check:"Paragraph length",location:"Body",finding:shortParas.length===1?`1 paragraph is below the ${paragraphMin}-word guideline`:`${shortParas.length} paragraphs are below the ${paragraphMin}-word guideline`,recommendation:"Review whether these short paragraphs should be combined with adjacent prose where the ideas belong together.",instances:shortParas.map(it=>`<div class="eng-instance-label">${e(`${it.sectionTitle||"Body"} · Paragraph ${it.paragraph||""} · ${it.wordCount||""} words`)}</div>${engSafeSnippet(it)}`),rowIndex:rowIndex++,title:"Short-paragraph instances",note:`Only section-aware paragraphs eligible for the selected ${paragraphMin}-word minimum are shown.`}));
     }
 
     termIssues.forEach(it=>{
+      legacy.push(engLegacyIssue(it,rowIndex));
       const caption=it.code==="CAPTION_CAPITALIZATION_INCONSISTENT";
       rows.push(engGroupRow({
         check:"Terminology consistency",
@@ -32603,8 +32987,7 @@ fteAnalyze=function(blocks){
     const empty=`<tr><td colspan="4"><span class="verdict clean">No sentence-length, paragraph-length, or terminology-consistency items require review.</span></td></tr>`;
     const help=`<p class="sec-label">Readability &amp; terminology ledger <button type="button" class="info-help" id="eng-ledger-info" aria-label="Explain the readability and terminology ledger" aria-expanded="false" title="What do these columns mean?">i</button></p><p class="std-note eng-threshold-note"><b>Note:</b> Current limits are <b>${sentenceLimit} words per sentence</b> and <b>${paragraphMin}–${paragraphMax} words per paragraph</b>. These limits can be customised in <button type="button" class="eng-advanced-settings-link" aria-haspopup="dialog" aria-controls="eng-readability-dialog">Advanced check settings</button>.</p><div class="ledger-help" id="eng-ledger-help" hidden><div class="ledger-help-grid"><b>Check</b><span>The readability or terminology rule being assessed.</span><b>Location</b><span>The manuscript area in which the finding was detected.</span><b>Finding</b><span>A concise description of what was detected, including counts where useful.</span><b>Recommendation</b><span>A concise next step. Use <b>View instances</b> to inspect the manuscript context.</span></div></div>`;
 
-    const legacy=[...sentenceIssues,...paraIssues,...termIssues].map(engLegacyIssue).join("");
-    $("eng-findings").innerHTML=`${help}<div class="ledger-scroll"><table class="ledger eng-reporting-table"><thead><tr><th>Check</th><th>Location</th><th>Finding</th><th>Recommendation</th></tr></thead><tbody>${rows.join("")||empty}</tbody></table></div><div class="eng-ledger-legacy" aria-hidden="true">${legacy}</div>`;
+    $("eng-findings").innerHTML=`${help}<div class="ledger-scroll"><table class="ledger eng-reporting-table"><thead><tr><th>Check</th><th>Location</th><th>Finding</th><th>Recommendation</th></tr></thead><tbody>${rows.join("")||empty}</tbody></table></div><div class="eng-ledger-legacy" aria-hidden="true">${legacy.join("")}</div>`;
 
     bindInfoHelp("eng-report-info","eng-report-help");
     bindInfoHelp("eng-ledger-info","eng-ledger-help");
@@ -32675,10 +33058,10 @@ fteAnalyze=function(blocks){
     return safe;
   }
 
-  function fteLegacyIssue(it){
+  function fteLegacyIssue(it,i){
     const cls=it.severity==="err"?"err":it.severity==="info"?"info":"warn";
     const sym=cls==="err"?"×":cls==="warn"?"!":"i";
-    return `<div class="issue"><span class="badge ${cls}">${sym}</span><div class="body"><p class="msg"><span class="abbr">${e(humanIssueCode(it.code||""))}</span> <b>${e(fteItemLabel(it))}</b> · ${e(it.msg||"")}</p>${it.context?`<div class="snip">${e(it.context)}</div>`:""}${it.suggestion?`<p class="std-note"><b>Recommendation:</b> ${e(it.suggestion)}</p>`:""}</div></div>`;
+    return `<div class="issue" data-ledger-target="fte-finding-row-${i}"><span class="badge ${cls}">${sym}</span><div class="body"><p class="msg"><span class="abbr">${e(humanIssueCode(it.code||""))}</span> <b>${e(fteItemLabel(it))}</b> · ${e(it.msg||"")}</p>${it.context?`<div class="snip">${e(it.context)}</div>`:""}${it.suggestion?`<p class="std-note"><b>Recommendation:</b> ${e(it.suggestion)}</p>`:""}</div></div>`;
   }
 
   function fteConciseRecommendation(it){
@@ -32752,7 +33135,7 @@ fteAnalyze=function(blocks){
     const ctx=fteHighlightContext(it);
     const view=ctx?`<button type="button" class="fte-view-instances" data-target="fte-instance-row-${i}" aria-expanded="false" aria-controls="fte-instance-row-${i}">View instances</button>`:"";
     const recommendation=fteConciseRecommendation(it);
-    const main=`<tr><td class="t-abbr">${e(fteItemLabel(it))}</td><td>${e(fteCheckLabel(it.code))}</td><td>${e(it.msg||"")}</td><td><span class="fte-ledger-status ${ftePriority(it)}">${e(fteStatusLabel(it))}</span></td><td><div class="fte-recommendation-text">${e(recommendation)}</div>${view}</td></tr>`;
+    const main=`<tr id="fte-finding-row-${i}"><td class="t-abbr">${e(fteItemLabel(it))}</td><td>${e(fteCheckLabel(it.code))}</td><td>${e(it.msg||"")}</td><td><span class="fte-ledger-status ${ftePriority(it)}">${e(fteStatusLabel(it))}</span></td><td><div class="fte-recommendation-text">${e(recommendation)}</div>${view}</td></tr>`;
     if(!ctx) return main;
     const citationFinding=/CITATION_WITHOUT|REFERENCE_WITHOUT|STRUCTURAL_MATCH|APPEARS_BEFORE_FIRST_CITATION|FIRST_CITATION_ORDER|CITED_BEFORE_PREVIOUS/.test(String(it.code||""));
     const panelTitle=citationFinding?"Citation instance":"Manuscript instance";
@@ -32769,7 +33152,7 @@ fteAnalyze=function(blocks){
     if(!res.reliable){
       $("fte-summary").innerHTML="";
       const pseudo={kind:"structural",id:"?",code:"STRUCTURAL_MATCH_REVIEW",severity:"warn",msg:"Unable to verify placement reliably from the Word document structure.",suggestion:"Review the figures, tables, and equations manually because reliable Word structure was not available.",context:""};
-      $("fte-findings").innerHTML=`<p class="sec-label">Figures, tables &amp; equations ledger</p><div class="ledger-scroll"><table class="ledger fte-reporting-table"><thead><tr><th>Item</th><th>Check</th><th>Finding</th><th>Status</th><th>Recommendation</th></tr></thead><tbody>${fteFindingRow(pseudo,0)}</tbody></table></div><div class="fte-ledger-legacy" aria-hidden="true">${fteLegacyIssue(pseudo)}</div>`;
+      $("fte-findings").innerHTML=`<p class="sec-label">Figures, tables &amp; equations ledger</p><div class="ledger-scroll"><table class="ledger fte-reporting-table"><thead><tr><th>Item</th><th>Check</th><th>Finding</th><th>Status</th><th>Recommendation</th></tr></thead><tbody>${fteFindingRow(pseudo,0)}</tbody></table></div><div class="fte-ledger-legacy" aria-hidden="true">${fteLegacyIssue(pseudo,0)}</div>`;
       $("fte-report").hidden=false; buildReportSubnav("fte-report","fte-subnav"); return;
     }
 
@@ -32780,7 +33163,7 @@ fteAnalyze=function(blocks){
     const help=`<p class="sec-label">Figures, tables &amp; equations ledger <button type="button" class="info-help" id="fte-ledger-info" aria-label="Explain the figures tables and equations ledger" aria-expanded="false" title="What do these columns mean?">i</button></p><div class="ledger-help" id="fte-ledger-help" hidden><div class="ledger-help-grid"><b>Item</b><span>The Figure, Table, Equation, or structural item associated with the finding.</span><b>Check</b><span>The structural rule being assessed, such as numbering, citation order, cross-reference resolution, or panel lettering.</span><b>Finding</b><span>A concise description of what was detected.</span><b>Status</b><span>A short factual status for the detected condition.</span><b>Recommendation</b><span>The suggested next step. Select <b>View instances</b> when manuscript context is available.</span></div></div>`;
     const orderedIssues=ftePrioritizedIssues(res.issues);
     const body=orderedIssues.length?orderedIssues.map(it=>fteFindingRow(it,res.issues.indexOf(it))).join(""):`<tr><td colspan="5"><span class="verdict clean">No figure, table, or numbered-equation consistency issues detected.</span></td></tr>`;
-    const legacy=orderedIssues.map(fteLegacyIssue).join("");
+    const legacy=orderedIssues.map(it=>fteLegacyIssue(it,res.issues.indexOf(it))).join("");
     $("fte-findings").innerHTML=`${help}<div class="ledger-scroll"><table class="ledger fte-reporting-table"><thead><tr><th>Item</th><th>Check</th><th>Finding</th><th>Status</th><th>Recommendation</th></tr></thead><tbody>${body}</tbody></table></div><div class="fte-ledger-legacy" aria-hidden="true">${legacy}</div>`;
     bindInfoHelp("fte-ledger-info","fte-ledger-help");
     bindLedgerButtons("#fte-findings","fte-view-instances");
@@ -34099,6 +34482,10 @@ fteAnalyze=function(blocks){
       return mcContextResult(family,family[0].toUpperCase()+family.slice(1),"unresolved_role","Scientific role unresolved",.75,[`${family} unit`],false);
     }
 
+    if(q.parsed?.dimKey==="L:3"&&/\bpower(?:\s+density)?\b/i.test(q.parameter||"")){
+      const cue=mcAttachedCue(before,after,[["anolyte_volume","Anolyte volume",/\banolyte\s+volumes?\b/i,"Anolyte volume"],["catholyte_volume","Catholyte volume",/\bcatholyte\s+volumes?\b/i,"Catholyte volume"],["reactor_volume","Reactor volume",/\b(?:reactor|chamber|vessel|tank)\s+(?:volumes?|capacit(?:y|ies))\b/i,"Reactor volume"],["volume","Volume",/\bvolumes?\b/i,"Volume"]]);
+      if(cue)return mcContextResult(cue.key,cue.label,cue.key,cue.ctx,.94,["explicit volume descriptor and volume dimension"]);
+    }
     if(q.parsed?.dimKey==="L:3|M:-1"){
       const cue=mcAttachedCue(before,after,[
         ["specific_pore_volume","Specific pore volume",/\b(?:total\s+)?pore\s+volume\b/i,"Pore structure"],
@@ -34109,7 +34496,8 @@ fteAnalyze=function(blocks){
     // Preserve strong legacy parameter recognition when available.
     const old=String(q?.parameter||"");
     const oldConf=Number(q?.parameterConfidence||0);
-    const legacyCompatible=!/^(?:DO|dissolved[ -]+oxygen)$/i.test(old)||["L:-3|M:1","L:-3|N:1","dimensionless"].includes(q.parsed?.dimKey);
+    const legacyCompatible=(!/^(?:DO|dissolved[ -]+oxygen)$/i.test(old)||["L:-3|M:1","L:-3|N:1","dimensionless"].includes(q.parsed?.dimKey))&&
+      (!/\bpower(?:\s+density)?\b/i.test(old)||q.parsed?.dimKey!=="L:3");
     if(old && old!=="Body text" && old!=="percentage" && oldConf>=.70&&legacyCompatible)
       return mcContextResult(mcNormKey(old),old,mcNormKey(old),old,Math.max(.74,oldConf),["legacy parameter cue"]);
 
@@ -34231,6 +34619,29 @@ fteAnalyze=function(blocks){
     const candidate=mcClassifyPercentage(previous,previous.slice(0,values[0].index),previous.slice(values[0].index+values[0][0].length));
     return candidate.precisionComparable?{...candidate,evidence:[...candidate.evidence,"single explicit percentage antecedent"]}:null;
   }
+  function mcEquipmentOpeningClass(q,before,after){
+    if(mcDimFamily(q)!=="length"||!/\b(?:opening|aperture)\s+sizes?\b/i.test(before))return false;
+    // Category boundaries need an explicit classification subject and the
+    // locally attached category. A measured opening remains a result.
+    const category=before.match(/\b(?:screens?|sieves?)\s+(?:are|were)\s+(?:classified|categori[sz]ed|divided)\s+(?:into|as)\b/i);
+    return !!category&&!/\b(?:measured|recorded|observed|determined|found)\b/i.test(before.slice(category.index))&&
+      /\b(?:coarse|medium|fine|micro|ultrafine)(?:\s+(?:screens?|sieves?))?\s*\(\s*$/i.test(before)&&/^\s*(?:\)|for\b|as\b)/i.test(after);
+  }
+  function mcCitedBackgroundRange(q,before,after,previous){
+    // A citation alone never establishes ownership. Limit this additional
+    // evidence to explicitly reported background ranges or a cited material
+    // property used to explain general suitability, not measured results.
+    if(!new RegExp("^(?:"+UNIT_NUM_CORE+")\\s*(?:[−‐‑‒–—-]|\\bto\\b)\\s*(?:"+UNIT_NUM_CORE+")$").test(String(q.value||"")))return null;
+    const citation=/(?:\([A-Z][\p{L}'’–-]+[^)]{0,180}\b(?:19|20)\d{2}[a-z]?[^)]*\)|\[\s*\d+(?:\s*[,–—-]\s*\d+)*\s*\])\s*[.!?]?\s*$/u;
+    if(!citation.test(after))return null;
+    const own=/\b(?:we|our|(?:this|present|current)\s+(?:study|work|research|investigation)|(?:experiments?|results?)\s+(?:described|reported|presented)\s+here)\b/i;
+    const local=before+" "+after;
+    if(own.test(local)||own.test(previous)||/\b(?:measured|recorded|observed|determined|obtained|achieved|detected|found|experimental|samples?|methods?|protocols?|procedures?)\b/i.test(local))return null;
+    const reportedPotential=/^(?:(?:This|That)\s+(?:states|reports)\s+that|(?:The\s+)?literature\s+(?:states|reports)\s+that)\s+[^,;.!?]{1,100}\s+(?:can|may)\s+(?:produce|generate|yield|provide|supply)\s*$/i.test(before);
+    const property=/^(?:This|That|Such|The)\s+(?:[A-Za-z-]+\s+){0,5}(?:density|concentration|conductivity|capacity|content|porosity|permeability|strength|surface\s+area)\s*\(\s*$/i.test(before);
+    const suitability=/^\s*\)/.test(after)&&/\b(?:makes?|renders?)\s+[^,;.!?]{1,80}\s+(?:an?\s+)?(?:ideal|suitable|promising|attractive)\s+(?:candidate|material|option)\b/i.test(after);
+    return reportedPotential||property&&suitability?{...unitPrecisionSource("literature"),backgroundRange:true}:null;
+  }
   function mcClassifyMeasurement(text,q){
     const start=Number(q?.index||0),end=q.sourceEnd??mcMeasurementEnd(text,q);
     const contextStart=q.sharedUnit?.listStart??start,contextEnd=q.sharedUnit?.unitEnd??end;
@@ -34246,11 +34657,13 @@ fteAnalyze=function(blocks){
       res.sourceEvidence=annotation.sourceEvidence;
     }
     const energy=mcEnergySystemContext(q,clauseObj.text,before,after);if(energy)res=energy;
+    if(mcEquipmentOpeningClass(q,before,after))res={...res,precisionRole:"setting",precisionComparable:false,
+      precisionReason:"These values define equipment size categories, so decimal places were not compared. No action needed for this comparison."};
     if(mcReferenceDatasetInput(before)){
       res={...res,contextKey:res.contextKey+"_reference_dataset",contextLabel:"Reference dataset",precisionRole:"reference_data",precisionComparable:false,
         precisionReason:"A reference-dataset input retains its published precision and is not compared with experimental measurements."};
     }
-    if(/(?:\b(?:less\s+than|greater\s+than|at\s+most|at\s+least|not\s+more\s+than|not\s+less\s+than|up\s+to|below|above)|[<>≤≥])\s*$/i.test(before)){
+    if(/(?:\b(?:less\s+than|greater\s+than|more\s+than|at\s+most|at\s+least|not\s+more\s+than|not\s+less\s+than|up\s+to|below|above)|[<>≤≥])\s*$/i.test(before)){
       res.precisionComparable=false;res.precisionRole="bound";
       res.precisionReason="A censored value or bound does not establish measurement resolution; its unit notation is retained.";
     }
@@ -34288,6 +34701,7 @@ fteAnalyze=function(blocks){
     const paragraphEnd=String(text).indexOf("\n",sourceWindow.end);
     const following=splitIntoSentences(String(text).slice(sourceWindow.end,paragraphEnd<0?String(text).length:paragraphEnd)).slice(0,3).join(" ").slice(0,1200);
     let source=mcValueSource(sourceBefore,sourceAfter+(continuationAfter?"; "+continuationAfter:""),q.rawUnit,previous,following);
+    if(!source)source=mcCitedBackgroundRange(q,sourceBefore,sourceAfter,previous);
     if(!source&&/\b(?:compared\s+(?:with|to)|comparable\s+to|similar\s+to|(?:higher|lower|greater|smaller|less)(?:\s+(?!(?:was|were|is|are|we|our)\b)[A-Za-z][A-Za-z-]*){0,4}\s+than)\b/i.test(sourceBefore)){
       const originalCitation=mcOriginalComparisonCitation(text,q);
       if(originalCitation)source=mcValueSource(sourceBefore,originalCitation+" "+sourceAfter,q.rawUnit,previous);
@@ -34378,7 +34792,7 @@ fteAnalyze=function(blocks){
     const literature=/\b(?:according\s+to\s+(?!the\s+(?:standard|method|protocol))|reported\s+by|previous(?:ly)?\s+(?:studies|reported)|(?:in|from)\s+(?:the\s+)?literature|investigation\s+by|et\s+al\.\s*(?:\([^)]*\)\s*)?(?:(?:have|has|had)\s+)?(?:reported|found|observed|obtained|measured))\b/i;
     const trailing=a.match(/\b(?:reported\s+by|according\s+to)\b/i);
     const sharedAttribution=trailing&&trailing.index<160&&!/\b(?:measured|recorded|observed|obtained|achieved|showed|found|is|are|has|had)\b/i.test(a.slice(0,trailing.index));
-    const author=/\b[A-Z][\p{L}'’-]+\s+(?:et\s+al\.|and\s+co[- ]?(?:workers|researchers)|(?:and|&)\s+[A-Z][\p{L}'’-]+(?=\s+\([^)]{0,100}(?:19|20)\d{2}[a-z]?\)))\s+(?:\([^)]{0,100}(?:19|20)\d{2}[a-z]?\)\s*)?(?:who\s+)?(?:(?:have|has|had)\s+)?(?:reported|found|observed|obtained|measured|prepared|pre[- ]treated|fabricated|synthesi[sz]ed|cultivated|cultured|characteri[sz]ed|used|utili[sz]ed|employed|developed|demonstrated|investigated|achieved|showed)\b/u;
+    const author=/\b[A-Z][\p{L}'’-]+\s*,?\s+(?:et\s+al\.|and\s+co[- ]?(?:workers|researchers)|(?:and|&)\s+[A-Z][\p{L}'’-]+(?=\s+\([^)]{0,100}(?:19|20)\d{2}[a-z]?\)))\s*(?:(?:\[\s*\d+(?:\s*[,–—-]\s*\d+)*\s*\]|\d+(?:\s*[,–—-]\s*\d+)*)\s*)?(?:\([^)]{0,100}(?:19|20)\d{2}[a-z]?\)\s*)?(?:who\s+)?(?:(?:have|has|had)\s+)?(?:reported|found|observed|obtained|measured|prepared|pre[- ]treated|fabricated|synthesi[sz]ed|cultivated|cultured|characteri[sz]ed|used|utili[sz]ed|employed|developed|demonstrated|confirmed|investigated|achieved|showed)\b/u;
     const cited=/\([^)]{1,180}\b(?:19|20)\d{2}[a-z]?[^)]*\)|\[\s*\d+(?:\s*[,–—-]\s*\d+)*\s*\]/.test(a);
     const priorAuthor=[...mcCleanContextText(previous).matchAll(new RegExp(author.source,"gu"))].at(-1);
     const namedSource=priorAuthor?.[0]?.match(/^[\p{L}'’-]+/u)?.[0];
@@ -34513,9 +34927,30 @@ fteAnalyze=function(blocks){
     }
     return {...c,evidence:[...c.evidence,"cell-local metric under descriptive table header"],clause:text};
   }
+  function mcTableResistanceQualifier(q){
+    if(!q.precisionTable||q.inherited||mcDimFamily(q)!=="resistance"||! /^(?:(?:electrical|electrochemical)\s+)?resistance$|^R$/i.test(String(q.parameter||"").trim()))return null;
+    // The extractor retains the cell-local clause before generic header
+    // context is applied. A unique explicit subtype refines that header;
+    // unrelated/ambiguous labels never supply an inferred subtype.
+    const text=String(q.measurementContext?.clause||q.contextClause||"");
+    const qualifiers=[
+      ["internal_resistance","Internal resistance",/\binternal\s+resistance\b|\bR\s*_?\s*[({]?\s*int\s*[)}]?(?![A-Za-z])/i,"Electrical resistance"],
+      ["charge_transfer_resistance","Charge-transfer resistance",/\bcharge[- ]transfer\s+resistance\b|\bR\s*_?\s*[({]?\s*ct\s*[)}]?(?![A-Za-z])/i,"Electrochemical impedance"]
+    ];
+    const token=new RegExp(escapeRegExp(String(q.value||""))+"\\s*"+escapeRegExp(q.rawUnit),"g"),matches=[...text.matchAll(token)];
+    if(matches.length!==1)return null;
+    const before=text.slice(0,matches[0].index),after=text.slice(matches[0].index+matches[0][0].length);
+    const attached=qualifiers.filter(([, ,pattern])=>
+      new RegExp("^\\s*\\(\\s*(?:"+pattern.source+")\\.?\\s*\\)","i").test(after)||
+      new RegExp("^\\s*(?:"+pattern.source+")\\.?(?=\\s*(?:[,;]|and\\b|$))","i").test(after)||
+      new RegExp("(?:^|[,;]|\\band\\b)\\s*(?:"+pattern.source+")\\s*[:=]\\s*$","i").test(before));
+    if(attached.length!==1)return null;
+    const [key,label,,context]=attached[0];
+    return {...mcContextResult(key,label,key,context,.99,["explicit resistance subtype in table cell"]),clause:text};
+  }
   function mcApplyTableContext(q){
     if(!q||!q.parsed?.valid)return q;
-    const local=mcDescriptiveTableContext(q),c=local||mcHeaderContext(q.precisionTable?.analyte?`${q.precisionTable.analyte} · ${q.parameter}`:q.parameter,q.rawUnit);
+    const local=mcTableResistanceQualifier(q)||mcDescriptiveTableContext(q),c=local||mcHeaderContext(q.precisionTable?.analyte?`${q.precisionTable.analyte} · ${q.parameter}`:q.parameter,q.rawUnit);
     if(local){q.precisionTable={...q.precisionTable,parameterEstablished:local.precisionComparable&&local.confidence>=.85};q.contextClause=local.clause;}
     q.measurementContext={...c,family:mcDimFamily(q),clause:q.snippet||q.context};
     q.parameter=c.parameter;
@@ -34708,12 +35143,25 @@ fteAnalyze=function(blocks){
       rows.push({parameter:`Unit notation · ${g.normalized}`,context:"Multiple contexts",raws:g.raws,normalized:g.normalized,uses:g.instances.length,precisions:new Map(),instances:g.instances,status:"mixed format",precisionComparable:false,unitKey:uk,notationOnly:true});
     });
 
+    // An unsupported cost factor is a checker limitation, not a malformed
+    // author unit. Keep its complete written expression visible and uncounted
+    // by physical-format/precision checks or attention totals.
+    const unsupported=new Map();
+    (qs||[]).filter(q=>q.parsed?.unsupportedCurrency).forEach(q=>{
+      const scope=String(q.context||"").startsWith("Table ")?String(q.context).split(",")[0]:"Body";
+      const key=`${scope}|${q.parameter}|${q.rawUnit}`;
+      if(!unsupported.has(key))unsupported.set(key,{parameter:q.parameter||"Cost-normalized measurement",context:scope,
+        raws:new Map(),normalized:"",uses:0,precisions:new Map(),instances:[],status:"Unit not checked",precisionComparable:false,precisionCompared:false,
+        precisionReason:"This unit includes a cost term that the tool cannot check. No manuscript change is suggested."});
+      const row=unsupported.get(key);row.uses++;row.raws.set(q.rawUnit,(row.raws.get(q.rawUnit)||0)+1);row.instances.push(q);
+    });
+    rows.push(...unsupported.values());
     return rows.sort((a,b)=>String(a.parameter).localeCompare(String(b.parameter))||String(a.context).localeCompare(String(b.context)));
   };
 
   unitStatusClass=function(s){
     s=String(s||"").toLowerCase();
-    if(s==="unit recognized")return "opt";
+    if(s==="unit recognized"||s==="unit not checked")return "opt";
     return /mixed|review/.test(s)?"na":"y";
   };
   unitStatusAction=function(status,row){
@@ -34721,6 +35169,7 @@ fteAnalyze=function(blocks){
     const p=String(row?.parameter||"this parameter/context").replace(/\s*·\s*.+$/," ").trim();
     if(row?.precisionReview)return (status.includes("mixed format")?"Use one unit notation consistently. ":"")+row.precisionReason;
     if(status==="consistent")return "No action needed.";
+    if(status==="unit not checked")return row.precisionReason;
     if(status==="unit format consistent"||status==="unit recognized")return row?.precisionReason||"Unit notation checked; no cross-value numerical precision comparison was made.";
     if(status.includes("mixed spacing"))return "Use one spacing convention consistently for this unit.";
     if(status.includes("format")&&status.includes("precision"))return `Use one unit notation consistently and review the measurement resolution supporting ${p} values.`;
@@ -39463,6 +39912,12 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
     const raw=v5StripNum(p.raw);let ti=raw.indexOf(fixed);if(ti<2)return;
     const after=raw.slice(ti+fixed.length);if(!/\b(?:19|20)\d{2}\b/.test(after))return;
     let ar=raw.slice(0,ti).replace(/[\s,;:.]+$/,'').trim();
+    // A known journal's catalogue-year qualifier must not reopen a resolved
+    // author-year boundary and append the publication year to the author list.
+    const sourceQualifier=String(p.sourceRegion||'').match(/^(.+?)\s*\(\s*(?:18|19|20)\d{2}\s*\)$/);
+    const prefixYears=ar.match(/\b(?:19|20)\d{2}[a-z]?\b/gi)||[];
+    if(sourceQualifier && journalDbMatch(sourceQualifier[1],false).matched &&
+       prefixYears.some(y=>y.toLowerCase()===String(p.year||'').toLowerCase()))return;
     if(ar.length<3||ar.length>650||!/[;,]/.test(ar)||!(/,\s*[A-Z](?:[.]|-)[A-Z.\-]*/.test(ar)||/(?:^|[\s,;])(?:[A-Z](?:[-.][A-Z])?\.?)(?=\s|[,;]|$)/.test(ar)))return;
     // If the prefix includes an obvious sentence rather than names, do not rewrite.
     if(/\b(?:abstract|introduction|available|accessed|retrieved)\b/i.test(ar))return;
