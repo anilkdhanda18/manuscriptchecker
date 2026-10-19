@@ -13916,6 +13916,125 @@ function abbrScientificOccurrenceScore(sent,index,raw,definition){
   // enough to call it a symbol occurrence.
   return score;
 }
+// Raman intensities are notation only within their own paragraph or table/figure.
+// Never register ID or IG as document-wide standard abbreviations.
+function abbrRamanAreaNotationSpans(text,context=text){
+  const s=String(text||''),local=String(context||''),spans=[];
+  const component=String.raw`(?:[1-9]\d{0,2}|[xX])`;
+  const d=String.raw`[Dd](?:${component}|_(?:\{${component}\}|${component}))?`;
+  const atom=band=>String.raw`A(?:_\{${band}\}|_${band}|\(${band}\)|${band})`;
+  const single=new RegExp(`(?<![\\p{L}\\p{N}_{}])(?:${atom(d)}|${atom('[Gg]')})(?![\\p{L}\\p{N}_{}])`,'gu');
+  if(!new RegExp(single.source,'u').test(s))return spans;
+  const spectralArea=value=>/\bRaman\b|\b(?:D(?:[1-9]\d{0,2}|x)?|G)\s*[-–]?\s*(?:bands?|peaks?)\b/i.test(value)&&
+    /\b(?:integrated\s+)?(?:peak|band)\s+areas?\b|\bareas?\s+(?:of|under|for)\s+(?:the\s+)?(?:D(?:[1-9]\d{0,2}|x)?|G)\s*[-–]?\s*(?:bands?|peaks?)\b/i.test(value);
+  if(!spectralArea(local))return spans;
+  const key=raw=>raw.replace(/[_{}()]/g,'').toUpperCase(),otherMeanings=new Set();
+  const areaLabel=k=>{
+    const band=k.slice(1).replace(/^D(.+)$/,String.raw`D(?:$1|_\{$1\}|_$1)`);
+    return `(?:(?:integrated\\s+)?(?:peak\\s+)?area\\s+(?:of|under|for)\\s+(?:the\\s+)?${band}\\s*[-–]?\\s*(?:band|peak)|${band}\\s*[-–]?\\s*(?:band|peak)\\s+(?:integrated\\s+)?(?:peak\\s+)?area)\\b`;
+  };
+  const definition=(sf,lf)=>{
+    const k=key(String(sf));
+    if(/^A(?:D(?:[1-9]\d{0,2}|X)?|G)$/.test(k)&&!new RegExp(areaLabel(k),'i').test(lf))otherMeanings.add(k);
+  };
+  // Native scripts may hide an ordinary alternative such as amplitude gain
+  // (A_G) from strict acronym matching. Normalize only these candidate symbols
+  // in a private definition copy; manuscript text and occurrence offsets stay intact.
+  for(const source of new Set([local,local.replace(single,raw=>key(raw))])){
+    collectDefs(source,0,definition);collectReverseDefs(source,0,definition);
+  }
+  collectScientificDefs(local,0,definition);collectScientificReverseDefs(local,0,definition);
+  const labelled=(value,m)=>{
+    const label=areaLabel(key(m[0])),before=value.slice(Math.max(0,m.index-110),m.index),after=value.slice(m.index+m[0].length,m.index+m[0].length+120);
+    return new RegExp(`${label}\\s*[(:,]?\\s*$`,'i').test(before)||new RegExp(`^\\s*\\)?\\s*(?:(?:is|denotes|represents|=)\\s*)?(?:the\\s+)?${label}`,'i').test(after);
+  };
+  const explicitG=[...local.matchAll(single)].some(m=>key(m[0])==='AG'&&!otherMeanings.has('AG')&&labelled(local,m));
+  const sentenceAt=index=>{
+    const boundary=/(?:[;.!?]\s+|[\r\n]+)/;
+    return s.slice(0,index).split(boundary).at(-1)+s.slice(index).split(boundary)[0];
+  };
+  const unrelated=sentence=>/\b(?:(?:drain|gate)\s+areas?|transistors?|MOSFETs?|FETs?|identifiers?|identification)\b/i.test(sentence);
+  const pair=new RegExp(`(?<![\\p{L}\\p{N}_{}])(${atom(d)})\\s*[/⁄∕]\\s*(${atom('[Gg]')})(?![\\p{L}\\p{N}_{}])`,'gu');
+  for(const m of s.matchAll(pair)){
+    const sentence=sentenceAt(m.index);
+    if((!explicitG&&!spectralArea(sentence))||otherMeanings.has(key(m[1]))||otherMeanings.has('AG')||unrelated(sentence))continue;
+    spans.push({start:m.index,end:m.index+m[0].length,notation:'A_D/A_G (including D-band components)'});
+  }
+  for(const m of s.matchAll(single)){
+    const start=m.index,end=start+m[0].length,k=key(m[0]);
+    if(spans.some(sp=>start>=sp.start&&end<=sp.end)||otherMeanings.has(k)||unrelated(sentenceAt(start)))continue;
+    if(labelled(s,m))spans.push({start,end,notation:k==='AG'?'A_G':`A_${k.slice(1)}`});
+  }
+  return spans.sort((a,b)=>a.start-b.start);
+}
+function abbrRamanNotationSpans(text,context=text){
+  const s=String(text||""),local=String(context||""),spans=abbrRamanAreaNotationSpans(text,context);
+  const atom=band=>String.raw`I(?:_\{[${band}${band.toLowerCase()}]\}|_[${band}${band.toLowerCase()}]|\([${band}${band.toLowerCase()}]\)|[${band}${band.toLowerCase()}])`;
+  // A shared band/peak label can describe both symbols: D (I_D) and G
+  // bands (I_G), or D (I_D) and G (I_G) bands. Keep each symbol attached
+  // to its own letter; proximity to Raman alone must not exempt an ID code.
+  const coordinated=value=>{
+    const found=[],bandLabel='(?:[Bb]ands?|[Pp]eaks?)\\b';
+    for(const [a,b] of [['D','G'],['G','D']]){
+      const re=new RegExp(`\\b${a}\\s*[-–]?\\s*(${bandLabel})?\\s*\\(\\s*(${atom(a)})\\s*\\)\\s*(?:[Aa]nd|&|,)\\s*(?:the\\s+)?${b}\\s*[-–]?\\s*(${bandLabel})?\\s*\\(\\s*(${atom(b)})\\s*\\)\\s*(${bandLabel})?`,'gu');
+      for(const m of String(value).matchAll(re)){
+        if(!m[1]&&!m[3]&&!m[5])continue;
+        for(const raw of [m[2],m[4]]){
+          const start=m.index+m[0].indexOf(raw);
+          found.push({start,end:start+raw.length,raw});
+        }
+      }
+    }
+    return found;
+  };
+  const pairedLabels=coordinated(s),contextLabels=s===local?pairedLabels:coordinated(local);
+  const bands=/\bD\s*(?:and|[/⁄∕,&–-])\s*G\s*[-–]?\s*(?:bands?|peaks?)\b/i.test(local)||
+    /\bD\s*[-–]?\s*(?:band|peak)\b/i.test(local)&&/\bG\s*[-–]?\s*(?:band|peak)\b/i.test(local);
+  const explicitContext=/\bRaman\b/i.test(local)||bands||contextLabels.length>0;
+  const pair=new RegExp(`(?<![\\p{L}\\p{N}_{}])(${atom('D')})\\s*[/⁄∕]\\s*(${atom('G')})(?![\\p{L}\\p{N}_{}])`,'gu');
+  if(!explicitContext&&!new RegExp(pair.source,'u').test(s))return spans;
+  // A later discussion may name carbon ordering without repeating Raman.
+  // Infer only the complete ratio from its own sentence, never standalone ID/IG.
+  const structure='(?:framework|structure|lattice|network|domains?|matrix|sheets?|layers?)';
+  const carbon=`(?:carbon(?:aceous)?\\s+${structure}|(?:graphene|graphite|graphitic)(?:\\s+${structure})?)`;
+  const feature='(?:order(?:ing)?|disorder|(?:structural\\s+)?defects?(?:\\s+density)?)';
+  const carbonStructure=new RegExp(`\\b(?:${feature}\\s+(?:of|in|within)\\s+(?:the\\s+)?${carbon}|${carbon}\\s+${feature}|graphiti[sz]ation)\\b`,'i');
+  const carbonRatioContext=index=>{
+    const boundary=/(?:[;.!?]\s+|[\r\n]+)/;
+    const sentence=s.slice(0,index).split(boundary).at(-1)+s.slice(index).split(boundary)[0];
+    return carbonStructure.test(sentence)&&!/\b(?:currents?|transistors?|FETs?|MOSFETs?|codes?|identifiers?|identification|immunoglobulins?)\b/i.test(sentence);
+  };
+  const key=raw=>String(raw).replace(/[_{}()]/g,'').toUpperCase();
+  const otherMeanings=new Set();
+  const definition=(sf,lf)=>{if(/^I[DG]$/.test(key(sf))&&!/\bintensit(?:y|ies)\b/i.test(lf))otherMeanings.add(key(sf));};
+  collectDefs(local,0,definition);collectReverseDefs(local,0,definition);
+  collectScientificDefs(local,0,definition);collectScientificReverseDefs(local,0,definition);
+  const unrelated=index=>{
+    const before=s.slice(0,index).split(/[;.!?]\s+/).at(-1),after=s.slice(index).split(/[;.!?]\s+/)[0];
+    return /\b(?:(?:drain|gate)\s+currents?|identification|identifiers?|identity|immunoglobulins?)\b/i.test(before+' '+after);
+  };
+  for(const {start,end,raw} of pairedLabels){
+    if(!otherMeanings.has(key(raw))&&!unrelated(start))spans.push({start,end,notation:key(raw)==='ID'?'I_D':'I_G'});
+  }
+  for(const m of s.matchAll(pair)){
+    if((!explicitContext&&!carbonRatioContext(m.index))||otherMeanings.has('ID')||otherMeanings.has('IG')||unrelated(m.index))continue;
+    spans.push({start:m.index,end:m.index+m[0].length,notation:'I_D/I_G'});
+  }
+  if(!explicitContext)return spans.sort((a,b)=>a.start-b.start);
+  const established=(new RegExp(pair.source,'u').test(local)||contextLabels.length>0)&&!otherMeanings.has('ID')&&!otherMeanings.has('IG');
+  const single=new RegExp(`(?<![\\p{L}\\p{N}_{}])(?:${atom('D')}|${atom('G')})(?![\\p{L}\\p{N}_{}])`,'gu');
+  for(const m of s.matchAll(single)){
+    const start=m.index,end=start+m[0].length;
+    if(spans.some(sp=>start>=sp.start&&end<=sp.end)||otherMeanings.has(key(m[0]))||unrelated(start))continue;
+    const before=s.slice(Math.max(0,start-100),start),after=s.slice(end,end+90);
+    const band=key(m[0]).slice(-1);
+    const labelled=new RegExp(`(?:\\bintensit(?:y|ies)(?:\\s+of\\s+(?:the\\s+)?${band}\\s*[-–]?\\s*(?:bands?|peaks?))?|\\b${band}\\s*[-–]?\\s*(?:bands?|peaks?))\\s*[(:,]?\\s*$`,'i').test(before)||
+      new RegExp(`^\\s*\\)?\\s*(?:intensit(?:y|ies)\\b|(?:of|for)\\s+(?:the\\s+)?${band}\\s*[-–]?\\s*(?:bands?|peaks?)\\b)`,'i').test(after);
+    const measured=established&&/^\s*(?:[=≈<>≤≥]|(?:increased|decreased|rose|fell|was|is|were|are)\s+(?:[-+]?\d|higher|lower|greater|smaller))/i.test(after);
+    if(labelled||measured)spans.push({start,end,notation:key(m[0])==='ID'?'I_D':'I_G'});
+  }
+  return spans.sort((a,b)=>a.start-b.start);
+}
 function abbrIsChemicalOrRatioOccurrence(sent,index,raw){
   const text=String(sent||""), token=String(raw||""), before=text.slice(0,index), after=text.slice(index+token.length);
   if(abbrIsChemicalStereodescriptorOccurrence(text,index,token))return true;
@@ -14220,6 +14339,21 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
     const scope=MC_ABBR_DOCUMENT_SCOPE_PLAN?.scopeUncertain?"unresolved":"main";
     abbrSplitProseSentences(text).forEach(s=>{sentences.push(s);sentenceDefinitionScope.push(scope);});
   }
+  const scientificNotationSeen=new Set(),ramanSourceSpans=[];
+  const ramanParagraphs=text.split(/\n/).map(p=>p.replace(/\s+/g,' ').trim()).filter(Boolean);
+  let ramanOffset=0;
+  for(const paragraph of ramanParagraphs){
+    for(const sp of abbrRamanNotationSpans(paragraph))ramanSourceSpans.push({...sp,start:sp.start+ramanOffset,end:sp.end+ramanOffset});
+    ramanOffset+=paragraph.length+1;
+  }
+  const ramanSource=ramanParagraphs.join(' ');let ramanCursor=0;
+  const ramanSpansBySentence=sentences.map(sent=>{
+    const start=ramanSource.indexOf(sent,ramanCursor);if(start<0)return [];
+    ramanCursor=start+sent.length;
+    return ramanSourceSpans.filter(sp=>sp.start>=start&&sp.end<=ramanCursor).map(sp=>{
+      scientificNotationSeen.add(sp.notation);return {...sp,start:sp.start-start,end:sp.end-start};
+    });
+  });
   const chemicalFormulaCaseVariants=mcChemCollectProperCaseFormulaVariants(sentences);
   const chemicalFormulaCaseFindings=[],quantityMeaningFindings=[];
   try{window.MC_ABBR_CHEM_CASE_VARIANTS=chemicalFormulaCaseVariants;}catch(_e){}
@@ -14255,6 +14389,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
     }
   });
   const addDefinition=(sf,lf,s2,kind="parenthetical",meta={})=>{
+    if(Number.isFinite(meta.shortStart)&&abbrOverlapsProtectedSpan(ramanSpansBySentence[s2],meta.shortStart,String(sf).length))return;
     const dtype=meta.definitionType||"conventional_acronym";
     if(dtype==="conventional_acronym"){
       if(meta.validatedDefinition!==true || !abbrDefLooksLexicalFullForm(sf,lf)) return;
@@ -14442,6 +14577,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
     .concat(MC_ABBR_CONFIRMED_LOCAL_SCOPE?.compoundRecognitionDefinitions||[],window.MC_ABBR_STRUCTURAL_SCOPE_REGISTRY?.recognitionDefinitions||[],
       [...DECLARED_ABBR_MAP.values()].filter(d=>abbrLooksExplicitMixedCaseAcronym(d.form)&&abbrDefLooksLexicalFullForm(d.form,d.long)));
   function addOccurrence(raw,key,sent,si,index,spans,meta={}){
+    if(abbrOverlapsProtectedSpan(ramanSpansBySentence[si],index,String(raw).length))return;
     const occKey=`${si}:${index}:${key}`;
     if(seenOccurrence.has(occKey)) return;
     seenOccurrence.add(occKey);
@@ -15156,6 +15292,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
   }
 
   return {errors,warnings,infos,rows,
+          ...(scientificNotationSeen.size?{scientificNotationSeen:[...scientificNotationSeen].sort()}:{}),
           standardSeen:[...new Set(standardSeen)].sort(),
           declaredSeen:[...new Set(declaredSeen)].sort(),
           totalAbbr:nonStd, hasList,
@@ -15651,7 +15788,8 @@ function renderReport(r){
   document.getElementById("infos-wrap").innerHTML=section("Editorial notes",r.infos,"info");
   document.getElementById("ledger-wrap").innerHTML=abbrReportingLedger(r);
   document.getElementById("std-wrap").innerHTML=
-    r.standardSeen.length?`<p class="std-note"><b>Treated as standard (definition not required):</b> ${inlineHelpButton("These tokens were recognized as standard/allowed terms and were intentionally excluded from undefined-abbreviation findings. The list comes from the built-in standard registry plus any user-supplied whitelist.","Explain standard terms")} ${r.standardSeen.map(s=>`<code>${escapeHtml(s)}</code>`).join("")}</p>`:"";
+    (r.standardSeen.length?`<p class="std-note"><b>Treated as standard (definition not required):</b> ${inlineHelpButton("These tokens were recognized as standard/allowed terms and were intentionally excluded from undefined-abbreviation findings. The list comes from the built-in standard registry plus any user-supplied whitelist.","Explain standard terms")} ${r.standardSeen.map(s=>`<code>${escapeHtml(s)}</code>`).join("")}</p>`:"")+
+    (r.scientificNotationSeen?.length?`<p class="std-note"><b>Recognized scientific symbols and notation:</b> ${r.scientificNotationSeen.map(s=>`<code>${escapeHtml(s)}</code>`).join(" ")} — Raman band intensities, peak areas, or their ratios. No abbreviation definition is required for these occurrences.</p>`:"");
 
   bindInfoHelp("abbr-ledger-info","abbr-ledger-help");
   bindAbbrInstanceToggles();
@@ -16374,6 +16512,7 @@ function reportText(r){
   L.push("  Abbrev | Full form | Uses | Definition status");
   r.rows.forEach(x=>L.push(`  ${x.base} | ${x.longForm||"NOT DEFINED"} | ${x.count} | ${x.definitionSource==="list"?"Defined in list":(x.definitionSource==="scientific"?(x.firstUseOK?"Scientific definition":"Scientific definition later"):(x.definitionSource==="prose"?(x.firstUseOK?"Defined in main text":"Defined after first use"):(x.definitionSource==="nested"?`Inferred from ${x.nestedFrom||"earlier term"}`:(x.definitionSource==="declared"?"Accepted declaration":(x.longForm?(x.firstUseOK?"Defined":"Definition found later"):"-")))))}`));
   if(r.standardSeen.length){ L.push(""); L.push("Treated as standard: "+r.standardSeen.join(", ")); }
+  if(r.scientificNotationSeen?.length){ L.push(""); L.push("Recognized scientific symbols and notation: "+r.scientificNotationSeen.join(", ")+" — Raman band intensities, peak areas, or their ratios. No abbreviation definition is required for these occurrences."); }
   return L.join("\n");
 }
 
@@ -31304,13 +31443,14 @@ fteAnalyze=function(blocks){
     const errors=[],warnings=[],infos=[];
     const seenErr=new Set(),seenWarn=new Set(),seenInfo=new Set();
     const rowBuckets=new Map();
-    const standardSeen=new Set(),declaredSeen=new Set();
+    const standardSeen=new Set(),declaredSeen=new Set(),scientificNotationSeen=new Set();
     let sentenceCount=0,referenceExcluded=false;
 
     analyses.forEach(a=>{
       sentenceCount+=a.r.sentenceCount||0;
       referenceExcluded=referenceExcluded||a.scope.referenceExcluded;
       (a.r.standardSeen||[]).forEach(x=>standardSeen.add(x));
+      (a.r.scientificNotationSeen||[]).forEach(x=>scientificNotationSeen.add(x));
       (a.r.declaredSeen||[]).forEach(x=>declaredSeen.add(x));
 
       a.r.rows.forEach(row=>{
@@ -31570,6 +31710,7 @@ fteAnalyze=function(blocks){
     CACHE.lastResult=scopeInfo;
     return {errors:reconciledErrors,warnings,infos,rows:rows.sort((a,b)=>a.base.localeCompare(b.base)),
       standardSeen:[...standardSeen].sort(),declaredSeen:[...declaredSeen].sort(),totalAbbr:rows.length,
+      ...(scientificNotationSeen.size?{scientificNotationSeen:[...scientificNotationSeen].sort()}:{}),
       hasList:DECLARED_ABBR_LIST_FOUND||DECLARED_ABBR_MAP.size>0,listDefinitionCount:DECLARED_ABBR_MAP.size,
       listSections:[...new Set([...(DOCX_ABBR_LIST_SECTIONS||[])])],sentenceCount,
       refExcluded:skipRefs?referenceExcluded:false,refRequested:skipRefs,tableLinesRemoved:0,tablesRequested:skipTables,scopeInfo};
@@ -32443,6 +32584,14 @@ fteAnalyze=function(blocks){
         occByKey.get(k).push({key:k,raw,index:m.index,partRole:part.role,partIndex:part.index,text:scanText,display:part.display||scanText,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label,definitionOccurrence});
       }
     }
+    const ramanContext=scope.parts.map(p=>p.display||p.text||'').join(' '),ramanByPart=new Map(),scientificNotationSeen=new Set();
+    for(const part of scope.parts){
+      const spans=abbrRamanNotationSpans(part.display||part.text,ramanContext);ramanByPart.set(part.index,spans);
+      spans.forEach(sp=>scientificNotationSeen.add(sp.notation));
+    }
+    for(const [k,occ] of occByKey)occByKey.set(k,occ.filter(o=>!abbrOverlapsProtectedSpan(ramanByPart.get(o.partIndex),o.index,o.raw.length)));
+    for(const [k,defs] of defsByKey)defsByKey.set(k,defs.filter(d=>!Number.isFinite(d.shortStart)||!abbrOverlapsProtectedSpan(ramanByPart.get(d.partIndex),d.shortStart,d.form.length)));
+    scope.scientificNotationSeen=[...scientificNotationSeen];
     scope.definitions=[...defsByKey.values()].flat();scope.occurrences=[...occByKey.values()].flat();scope.chemicalCaseFindings=chemicalCaseFindings;scope.byKey=new Map();
     const keys=new Set([...defsByKey.keys(),...occByKey.keys()]);
     for(const k of keys){const defs=defsByKey.get(k)||[],occ=occByKey.get(k)||[];scope.byKey.set(k,{key:k,definitions:defs,occurrences:occ,ordinaryUses:occ.filter(o=>!o.definitionOccurrence)});}
@@ -32510,6 +32659,7 @@ fteAnalyze=function(blocks){
       .map(r=>({form:r.base,long:r.longForm})).concat(registry.recognitionDefinitions||[]);
     for(const scope of registry.scopes){
       scanScope(scope,standardSet,explicitStandardOverrideKeys,explicitFormsByKey,explicitCompoundDefinitions);
+      if(scope.scientificNotationSeen?.length)result.scientificNotationSeen=[...new Set([...(result.scientificNotationSeen||[]),...scope.scientificNotationSeen])].sort();
       structuralChemCase.push(...(scope.chemicalCaseFindings||[]));
       for(const [k,e] of scope.byKey||[]){
         let definitions=e.definitions;
