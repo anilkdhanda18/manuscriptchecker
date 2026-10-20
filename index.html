@@ -910,6 +910,13 @@ https://github.com/anilkdhanda18/manuscriptchecker/
 
 
 <style id="mc-ux24-style">
+.mc-report-details,.mc-optional-suggestions,.mc-review-history{margin:12px 0;color:inherit}
+.mc-report-details>summary,.mc-optional-suggestions>summary,.mc-review-history>summary,.mc-ledger-review-actions>summary,.mc-reference-entry>summary{cursor:pointer}
+.mc-ledger-review-actions{margin-top:8px;font-size:inherit}
+.mc-review-history li{margin:8px 0}
+[data-mc-review-id][hidden],.abbr-finding-row[hidden],.ledger-scroll[hidden],.mc-optional-suggestions[hidden],.overview-priority-card[hidden]{display:none!important}
+.result-group .sub:empty,.result-group .scorecard:empty{display:none}
+
 /* Manuscript Check usability layer: 24-point workflow upgrade */
 .mc-document-type{margin:14px 0 2px;padding:13px 14px;border:1px solid var(--hair);border-radius:11px;background:#fff;display:flex;align-items:center;justify-content:space-between;gap:16px}
 .mc-document-type-copy{display:flex;flex-direction:column;gap:3px;min-width:210px}.mc-document-type-copy b{font-size:12px;color:#253653}.mc-document-type-copy span{font-size:11px;color:var(--muted);line-height:1.4}
@@ -8658,28 +8665,16 @@ function unitReportRowNeedsAction(row){
 function renderUnitReport(res){
   LAST_UNIT=res;
 
-  // Ledger counts describe groups; findings also include checks such as spacing.
-  const issues=res.issues||[];
-  const counts={
-    format:res.ledger.filter(r=>/mixed format/i.test(String(r.status||""))).length,
-    precision:res.ledger.filter(r=>r.precisionReview?r.precisionReview.mixed:/mixed.*precision/i.test(String(r.status||""))).length,
-    review:res.ledger.filter(r=>/mixed|review/i.test(String(r.status||""))).length,
-    uncompared:res.ledger.filter(r=>!r.precisionCompared).length
-  };
-
-  $("unit-report-sub").textContent=issues.length
-    ?`${res.recognized} unit-bearing quantities detected · ${issues.length} finding${issues.length===1?"":"s"} to review · ${counts.review} measurement group${counts.review===1?"":"s"} needing review`
-    :counts.review
-      ?`${res.recognized} unit-bearing quantities detected · ${counts.review} context-aware group${counts.review===1?"":"s"} to review`
-      :counts.uncompared
-      ?`${res.recognized} unit-bearing quantities detected · precision compared only where parameter/context could be resolved confidently`
-      :`${res.recognized} unit-bearing quantities detected · context-aware unit formats and decimal places are internally consistent`;
-  if(res.unknown)$("unit-report-sub").textContent+=` · ${res.unknown} unit expression${res.unknown===1?"":"s"} not checked`;
-
-  $("unit-summary").innerHTML=`<div class="scorecard"><div class="score ${counts.format?"warn":"ok"}"><div class="n">${counts.format}</div><div class="k">Mixed format</div></div><div class="score ${counts.precision?"warn":"ok"}"><div class="n">${counts.precision}</div><div class="k">Mixed decimal places</div></div><div class="score ok"><div class="n">${res.ledger.length}</div><div class="k">Unit groups</div></div></div>`;
+  const uncompared=res.ledger.some(row=>!row.precisionCompared);
+  $("unit-summary").innerHTML=`<details class="mc-report-details"><summary>Check details</summary><p>${res.recognized} unit-bearing quantities · ${res.ledger.length} unit groups</p></details>`;
 
   const decimalPlacesLabel=(d,n)=>`${unitPrecisionLabel(d)} (${n} ${Number(n)===1?"instance":"instances"})`;
-  const rows=unitReportRows(res).filter(unitReportRowNeedsAction).map((r,rowIndex)=>{
+  const actionableRows=unitReportRows(res).filter(unitReportRowNeedsAction);
+  $("unit-report-sub").textContent=[
+    res.unknown?`${res.unknown} unit expression${res.unknown===1?"":"s"} not checked`:"",
+    uncompared?"Precision comparisons limited to confidently matched parameters and contexts":""
+  ].filter(Boolean).join(" · ");
+  const rows=actionableRows.map((r,rowIndex)=>{
     // Show notation only in Observed format. Occurrence counts are intentionally
     // kept in Decimal places, where they refer to the scalar values included
     // in the precision comparison. This avoids conflicting denominators when
@@ -8692,7 +8687,7 @@ function renderUnitReport(res){
     const cls=unitStatusClass(r.status);
     const action=unitStatusAction(r.status,r);
     const finding=r.reportIssue?reportFindingData(r.reportIssue):null;
-    const review=!!finding||/mixed|review/i.test(String(r.status||""));
+    const review=unitReportRowNeedsAction(r);
     const viewBtn=review?`<button type="button" class="unit-view-instances" data-target="unit-instance-row-${rowIndex}" aria-expanded="false" aria-controls="unit-instance-row-${rowIndex}">View instances</button>`:"";
     const main=`<tr${review?` class="unit-ledger-review-row" data-unit-review="1" data-unit-review-index="${rowIndex}" data-unit-priority="${finding?.priority||"review"}"`:""}><td>${abbrWordSymbolHtml(r.parameter)}</td><td>${escapeHtml(r.context)}</td><td>${escapeHtml(obs)}</td><td class="unit-decimal-places">${prec}</td><td><span class="yn ${finding&&r.status==="review"?"na":cls}">${escapeHtml(r.status)}</span></td><td class="unit-action">${escapeHtml(action)}${viewBtn}</td></tr>`;
     return main+(review?unitInstancePanelHtml(r,rowIndex):"");
@@ -8709,6 +8704,7 @@ function renderUnitReport(res){
     </div>
   </div>
   <div class="ledger-scroll"><table class="ledger"><thead><tr><th>Parameter / context</th><th>Location</th><th>Observed format</th><th>Decimal places</th><th>Status</th><th>Action to consider</th></tr></thead><tbody>${rows||`<tr><td colspan="6">${res.quantities.length?"No unit entries need action. Entries needing no action are hidden.":"No unit-bearing quantities detected."}</td></tr>`}</tbody></table></div>`;
+  if(!rows)$("unit-ledger-wrap").innerHTML="";
   bindInfoHelp("unit-report-info","unit-report-help");
   bindInfoHelp("unit-ledger-info","unit-ledger-help");
   bindUnitInstanceToggles();
@@ -15939,42 +15935,37 @@ function setupUniversalLedgerStickyHeaders(){
 
 /* ---------- Rendering ---------- */
 function renderReport(r){
+  const built=abbrBuildReportingRows(r),actionableRows=built.rows.filter(x=>x.priority!=="clean");
+  const targets=new Map();
+  actionableRows.forEach((row,i)=>row.issues.forEach(x=>targets.set(x.it,`abbr-finding-row-${i}`)));
+  built.generalNotes.forEach((x,i)=>targets.set(x.it,`abbr-note-${i}`));
   const refNote = r.refExcluded ? " · references section excluded"
                  : r.refRequested ? " · no references section detected" : "";
   const tabNote = r.tableLinesRemoved ? ` · ${r.tableLinesRemoved} table line${r.tableLinesRemoved===1?"":"s"} removed` : "";
-  document.getElementById("report-sub").textContent =
+  const checkDetails =
     `${r.totalAbbr} non-standard abbreviation/notation item${r.totalAbbr===1?"":"s"} · ${r.standardSeen.length} standard term${r.standardSeen.length===1?"":"s"} skipped${r.declaredSeen&&r.declaredSeen.length?` · ${r.declaredSeen.length} covered by the abbreviations list`:""}${refNote}${tabNote}`;
 
-  const okCount=r.rows.filter(x=>x.status==="ok").length;
-  document.getElementById("scorecard").innerHTML=[
-    {n:r.errors.length,k:"Critical errors",cls:"err"},
-    {n:r.warnings.length,k:"Review items",cls:"warn"},
-    {n:r.infos.length,k:"Editorial notes",cls:""},
-    {n:okCount,k:"Clean",cls:"ok"}
-  ].map(s=>`<div class="score ${s.cls}"><div class="n">${s.n}</div><div class="k">${s.k}</div></div>`).join("");
-
-  const v=document.getElementById("verdict");
-  if(r.errors.length===0 && r.warnings.length===0){ v.className="verdict clean"; v.textContent="No findings requiring attention were detected. A manual read before submission is still recommended."; }
-  else if(r.errors.length===0){ v.className="verdict"; v.textContent="No high-priority findings were detected. A few findings are worth reviewing below."; }
-  else { v.className="verdict"; v.textContent=`${r.errors.length} high-priority finding${r.errors.length===1?"":"s"} should be addressed before submission.`; }
+  document.getElementById("report-sub").textContent=r.refRequested&&!r.refExcluded?"No references section detected; check the exclusion scope":"";
+  document.getElementById("scorecard").innerHTML="";
+  const v=document.getElementById("verdict");v.textContent="";v.hidden=true;
 
   // Preserve the original finding nodes invisibly so existing guided-review,
   // review-state, and search logic can still use them. The visible abbreviation
   // report is now the unified table below.
-  document.getElementById("errors-wrap").innerHTML=section("Critical errors",r.errors,"err");
-  document.getElementById("warnings-wrap").innerHTML=section("Review items",r.warnings,"warn");
-  document.getElementById("infos-wrap").innerHTML=section("Editorial notes",r.infos,"info");
-  document.getElementById("ledger-wrap").innerHTML=abbrReportingLedger(r);
-  document.getElementById("std-wrap").innerHTML=
+  document.getElementById("errors-wrap").innerHTML=section("Critical errors",r.errors,"err",targets);
+  document.getElementById("warnings-wrap").innerHTML=section("Review items",r.warnings,"warn",targets);
+  document.getElementById("infos-wrap").innerHTML=section("Editorial notes",r.infos,"info",targets);
+  document.getElementById("ledger-wrap").innerHTML=abbrReportingLedger(r,built);
+  document.getElementById("std-wrap").innerHTML=`<details class="mc-report-details"><summary>Recognized terms and check details</summary><p>${escapeHtml(checkDetails)}</p>`+
     (r.standardSeen.length?`<p class="std-note"><b>Treated as standard (definition not required):</b> ${inlineHelpButton("These tokens were recognized as standard/allowed terms and were intentionally excluded from undefined-abbreviation findings. The list comes from the built-in standard registry plus any user-supplied whitelist.","Explain standard terms")} ${r.standardSeen.map(s=>`<code>${escapeHtml(s)}</code>`).join("")}</p>`:"")+
-    (r.scientificNotationSeen?.length?`<p class="std-note"><b>Recognized scientific symbols and notation:</b> ${r.scientificNotationSeen.map(s=>`<code>${escapeHtml(s)}</code>`).join(" ")} — Raman band intensities, peak areas, or their ratios. No abbreviation definition is required for these occurrences.</p>`:"");
+    (r.scientificNotationSeen?.length?`<p class="std-note"><b>Recognized scientific symbols and notation:</b> ${r.scientificNotationSeen.map(s=>`<code>${escapeHtml(s)}</code>`).join(" ")} — Raman band intensities, peak areas, or their ratios. No abbreviation definition is required for these occurrences.</p>`:"")+"</details>";
 
   bindInfoHelp("abbr-ledger-info","abbr-ledger-help");
   bindAbbrInstanceToggles();
   const rep=document.getElementById("report"); rep.hidden=false;
   buildReportSubnav("report","abbr-subnav");
 }
-function section(label,items,kind){
+function section(label,items,kind,targets=new Map()){
   if(!items.length) return "";
   const sym=kind==="info"?"i":"!";
   const helpMap={
@@ -15983,7 +15974,7 @@ function section(label,items,kind){
     "Editorial notes":"Lower-priority abbreviation/style observations. These are not automatically treated as errors."
   };
   const rows=items.map(it=>`
-    <div class="issue">
+    <div class="issue"${targets.has(it)?` data-ledger-target="${escapeHtml(targets.get(it))}"`:""}>
       <span class="badge ${kind}">${sym}</span>
       <div class="body">
         <p class="msg">${it.abbr && it.abbr!=="units"?`<span class="abbr">${abbrWordSymbolHtml(it.abbr)}</span> `:""}${abbrWordSymbolHtml(it.msg)}</p>
@@ -16596,10 +16587,11 @@ if(!window.__MC_ABBR_PAIR_ALIGNMENT_BOUND__){
 
 function abbrGeneralNotesHtml(notes){
   if(!notes?.length)return "";
-  return `<div class="abbr-report-notes"><b>Report notes</b>${notes.map(x=>`<p>${escapeHtml(x.it?.msg||"")}</p>`).join("")}</div>`;
+  return `<div class="abbr-report-notes"><b>Report notes</b>${notes.map((x,i)=>`<div id="abbr-note-${i}">${escapeHtml(x.it?.msg||"")}</div>`).join("")}</div>`;
 }
-function abbrReportingLedger(r){
-  const built=abbrBuildReportingRows(r),rows=built.rows.filter(x=>x.priority!=="clean");
+function abbrReportingLedger(r,built=abbrBuildReportingRows(r)){
+  const rows=built.rows.filter(x=>x.priority!=="clean");
+  if(!rows.length)return abbrGeneralNotesHtml(built.generalNotes);
   const body=rows.map((x,i)=>{
     const instanceMode=abbrInstanceMode(x);
     const hasContexts=instanceMode==="mixed-list-approach"
@@ -16631,7 +16623,7 @@ function abbrReportingLedger(r){
     const findingRows=pairs.map((p,idx)=>{
       const first=idx===0;
       const descriptor=p.descriptor||x.longForm||"Main text";
-      return `<tr class="abbr-ledger-row abbr-finding-row${review?" abbr-ledger-review-row":""}${first?" abbr-group-first":""}" ${commonAttrs} data-abbr-group="${i}" data-abbr-finding="${idx}">
+      return `<tr${first?` id="abbr-finding-row-${i}"`:""} class="abbr-ledger-row abbr-finding-row${review?" abbr-ledger-review-row":""}${first?" abbr-group-first":""}" ${commonAttrs} data-abbr-group="${i}" data-abbr-finding="${idx}">
         ${first?`<td class="t-abbr abbr-group-cell" rowspan="${groupRows}"><div class="abbr-group-identity"><span class="abbr-group-name">${abbrWordSymbolHtml(x.base||"")}</span></div></td>`:""}
         <td class="abbr-descriptor-cell">${abbrWordSymbolHtml(descriptor)}</td>
         ${first?`<td class="t-num abbr-group-cell" rowspan="${groupRows}">${useText}</td>`:""}
@@ -27041,7 +27033,7 @@ function refSetSourceType(index,value){
     renderRefReport(res,previous.cross);
     renderManuscriptOverview();
     $("ref-source-type-status").textContent=`Reference ${p.num!=null?p.num:index+1} updated. ${refSourceTypeStatus(res.parsed[index])||'Automatic assessment restored.'}`;
-    $("ref-source-type-"+index)?.focus();
+    ($("ref-source-type-"+index)||$("ref-source-type-status"))?.focus();
     return true;
   }catch(error){
     LAST_REF_OUT=previous;
@@ -27063,7 +27055,7 @@ function renderRefReport(res, cross){
   // The References tab intentionally shows only the ledger. Validation findings remain internal
   // for field-state calculation but are not rendered as warning/suggestion sections.
   $("ref-ledger-wrap").innerHTML=refLedger(res.parsed,res.issues);
-  $("ref-ledger-wrap").insertAdjacentHTML('beforeend','<p id="ref-source-type-status" class="ref-source-type-controls" role="status" aria-live="polite"></p>');
+  $("ref-ledger-wrap").insertAdjacentHTML('beforeend','<p id="ref-source-type-status" class="ref-source-type-controls" tabindex="-1" role="status" aria-live="polite"></p>');
   $("ref-ledger-wrap").onchange=event=>{
     const select=event.target.closest?.('select[data-ref-source-type]');
     if(select&&$("ref-ledger-wrap").contains(select))refSetSourceType(Number(select.dataset.refIndex),select.value);
@@ -27821,12 +27813,7 @@ function bindNumInstanceToggles(){
 function renderNumReport(findings){
   LAST_NUM=Array.isArray(findings)?findings:[];
   const rows=buildNumericalLedgerRows(LAST_NUM);
-  const ph=rows.filter(r=>r.cat==="pH").length;
-  const prose=rows.filter(r=>["zero","count","start"].includes(r.cat)).length;
-  const precision=rows.filter(r=>!["pH","zero","count","start"].includes(r.cat)).length;
-  $("num-report-sub").textContent=rows.length
-    ?`${rows.length} numerical reporting item${rows.length===1?"":"s"} to review`
-    :"No number, pH, or numeric-precision issues detected.";
+  $("num-report-sub").textContent="";
 
   const body=rows.map((r,i)=>{
     const view=r.instances.length?`<button type="button" class="num-view-instances" data-target="num-instance-row-${i}" aria-expanded="false" aria-controls="num-instance-row-${i}">View instances</button>`:"";
@@ -27835,7 +27822,6 @@ function renderNumReport(findings){
   }).join("");
 
   $("num-findings").innerHTML=`
-    <div class="scorecard"><div class="score ${ph?"warn":"ok"}"><div class="n">${ph}</div><div class="k">pH reporting</div></div><div class="score ${prose?"warn":"ok"}"><div class="n">${prose}</div><div class="k">Number style</div></div><div class="score ${precision?"warn":"ok"}"><div class="n">${precision}</div><div class="k">Precision / statistics</div></div></div>
     <p class="sec-label">Numerical reporting ledger <button type="button" class="info-help" id="num-ledger-info" aria-label="Explain the Numerical reporting ledger" aria-expanded="false" title="What do these columns mean?">i</button></p>
     <div class="ledger-help num-ledger-help" id="num-ledger-help" hidden><div class="ledger-help-grid">
       <b>Parameter / context</b><span>The numerical reporting rule or parameter being reviewed, such as pH, ordinary counts, a numerical range, or a comparable table measurement.</span>
@@ -27845,6 +27831,7 @@ function renderNumReport(findings){
       <b>Recommendation</b><span>A concise reporting recommendation. Scientific meaning, source precision, measurement resolution, and journal instructions take priority. Select <b>View instances</b> to inspect the original manuscript context before editing.</span>
     </div></div>
     <div class="ledger-scroll"><table class="ledger num-ledger-table"><thead><tr><th>Parameter / context</th><th>Location</th><th>Observed reporting</th><th>Status</th><th>Recommendation</th></tr></thead><tbody>${body||'<tr><td colspan="5">No numerical reporting issues detected.</td></tr>'}</tbody></table></div>`;
+  if(!rows.length)$("num-findings").innerHTML="";
   bindInfoHelp("num-report-info","num-report-help");
   bindInfoHelp("num-ledger-info","num-ledger-help");
   bindNumInstanceToggles();
@@ -27907,7 +27894,7 @@ function mcFailModule(key){
   if(key==="eng")LAST_ENG=null;
   if(key==="fte")LAST_FTE=null;
   meta.content.forEach(id=>$(id)?.replaceChildren());
-  $(meta.report)?.querySelectorAll('.priority-toolbar,.mc-module-clean-banner').forEach(el=>el.remove());
+  $(meta.report)?.querySelectorAll('.priority-toolbar,.mc-module-clean-banner,.mc-review-history').forEach(el=>el.remove());
   mcSetModuleOutcome(key,"failed",`${meta.label} could not be completed. Run the manuscript check again. Results from other completed checks are available.`);
   if($(meta.report))$(meta.report).hidden=false;
 }
@@ -28268,17 +28255,18 @@ function mcReportPriorityCounts(reportId){
   }
   if(reportId==="unit-report"){
     if(!LAST_UNIT)return out;
-    const rows=[...document.querySelectorAll('#unit-ledger-wrap tr[data-unit-review="1"]')];
+    const rows=[...document.querySelectorAll('#unit-ledger-wrap tr[data-unit-review="1"]:not(.mc-reviewed):not(.mc-not-issue)')];
     rows.forEach(r=>{const p=r.dataset.unitPriority||"review";if(Object.prototype.hasOwnProperty.call(out,p))out[p]++;out.total++;});
     return out;
   }
   if(reportId==="num-report"){
-    const rows=[...document.querySelectorAll('#num-findings tr[data-num-review="1"]')];
+    const rows=[...document.querySelectorAll('#num-findings tr[data-num-review="1"]:not(.mc-reviewed):not(.mc-not-issue)')];
     rows.forEach(r=>{const p=r.dataset.numPriority||"review";if(Object.prototype.hasOwnProperty.call(out,p))out[p]++;out.total++;});
     return out;
   }
   if(!report) return out;
   report.querySelectorAll(".issue").forEach(issue=>{
+    if(issue.classList.contains("mc-reviewed")||issue.classList.contains("mc-not-issue"))return;
     const p=issue.dataset.priority || issuePriorityInfo(issue)?.key;
     if(p&&Object.prototype.hasOwnProperty.call(out,p)){out[p]++;out.total++;}
   });
@@ -28288,6 +28276,7 @@ function mcReferenceAttentionItems(){
   const seenDuplicates=new Set();
   const seenStyleRows=new Set();
   return [...document.querySelectorAll('#ref-ledger-wrap tbody .yn.n, #ref-ledger-wrap tbody .yn.rev, #ref-ledger-wrap tbody .ref-delimiter-review, #ref-ledger-wrap tbody .ref-duplicate-review, #ref-ledger-wrap tbody .ref-source-type-review, #ref-ledger-wrap tbody .ref-style-review-detail')].filter(el=>{
+    if(el.closest("tr")?.matches(".mc-reviewed,.mc-not-issue"))return false;
     if(el.classList.contains("ref-style-review-detail")){
       const row=el.closest("tr");
       if(!row || el.classList.contains("ref-doi-inference-review") || seenStyleRows.has(row))return false;
@@ -33089,6 +33078,7 @@ fteAnalyze=function(blocks){
   const GROUP_LABEL={abbr:"Abbreviations",ref:"References",num:"Numbers",unit:"Units",eng:"Writing",fte:"Figures/Tables"};
   const REVIEW_KEY_PREFIX="mcReviewState:";
   let UX_DOC_TYPE="auto", UX_FILTERS={}, UX_NAV_INDEX={}, UX_GUIDED_ITEMS=[], UX_GUIDED_INDEX=0, UX_ENHANCING=false;
+  const UX_LEDGER_ITEMS=new Map();
   const defaultWhitelist=$u("whitelist")?.value||"";
 
   function currentFileName(){return currentFile?.name||"current-manuscript";}
@@ -33151,12 +33141,103 @@ fteAnalyze=function(blocks){
     box.innerHTML=`<b>Why?</b> ${escapeHtml(group)} identified this as a ${escapeHtml(level)} finding${code?` under the ${escapeHtml(code)} rule`:""}. The manuscript context shown is what the checker used to identify this finding. Review that context before editing; an automated finding is not proof that the manuscript is scientifically wrong.`; (issue.querySelector(".body")||issue).appendChild(box);
   }
   function setState(issue,state,reason=""){
-    const all=loadStates(),id=issue.dataset.issueId||fingerprint(issue); if(!state)delete all[id];else all[id]={state,reason}; saveStates(all); issue.classList.toggle("mc-reviewed",state==="reviewed");issue.classList.toggle("mc-not-issue",state==="not_issue"); issue.querySelector(".mc-reviewed-btn")?.classList.toggle("active",state==="reviewed");issue.querySelector(".mc-not-issue-btn")?.classList.toggle("active",state==="not_issue");applyFilters(groupFor(issue));updateTabs();addCleanBanners();updateOverviewUX();updateToolbarCounts(groupFor(issue));
+    const all=loadStates(),id=issue.dataset.issueId||fingerprint(issue); if(!state)delete all[id];else all[id]={state,reason}; saveStates(all); issue.classList.toggle("mc-reviewed",state==="reviewed");issue.classList.toggle("mc-not-issue",state==="not_issue"); issue.querySelector(".mc-reviewed-btn")?.classList.toggle("active",state==="reviewed");issue.querySelector(".mc-not-issue-btn")?.classList.toggle("active",state==="not_issue");applyFilters(groupFor(issue));syncLedgerReview(groupFor(issue));updateTabs();addCleanBanners();updateOverviewUX();updateToolbarCounts(groupFor(issue));
   }
   function toggleReviewed(issue){setState(issue,issue.classList.contains("mc-reviewed")?null:"reviewed")}
   function toggleNotIssue(issue){
     if(issue.classList.contains("mc-not-issue")){setState(issue,null);return}
     let box=issue.querySelector(".mc-not-issue-box"); if(box){box.remove();return} box=document.createElement("div");box.className="mc-not-issue-box";box.innerHTML='<b>Why is this acceptable as written?</b><div class="mc-not-issue-reasons"><button data-reason="ordinary word/context">Ordinary word/context</button><button data-reason="company/product/name">Company/product/name</button><button data-reason="unit or notation">Unit or notation</button><button data-reason="intentional usage">Intentional usage</button><button data-reason="journal/institution rule">Journal/institution rule</button><button data-reason="other">Other</button></div>';(issue.querySelector(".body")||issue).appendChild(box);box.querySelectorAll("[data-reason]").forEach(b=>b.addEventListener("click",()=>{setState(issue,"not_issue",b.dataset.reason);box.remove()}));
+  }
+
+  function reviewComplete(el){return el.classList.contains("mc-reviewed")||el.classList.contains("mc-not-issue")}
+  function reviewClasses(el,state){
+    el.classList.toggle("mc-reviewed",state==="reviewed");
+    el.classList.toggle("mc-not-issue",state==="not_issue");
+  }
+  function enhanceLedgerReview(group){
+    const report=$u(GROUP_REPORT[group]);if(!report)return;
+    const selectors={abbr:'.abbr-group-first,[id^="abbr-note-"]',ref:'.reference-ledger-scroll tbody > tr',unit:'tr[data-unit-review="1"]',num:'tr[data-num-review="1"]',eng:'tr[id^="eng-finding-row-"]',fte:'tr[id^="fte-finding-row-"]'};
+    const states=loadStates(),issues=allIssues(group);
+    const records=[...report.querySelectorAll(selectors[group])].map(row=>{
+      const rows=group==="abbr"&&row.dataset.abbrGroup!=null?[...row.parentElement.querySelectorAll("tr.abbr-finding-row")].filter(r=>r.dataset.abbrGroup===row.dataset.abbrGroup):[row];
+      const members=issues.filter(issue=>issue.dataset.ledgerTarget===row.id&&row.id);
+      const panels=[...row.querySelectorAll("button[data-target]")].map(b=>$u(b.dataset.target)).filter(Boolean);
+      if(!row.dataset.mcReviewId){
+        const text=rows.map(r=>r.textContent).join(" ").replace(/\s+/g," ").trim();
+        const evidence=panels.map(p=>p.textContent).join(" ");
+        row.dataset.mcReviewId=group+":ledger:"+tinyHash(text+"|"+evidence);
+        const label=group==="ref"?`${row.cells[0].textContent} · ${row.querySelector(".mc-reference-entry summary")?.textContent||"Reference"}`:row.matches("tr")?[...row.cells].slice(0,group==="abbr"?2:3).map(c=>c.textContent).join(" · "):row.textContent;
+        row.dataset.mcReviewLabel=label.replace(/\s+/g," ").trim();
+      }
+      const record={row,rows,members,panels,key:row.dataset.mcReviewId,label:row.dataset.mcReviewLabel};
+      if(!row.querySelector(".mc-ledger-review-actions")){
+        const actions=document.createElement("details");actions.className="mc-ledger-review-actions";
+        const grouped=members.length>1||rows.length>1;
+        actions.innerHTML=`<summary>Review actions</summary><button type="button" class="mc-issue-btn" data-review-state="reviewed">${grouped?"Mark group reviewed":"Mark reviewed"}</button> <button type="button" class="mc-issue-btn" data-review-state="not_issue">${grouped?"Accept group as written":"Accept as written"}</button>`;
+        actions.querySelectorAll("[data-review-state]").forEach(button=>button.addEventListener("click",()=>setLedgerState(record,button.dataset.reviewState)));
+        (group==="ref"?row.cells[1]:row.matches("tr")?row.lastElementChild:row).appendChild(actions);
+      }
+      const state=members.length?(members.every(reviewComplete)?(members.every(x=>x.classList.contains("mc-not-issue"))?"not_issue":"reviewed"):null):states[record.key]?.state;
+      rows.forEach(r=>reviewClasses(r,state));
+      return record;
+    });
+    UX_LEDGER_ITEMS.set(group,records);
+    syncLedgerReview(group);
+  }
+  function setLedgerState(record,state){
+    const saved=loadStates(),group=groupFor(record.row);
+    for(const key of [record.key,...record.members.map(i=>i.dataset.issueId)]){
+      if(!key)continue;
+      if(state)saved[key]={state,reason:state==="not_issue"?"accepted after review":""};else delete saved[key];
+    }
+    saveStates(saved);
+    [...record.rows,...record.members].forEach(el=>reviewClasses(el,state));
+    applyFilters(group);syncLedgerReview(group);updateTabs();addCleanBanners();updateOverviewUX();
+    const history=$u(GROUP_REPORT[group])?.querySelector(".mc-review-history");
+    if(state){
+      history?.querySelector("summary")?.focus();
+      const notice=history?.querySelector('[role="status"]');if(notice)notice.textContent=state==="reviewed"?"Item marked reviewed. Restore it from this history if needed.":"Item accepted as written. Restore it from this history if needed.";
+    }else{
+      let parent=record.row.parentElement;while(parent){if(parent.tagName==="DETAILS")parent.open=true;parent=parent.parentElement;}
+      record.row.querySelector(".mc-ledger-review-actions summary")?.focus();
+    }
+  }
+  function syncLedgerReview(group){
+    const report=$u(GROUP_REPORT[group]);if(!report)return;
+    const records=UX_LEDGER_ITEMS.get(group)||[];
+    records.forEach(record=>{
+      if(record.members.length){
+        const state=record.members.every(reviewComplete)?(record.members.every(i=>i.classList.contains("mc-not-issue"))?"not_issue":"reviewed"):null;
+        record.rows.forEach(row=>reviewClasses(row,state));
+      }
+      const done=reviewComplete(record.row);
+      record.rows.forEach(row=>{row.hidden=done;});
+      if(done){
+        record.panels.forEach(panel=>{panel.hidden=true;});
+        record.row.querySelectorAll('button[data-target]').forEach(button=>button.setAttribute('aria-expanded','false'));
+      }
+    });
+    report.querySelectorAll(".ledger-scroll").forEach(scroll=>{
+      const own=records.filter(record=>scroll.contains(record.row));
+      if(own.length)scroll.hidden=own.every(record=>reviewComplete(record.row));
+    });
+    const optional=report.querySelector(".mc-optional-suggestions");
+    if(optional){
+      const pending=records.filter(record=>optional.contains(record.row)&&!reviewComplete(record.row)).length;
+      optional.hidden=!pending;
+      optional.querySelector("summary").textContent=`Optional writing suggestions (${pending} group${pending===1?"":"s"})`;
+    }
+    const referenceBlock=report.querySelector(".reference-ledger-block");
+    if(referenceBlock)referenceBlock.hidden=records.length>0&&records.every(record=>reviewComplete(record.row));
+    const notes=report.querySelector(".abbr-report-notes");
+    if(notes)notes.hidden=records.filter(record=>notes.contains(record.row)).every(record=>reviewComplete(record.row));
+    scheduleUniversalLedgerStickyHeaders();
+    const historyRecords=records.filter(record=>reviewComplete(record.row));
+    let history=report.querySelector(".mc-review-history");
+    if(!historyRecords.length){history?.remove();return;}
+    if(!history){history=document.createElement("details");history.className="mc-review-history";report.appendChild(history);}
+    history.innerHTML=`<summary tabindex="0">Review history (${historyRecords.length})</summary><p role="status" aria-live="polite"></p><ul>${historyRecords.map((record,i)=>`<li>${escapeHtml(record.label)} — ${record.row.classList.contains("mc-not-issue")?"Accepted as written":"Reviewed"} <button type="button" class="mc-issue-btn" data-restore-review="${i}">Restore</button></li>`).join("")}</ul>`;
+    history.querySelectorAll("[data-restore-review]").forEach(button=>button.addEventListener("click",()=>setLedgerState(historyRecords[Number(button.dataset.restoreReview)],null)));
   }
 
   function ensureToolbar(group){
@@ -33166,7 +33247,7 @@ fteAnalyze=function(blocks){
   function updateToolbarCounts(group){const bar=$u(GROUP_REPORT[group])?.querySelector(".mc-review-toolbar");if(!bar)return;const arr=allIssues(group),counts={all:arr.length,critical:0,review:0,style:0,reviewed:0,not_issue:0};arr.forEach(i=>{const p=priorityOf(i);if(counts[p]!==undefined)counts[p]++;if(i.classList.contains("mc-reviewed"))counts.reviewed++;if(i.classList.contains("mc-not-issue"))counts.not_issue++});const names={all:"All",critical:"Critical errors",review:"Review items",style:"Editorial notes",reviewed:"Reviewed",not_issue:"Accept as written"};bar.querySelectorAll("[data-filter]").forEach(b=>b.textContent=`${names[b.dataset.filter]} ${counts[b.dataset.filter]||0}`)}
   function cardMatchesChapter(issue,label){if(!label)return true;const t=issueChapterText(issue).toLowerCase(),l=label.toLowerCase(); const ch=(label.match(/chapter\s+[a-z0-9]+/i)||[])[0]; if(ch&&t.includes(ch.toLowerCase()))return true; const stripped=l.replace(/^chapter\s+[a-z0-9]+\s*[:.\-]?\s*/i,"").trim(); return stripped.length>5&&t.includes(stripped)}
   function applyFilters(group){
-    const f=UX_FILTERS[group]||{},filter=f.priority||"all",labs=scopeLabels(),label=f.chapter!==undefined&&f.chapter!==""?labs[Number(f.chapter)]:""; allIssues(group).forEach(issue=>{let show=true; if(filter==="critical"||filter==="review"||filter==="style")show=priorityOf(issue)===filter;else if(filter==="reviewed")show=issue.classList.contains("mc-reviewed");else if(filter==="not_issue")show=issue.classList.contains("mc-not-issue"); if(show&&label)show=cardMatchesChapter(issue,label);issue.classList.toggle("mc-filter-hidden",!show)}); updateIssueNav(group);
+    const f=UX_FILTERS[group]||{},filter=f.priority||"outstanding",labs=scopeLabels(),label=f.chapter!==undefined&&f.chapter!==""?labs[Number(f.chapter)]:""; allIssues(group).forEach(issue=>{let show=filter!=="outstanding"||!reviewComplete(issue); if(filter==="critical"||filter==="review"||filter==="style")show=priorityOf(issue)===filter;else if(filter==="reviewed")show=issue.classList.contains("mc-reviewed");else if(filter==="not_issue")show=issue.classList.contains("mc-not-issue"); if(show&&label)show=cardMatchesChapter(issue,label);issue.classList.toggle("mc-filter-hidden",!show)}); updateIssueNav(group);
   }
   function ensureIssueNav(group,after){
     const report=$u(GROUP_REPORT[group]);
@@ -33175,8 +33256,9 @@ fteAnalyze=function(blocks){
   function updateIssueNav(group){const report=$u(GROUP_REPORT[group]),nav=report?.querySelector(".mc-issue-nav");if(!nav)return;const arr=visibleIssues(group);let idx=Math.min(UX_NAV_INDEX[group]||0,Math.max(0,arr.length-1));UX_NAV_INDEX[group]=idx;nav.querySelector(".mc-issue-position").textContent=arr.length?`${idx+1} of ${arr.length}`:"0 issues";nav.querySelector('[data-nav="prev"]').disabled=!arr.length||idx<=0;nav.querySelector('[data-nav="next"]').disabled=!arr.length||idx>=arr.length-1}
   function moveIssue(group,delta){const arr=visibleIssues(group);if(!arr.length)return;let idx=Math.max(0,Math.min(arr.length-1,(UX_NAV_INDEX[group]||0)+delta));UX_NAV_INDEX[group]=idx;updateIssueNav(group);arr[idx].scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"})}
 
-  function countGroup(group){if(group==="ref")return mcReferenceMissingFieldCount();if(group==="unit")return mcReportPriorityCounts("unit-report").total;if(group==="num")return document.querySelectorAll('#num-findings tbody tr[data-num-review="1"]').length;const issues=allIssues(group);return issues.filter(i=>!i.classList.contains("mc-not-issue")&&!i.classList.contains("mc-reviewed")).length}
-  function totalGroupFindings(group){if(group==="ref")return mcReferenceMissingFieldCount();if(group==="unit")return mcReportPriorityCounts("unit-report").total;if(group==="num")return document.querySelectorAll('#num-findings tbody tr[data-num-review="1"]').length;const issues=allIssues(group);return issues.length}
+  function countGroup(group){if(group==="ref")return mcReferenceMissingFieldCount();if(group==="unit")return mcReportPriorityCounts("unit-report").total;if(group==="num")return document.querySelectorAll('#num-findings tbody tr[data-num-review="1"]:not(.mc-reviewed):not(.mc-not-issue)').length;const issues=allIssues(group);return issues.filter(i=>!i.classList.contains("mc-not-issue")&&!i.classList.contains("mc-reviewed")).length}
+  function totalGroupFindings(group){return (UX_LEDGER_ITEMS.get(group)||[]).length||allIssues(group).length}
+
   function updateTabs(){
     let total=0;
     document.querySelectorAll('#results-tabs .rtab').forEach(tab=>{
@@ -33196,7 +33278,16 @@ fteAnalyze=function(blocks){
       if(incomplete)over.setAttribute("title",mcAnalysisStatusText());else over.removeAttribute("title");
     }
   }
-  function addCleanBanners(){Object.entries(GROUP_REPORT).forEach(([g,id])=>{const report=$u(id);if(!report)return;report.querySelector(".mc-module-clean-banner")?.remove();if(countGroup(g)===0&&!mcModuleAttentionLabel(g)){const el=document.createElement("div");el.className="mc-module-clean-banner";el.textContent=totalGroupFindings(g)>0?"✓ All findings in this module have been reviewed or accepted as written.":"✓ No issues requiring attention were detected in this module.";const sub=report.querySelector(".sub");(sub||report.querySelector("h2"))?.insertAdjacentElement("afterend",el)}})}
+  function addCleanBanners(){
+    Object.entries(GROUP_REPORT).forEach(([group,id])=>{
+      const report=$u(id);if(!report)return;
+      report.querySelector(".mc-module-clean-banner")?.remove();
+      if(countGroup(group)!==0||mcModuleAttentionLabel(group)||mcModuleOutcome(group)?.state!=="complete")return;
+      const message=document.createElement("p");message.className="mc-module-clean-banner";
+      message.textContent=totalGroupFindings(group)>0?"All reported items have been reviewed or accepted as written.":"No actionable findings detected in the checks performed.";
+      (report.querySelector(".sub")||report.querySelector("h2"))?.insertAdjacentElement("afterend",message);
+    });
+  }
 
   function summaryType(){if(UX_DOC_TYPE==="journal")return "Journal article (selected)";if(UX_DOC_TYPE==="thesis")return "Thesis / dissertation (selected)";if(UX_DOC_TYPE==="report")return "Report (selected)";if(scopeInfo()?.mode==="chapter")return "Thesis/dissertation or long document";return "General scientific manuscript"}
   function mcPlaceCombinedExportAtOverviewBottom(){
@@ -33206,31 +33297,36 @@ fteAnalyze=function(blocks){
   function updateOverviewUX(){
     const host=$u("mc-manuscript-summary");if(!host)return;const chapters=scopeInfo()?.scopeCount||0,refs=LAST_REF_OUT?.res?.count,figs=LAST_FTE?.figures?.length,tabs=LAST_FTE?.tables?.length,eqs=LAST_FTE?.equations?.filter(x=>!x.identifierUncertain).length,possibleEqs=LAST_FTE?.equations?.filter(x=>x.identifierUncertain).length||0,abbr=LAST?.totalAbbr;
     let diag=null;try{diag=window.mcGetAbbreviationScopeDiagnostics?.()}catch(_e){} const labels=diag?.scopes?.map(x=>x.label)||scopeLabels(); const structure=labels.length?`<ol class="mc-structure-list">${labels.map(x=>`<li>${escapeHtml(x)}</li>`).join("")}</ol>`:'<p class="mc-structure-list">No independent chapter structure was used for abbreviation checking. The manuscript was assessed at document level.</p>';
-    host.innerHTML=`<div class="mc-manuscript-card"><div class="mc-manuscript-card-head"><div><h3>Document analysed</h3><p>${escapeHtml(summaryType())}${chapters?` · ${chapters} major chapter${chapters===1?"":"s"}`:""}</p></div><span class="priority-tag style">Structure detected</span></div><div class="mc-manuscript-stats"><span>${escapeHtml(mcModuleCountText("ref",refs,"references"))}</span><span>${escapeHtml(mcModuleCountText("fte",figs,"figures"))}</span><span>${escapeHtml(mcModuleCountText("fte",tabs,"tables"))}</span><span>${escapeHtml(mcModuleCountText("fte",eqs,"equations"))}</span>${possibleEqs?`<span>${possibleEqs} possible equation label${possibleEqs===1?"":"s"} to confirm</span>`:""}<span>${escapeHtml(mcModuleCountText("abbr",abbr,"abbreviations/notations"))}</span></div><details class="mc-structure"><summary>Detected document structure</summary>${structure}</details><details class="mc-processing-summary"><summary>Processing status</summary>${escapeHtml(mcAnalysisStatusText())}</details></div>`;
+    host.innerHTML=`<details class="mc-report-details"><summary>Document and check details</summary><div class="mc-manuscript-card"><div class="mc-manuscript-card-head"><div><h3>Document analysed</h3><p>${escapeHtml(summaryType())}${chapters?` · ${chapters} major chapter${chapters===1?"":"s"}`:""}</p></div><span class="priority-tag style">Structure detected</span></div><div class="mc-manuscript-stats"><span>${escapeHtml(mcModuleCountText("ref",refs,"references"))}</span><span>${escapeHtml(mcModuleCountText("fte",figs,"figures"))}</span><span>${escapeHtml(mcModuleCountText("fte",tabs,"tables"))}</span><span>${escapeHtml(mcModuleCountText("fte",eqs,"equations"))}</span>${possibleEqs?`<span>${possibleEqs} possible equation label${possibleEqs===1?"":"s"} to confirm</span>`:""}<span>${escapeHtml(mcModuleCountText("abbr",abbr,"abbreviations/notations"))}</span></div><details class="mc-structure"><summary>Detected document structure</summary>${structure}</details><details class="mc-processing-summary"><summary>Processing status</summary>${escapeHtml(mcAnalysisStatusText())}</details></div></details>`;
     const active=Object.keys(GROUP_REPORT).reduce((n,g)=>n+countGroup(g),0); const lede=$u("overview-lede"); if(lede)lede.textContent=Object.keys(GROUP_REPORT).some(g=>!!mcModuleAttentionLabel(g))?mcAnalysisStatusText():(active?`${active} item${active===1?"":"s"} may need your attention. Open the sections below to review the findings and manuscript instances.`:"No issues requiring attention were detected. You can still inspect each section and its ledger for completeness.");
-    const remCounts={critical:0,review:0,style:0}; allIssues().forEach(i=>{if(i.classList.contains("mc-not-issue")||i.classList.contains("mc-reviewed"))return;const p=priorityOf(i);if(remCounts[p]!==undefined)remCounts[p]++}); ["unit-report","ref-report"].forEach(id=>{const counts=mcReportPriorityCounts(id);Object.keys(remCounts).forEach(p=>remCounts[p]+=counts[p]);}); document.querySelectorAll('#num-findings tbody tr[data-num-review="1"]').forEach(r=>{const p=r.dataset.numPriority||"review";if(remCounts[p]!==undefined)remCounts[p]++});
-    document.querySelectorAll(".overview-priority-card").forEach((card,i)=>{const key=["critical","review","style"][i];const n=card.querySelector(".n");if(n)n.textContent=String(remCounts[key]||0);if(!card.querySelector(".mc-card-action"))card.insertAdjacentHTML("beforeend",'<span class="mc-card-action">Review these →</span>');card.tabIndex=0;card.setAttribute("role","button")});
+    const remCounts={critical:0,review:0,style:0}; allIssues().forEach(i=>{if(i.classList.contains("mc-not-issue")||i.classList.contains("mc-reviewed"))return;const p=priorityOf(i);if(remCounts[p]!==undefined)remCounts[p]++}); ["unit-report","ref-report"].forEach(id=>{const counts=mcReportPriorityCounts(id);Object.keys(remCounts).forEach(p=>remCounts[p]+=counts[p]);}); document.querySelectorAll('#num-findings tbody tr[data-num-review="1"]:not(.mc-reviewed):not(.mc-not-issue)').forEach(r=>{const p=r.dataset.numPriority||"review";if(remCounts[p]!==undefined)remCounts[p]++});
+    document.querySelectorAll(".overview-priority-card").forEach((card,i)=>{const key=["critical","review","style"][i];card.hidden=!remCounts[key];const n=card.querySelector(".n");if(n)n.textContent=String(remCounts[key]||0);if(!card.querySelector(".mc-card-action"))card.insertAdjacentHTML("beforeend",'<span class="mc-card-action">Review these →</span>');card.tabIndex=0;card.setAttribute("role","button")});
     document.querySelectorAll(".overview-module[data-overview-tab]").forEach(card=>{const g=card.dataset.overviewTab,att=card.querySelector(".overview-module-attn"),n=countGroup(g);if(att){const notice=mcModuleAttentionLabel(g);att.textContent=notice||(n?`${n} finding${n===1?"":"s"} to review`:totalGroupFindings(g)>0?"All findings reviewed":"No findings requiring attention");att.classList.toggle("overview-module-clean",n===0&&!notice)}});
     document.querySelectorAll(".overview-module").forEach(card=>{if(!card.querySelector(".mc-card-action"))card.insertAdjacentHTML("beforeend",'<span class="mc-card-action">Open details</span>')});
     const cards=[...document.querySelectorAll(".overview-priority-card")];cards.forEach((c,i)=>{const p=["critical","review","style"][i];const go=()=>jumpToPriority(p);c.onclick=go;c.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();go()}}});
     mcPlaceCombinedExportAtOverviewBottom();
     mcRenderModuleStatusNotices();
   }
+  function openLedgerTarget(issue){
+    const target=ledgerTarget(issue);let parent=target?.parentElement;
+    while(parent){if(parent.tagName==="DETAILS")parent.open=true;parent=parent.parentElement;}
+    return target;
+  }
   function ledgerTarget(issue){return issue?.dataset?.ledgerTarget?document.getElementById(issue.dataset.ledgerTarget):issue;}
-  function jumpToPriority(p){const ar=document.querySelector(`#abbr-reporting-table tbody tr[data-abbr-review="1"][data-abbr-priorities~="${p}"]`);if(ar){showTab("abbr");setTimeout(()=>ar.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),60);return}for(const g of Object.keys(GROUP_REPORT)){if(g==="abbr")continue;if(g==="ref"){const item=mcReferenceAttentionItems().find(x=>x.priority===p);if(item){showTab("ref");setTimeout(()=>item.element.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),60);return}continue}const issue=allIssues(g).find(i=>priorityOf(i)===p&&!i.classList.contains("mc-not-issue")&&!i.classList.contains("mc-reviewed"));if(issue){showTab(g);setTimeout(()=>ledgerTarget(issue)?.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),60);return}}const nr=document.querySelector(`#num-findings tbody tr[data-num-review="1"][data-num-priority="${p}"]`);if(nr){showTab("num");setTimeout(()=>nr.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),60);return}const ur=document.querySelector(`#unit-ledger-wrap tr[data-unit-review="1"][data-unit-priority="${p}"]`);if(ur){showTab("unit");setTimeout(()=>ur.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),60)}}
-  function startReviewing(){const arCrit=document.querySelector('#abbr-reporting-table tbody tr[data-abbr-review="1"][data-abbr-priorities~="critical"]');if(arCrit){showTab("abbr");setTimeout(()=>arCrit.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),50);return}const refItems=mcReferenceAttentionItems(),refCrit=refItems.find(x=>x.priority==="critical");if(refCrit){showTab("ref");setTimeout(()=>refCrit.element.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),50);return}const crit=allIssues().find(i=>groupFor(i)!=="abbr"&&priorityOf(i)==="critical"&&!i.classList.contains("mc-not-issue")&&!i.classList.contains("mc-reviewed"));const first=crit||allIssues().find(i=>groupFor(i)!=="abbr"&&!i.classList.contains("mc-not-issue")&&!i.classList.contains("mc-reviewed"));if(first){const g=groupFor(first);showTab(g);setTimeout(()=>ledgerTarget(first)?.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),50);return}if(refItems.length){showTab("ref");setTimeout(()=>refItems[0].element.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),50);return}const ar=document.querySelector('#abbr-reporting-table tbody tr[data-abbr-review="1"]');if(ar){showTab("abbr");setTimeout(()=>ar.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),50);return}const nr=document.querySelector('#num-findings tbody tr[data-num-review="1"]');if(nr){showTab("num");setTimeout(()=>nr.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),50);return}if(countGroup("unit")>0){showTab("unit");setTimeout(()=>document.querySelector('#unit-ledger-wrap tbody tr[data-unit-review="1"]')?.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),50)}}
+  function jumpToPriority(p){const ar=document.querySelector(`#abbr-reporting-table tbody tr[data-abbr-review="1"]:not(.mc-reviewed):not(.mc-not-issue)[data-abbr-priorities~="${p}"]`);if(ar){showTab("abbr");setTimeout(()=>ar.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),60);return}for(const g of Object.keys(GROUP_REPORT)){if(g==="abbr")continue;if(g==="ref"){const item=mcReferenceAttentionItems().find(x=>x.priority===p);if(item){showTab("ref");setTimeout(()=>item.element.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),60);return}continue}const issue=allIssues(g).find(i=>priorityOf(i)===p&&!i.classList.contains("mc-not-issue")&&!i.classList.contains("mc-reviewed"));if(issue){showTab(g);setTimeout(()=>openLedgerTarget(issue)?.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),60);return}}const nr=document.querySelector(`#num-findings tbody tr[data-num-review="1"]:not(.mc-reviewed):not(.mc-not-issue)[data-num-priority="${p}"]:not(.mc-reviewed):not(.mc-not-issue)`);if(nr){showTab("num");setTimeout(()=>nr.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),60);return}const ur=document.querySelector(`#unit-ledger-wrap tr[data-unit-review="1"]:not(.mc-reviewed):not(.mc-not-issue)[data-unit-priority="${p}"]:not(.mc-reviewed):not(.mc-not-issue)`);if(ur){showTab("unit");setTimeout(()=>ur.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),60)}}
+  function startReviewing(){const arCrit=document.querySelector('#abbr-reporting-table tbody tr[data-abbr-review="1"]:not(.mc-reviewed):not(.mc-not-issue)[data-abbr-priorities~="critical"]');if(arCrit){showTab("abbr");setTimeout(()=>arCrit.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),50);return}const refItems=mcReferenceAttentionItems(),refCrit=refItems.find(x=>x.priority==="critical");if(refCrit){showTab("ref");setTimeout(()=>refCrit.element.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),50);return}const crit=allIssues().find(i=>groupFor(i)!=="abbr"&&priorityOf(i)==="critical"&&!i.classList.contains("mc-not-issue")&&!i.classList.contains("mc-reviewed"));const first=crit||allIssues().find(i=>groupFor(i)!=="abbr"&&!i.classList.contains("mc-not-issue")&&!i.classList.contains("mc-reviewed"));if(first){const g=groupFor(first);showTab(g);setTimeout(()=>openLedgerTarget(first)?.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),50);return}if(refItems.length){showTab("ref");setTimeout(()=>refItems[0].element.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),50);return}const ar=document.querySelector('#abbr-reporting-table tbody tr[data-abbr-review="1"]:not(.mc-reviewed):not(.mc-not-issue)');if(ar){showTab("abbr");setTimeout(()=>ar.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),50);return}const nr=document.querySelector('#num-findings tbody tr[data-num-review="1"]:not(.mc-reviewed):not(.mc-not-issue)');if(nr){showTab("num");setTimeout(()=>nr.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),50);return}if(countGroup("unit")>0){showTab("unit");setTimeout(()=>document.querySelector('#unit-ledger-wrap tbody tr[data-unit-review="1"]')?.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"center"}),50)}}
 
   function ensureFloatingNav(){if($u("mc-floating-nav"))return;const d=document.createElement("div");d.className="mc-floating-nav";d.id="mc-floating-nav";d.innerHTML='<button type="button" id="mc-back-overview" hidden>← Overview</button><button type="button" id="mc-back-top" hidden>↑ Back to top</button>';document.body.appendChild(d);$u("mc-back-overview")?.addEventListener("click",()=>{showTab("overview");$u("results-tabs")?.scrollIntoView({behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth",block:"start"})});$u("mc-back-top")?.addEventListener("click",()=>window.scrollTo({top:0,behavior:matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"}));window.addEventListener("scroll",updateFloating,{passive:true})}
   function updateFloating(){if(!$u("mc-floating-nav"))return;const active=document.querySelector('#results-tabs .rtab.active')?.dataset?.tab||"overview";$u("mc-back-overview").hidden=$u("results-tabs")?.hidden||active==="overview";$u("mc-back-top").hidden=window.scrollY<700}
 
-  function ensureGuided(){if($u("mc-guided"))return;const d=document.createElement("div");d.className="mc-guided";d.id="mc-guided";d.hidden=true;d.innerHTML='<section class="mc-guided-panel" role="dialog" aria-modal="true" aria-labelledby="mc-guided-title"><div class="mc-guided-head"><div><div class="mc-guided-kicker">Guided review</div><h2 id="mc-guided-title">Review one finding at a time</h2></div><button class="mc-guided-close" aria-label="Close guided review">×</button></div><div id="mc-guided-content"></div><div class="mc-guided-controls"><button data-g="prev">← Previous</button><button data-g="reviewed">✓ Mark reviewed</button><button data-g="not">Accept as written</button><span class="spacer"></span><button data-g="next" class="primary">Next →</button></div></section>';document.body.appendChild(d);d.querySelector(".mc-guided-close").onclick=closeGuided;d.addEventListener("click",e=>{if(e.target===d)closeGuided()});d.querySelector('[data-g="prev"]').onclick=()=>guidedMove(-1);d.querySelector('[data-g="next"]').onclick=()=>guidedMove(1);d.querySelector('[data-g="reviewed"]').onclick=()=>{const x=UX_GUIDED_ITEMS[UX_GUIDED_INDEX];if(x)setState(x,"reviewed");renderGuided()};d.querySelector('[data-g="not"]').onclick=()=>{const x=UX_GUIDED_ITEMS[UX_GUIDED_INDEX];if(x)setState(x,"not_issue","guided review");UX_GUIDED_ITEMS=UX_GUIDED_ITEMS.filter(y=>!y.classList.contains("mc-not-issue"));UX_GUIDED_INDEX=Math.min(UX_GUIDED_INDEX,Math.max(0,UX_GUIDED_ITEMS.length-1));renderGuided()};document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!d.hidden)closeGuided()})}
+  function ensureGuided(){if($u("mc-guided"))return;const d=document.createElement("div");d.className="mc-guided";d.id="mc-guided";d.hidden=true;d.innerHTML='<section class="mc-guided-panel" role="dialog" aria-modal="true" aria-labelledby="mc-guided-title"><div class="mc-guided-head"><div><div class="mc-guided-kicker">Guided review</div><h2 id="mc-guided-title">Review one finding at a time</h2></div><button class="mc-guided-close" aria-label="Close guided review">×</button></div><div id="mc-guided-content"></div><div class="mc-guided-controls"><button data-g="prev">← Previous</button><button data-g="reviewed">✓ Mark reviewed</button><button data-g="not">Accept as written</button><span class="spacer"></span><button data-g="next" class="primary">Next →</button></div></section>';document.body.appendChild(d);d.querySelector(".mc-guided-close").onclick=closeGuided;d.addEventListener("click",e=>{if(e.target===d)closeGuided()});d.querySelector('[data-g="prev"]').onclick=()=>guidedMove(-1);d.querySelector('[data-g="next"]').onclick=()=>guidedMove(1);d.querySelector('[data-g="reviewed"]').onclick=()=>{const x=UX_GUIDED_ITEMS[UX_GUIDED_INDEX];if(x)setState(x,"reviewed");UX_GUIDED_ITEMS=UX_GUIDED_ITEMS.filter(y=>!reviewComplete(y));UX_GUIDED_INDEX=Math.min(UX_GUIDED_INDEX,Math.max(0,UX_GUIDED_ITEMS.length-1));renderGuided()};d.querySelector('[data-g="not"]').onclick=()=>{const x=UX_GUIDED_ITEMS[UX_GUIDED_INDEX];if(x)setState(x,"not_issue","guided review");UX_GUIDED_ITEMS=UX_GUIDED_ITEMS.filter(y=>!y.classList.contains("mc-not-issue"));UX_GUIDED_INDEX=Math.min(UX_GUIDED_INDEX,Math.max(0,UX_GUIDED_ITEMS.length-1));renderGuided()};document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!d.hidden)closeGuided()})}
   function openGuided(){UX_GUIDED_ITEMS=allIssues().filter(i=>!i.classList.contains("mc-not-issue")&&!i.classList.contains("mc-reviewed")).sort((a,b)=>({critical:0,review:1,style:2}[priorityOf(a)]??3)-({critical:0,review:1,style:2}[priorityOf(b)]??3));UX_GUIDED_INDEX=0;ensureGuided();$u("mc-guided").hidden=false;document.body.style.overflow="hidden";renderGuided()}
   function closeGuided(){if($u("mc-guided"))$u("mc-guided").hidden=true;document.body.style.overflow=""}
   function guidedMove(d){if(!UX_GUIDED_ITEMS.length)return;UX_GUIDED_INDEX=Math.max(0,Math.min(UX_GUIDED_ITEMS.length-1,UX_GUIDED_INDEX+d));renderGuided()}
   function renderGuided(){const host=$u("mc-guided-content");if(!host)return;if(!UX_GUIDED_ITEMS.length){host.innerHTML='<div class="mc-module-clean-banner">✓ No findings currently awaiting review.</div>';return}const x=UX_GUIDED_ITEMS[UX_GUIDED_INDEX],msg=x.querySelector(".msg")?.textContent?.replace(/\s+/g," ").trim()||"Finding",contextNodes=[...x.querySelectorAll(".duplicate-definition-context")],contextHtml=contextNodes.length?contextNodes.map((n,idx)=>{const lab=n.querySelector(".duplicate-definition-context-label")?.textContent?.trim()||`Definition ${idx+1}`;const txt=n.querySelector(".snip")?.textContent?.replace(/\s+/g," ").trim()||"";return txt?`<div class="mc-guided-context-item"><b>${escapeHtml(lab)}</b>${escapeHtml(txt)}</div>`:""}).join(""):`<div class="mc-guided-context-item">${escapeHtml(x.querySelector(".snip")?.textContent?.trim()||"No manuscript excerpt was attached to this finding.")}</div>`,sug=x.querySelector(".std-note")?.textContent?.replace(/^(?:Suggested|Recommendation):\s*/i,"").trim()||"Review the manuscript context and apply a change only when appropriate.";host.innerHTML=`<div class="mc-guided-meta">${UX_GUIDED_INDEX+1} of ${UX_GUIDED_ITEMS.length} · ${escapeHtml(GROUP_LABEL[groupFor(x)]||"")} · ${escapeHtml(priorityOf(x))}</div><div class="mc-guided-problem"><b>Finding</b>${escapeHtml(msg)}</div><div class="mc-guided-evidence"><b>Manuscript context</b>${contextHtml}</div><div class="mc-guided-action"><b>Recommendation</b>${escapeHtml(sug)}</div>`;const panel=$u("mc-guided")?.querySelector(".mc-guided-panel");if(panel)panel.scrollTop=0}
 
   function enhanceAll(){
-    if(UX_ENHANCING || $u("results-tabs")?.hidden)return;UX_ENHANCING=true;try{Object.keys(GROUP_REPORT).forEach(g=>{allIssues(g).forEach(enhanceIssue);ensureToolbar(g);applyFilters(g)});updateTabs();addCleanBanners();updateOverviewUX();ensureResultsTools();$u("analysis-progress")?.classList.add("mc-auto-collapsed");updateFloating()}finally{UX_ENHANCING=false}
+    if(UX_ENHANCING || $u("results-tabs")?.hidden)return;UX_ENHANCING=true;try{Object.keys(GROUP_REPORT).forEach(g=>{allIssues(g).forEach(enhanceIssue);enhanceLedgerReview(g);ensureToolbar(g);applyFilters(g)});updateTabs();addCleanBanners();updateOverviewUX();ensureResultsTools();$u("analysis-progress")?.classList.add("mc-auto-collapsed");updateFloating()}finally{UX_ENHANCING=false}
   }
 
   function init(){
@@ -33239,7 +33335,7 @@ fteAnalyze=function(blocks){
     const oldRender=window.renderManuscriptOverview;if(typeof oldRender==="function")window.renderManuscriptOverview=function(...args){const r=oldRender.apply(this,args);setTimeout(enhanceAll,0);return r};
     const oldShow=window.showTab;if(typeof oldShow==="function")window.showTab=function(which){const r=oldShow(which);setTimeout(()=>{updateFloating();if(which!=="overview")updateIssueNav(which)},0);return r};
     document.addEventListener("mc:results-reset",()=>{
-      closeGuided(); UX_GUIDED_ITEMS=[]; UX_GUIDED_INDEX=0; UX_FILTERS={}; UX_NAV_INDEX={};
+      closeGuided(); UX_GUIDED_ITEMS=[]; UX_GUIDED_INDEX=0; UX_FILTERS={}; UX_NAV_INDEX={}; UX_LEDGER_ITEMS.clear();document.querySelectorAll(".mc-review-history").forEach(x=>x.remove());
       $u("mc-guided-content")?.replaceChildren();
       setTimeout(()=>{
         $u("analysis-progress")?.classList.remove("mc-auto-collapsed");
@@ -33344,8 +33440,7 @@ fteAnalyze=function(blocks){
     const paraIssues=res.paragraphIssues||[];
     const termIssues=wc.consistency||[];
     const met=wc.metrics||{};
-    const count=sentenceIssues.length+paraIssues.length+termIssues.length;
-    $("eng-report-sub").textContent=`Sentence length, paragraph length, and terminology consistency · ${count} item${count===1?"":"s"} to review`;
+    $("eng-report-sub").textContent="";
 
     const sentenceLimit=engNormalizeSentenceLimit(met.sentenceLengthLimit||res.sentenceLengthLimit||ENG_SENTENCE_LIMIT_DEFAULT);
     const paragraphMin=Number(res.paragraphMinWords||ENG_CURRENT_PARAGRAPH_MIN||ENG_PARAGRAPH_MIN_DEFAULT);
@@ -33379,6 +33474,7 @@ fteAnalyze=function(blocks){
       rows.push(engGroupRow({check:"Paragraph length",location:"Body",finding:shortParas.length===1?`1 paragraph is below the ${paragraphMin}-word guideline`:`${shortParas.length} paragraphs are below the ${paragraphMin}-word guideline`,recommendation:"Review whether these short paragraphs should be combined with adjacent prose where the ideas belong together.",instances:shortParas.map(it=>`<div class="eng-instance-label">${e(`${it.sectionTitle||"Body"} · Paragraph ${it.paragraph||""} · ${it.wordCount||""} words`)}</div>${engSafeSnippet(it)}`),rowIndex:rowIndex++,title:"Short-paragraph instances",note:`Only section-aware paragraphs eligible for the selected ${paragraphMin}-word minimum are shown.`}));
     }
 
+    const optionalRows=rows.splice(0);
     termIssues.forEach(it=>{
       legacy.push(engLegacyIssue(it,rowIndex));
       const caption=it.code==="CAPTION_CAPITALIZATION_INCONSISTENT";
@@ -33394,10 +33490,9 @@ fteAnalyze=function(blocks){
       }));
     });
 
-    const empty=`<tr><td colspan="4"><span class="verdict clean">No sentence-length, paragraph-length, or terminology-consistency items require review.</span></td></tr>`;
-    const help=`<p class="sec-label">Readability &amp; terminology ledger <button type="button" class="info-help" id="eng-ledger-info" aria-label="Explain the readability and terminology ledger" aria-expanded="false" title="What do these columns mean?">i</button></p><p class="std-note eng-threshold-note"><b>Note:</b> Current limits are <b>${sentenceLimit} words per sentence</b> and <b>${paragraphMin}–${paragraphMax} words per paragraph</b>. These limits can be customised in <button type="button" class="eng-advanced-settings-link" aria-haspopup="dialog" aria-controls="eng-readability-dialog">Advanced check settings</button>.</p><div class="ledger-help" id="eng-ledger-help" hidden><div class="ledger-help-grid"><b>Check</b><span>The readability or terminology rule being assessed.</span><b>Location</b><span>The manuscript area in which the finding was detected.</span><b>Finding</b><span>A concise description of what was detected, including counts where useful.</span><b>Recommendation</b><span>A concise next step. Use <b>View instances</b> to inspect the manuscript context.</span></div></div>`;
-
-    $("eng-findings").innerHTML=`${help}<div class="ledger-scroll"><table class="ledger eng-reporting-table"><thead><tr><th>Check</th><th>Location</th><th>Finding</th><th>Recommendation</th></tr></thead><tbody>${rows.join("")||empty}</tbody></table></div><div class="eng-ledger-legacy" aria-hidden="true">${legacy.join("")}</div>`;
+    const table=body=>`<div class="ledger-scroll"><table class="ledger eng-reporting-table"><thead><tr><th>Check</th><th>Location</th><th>Finding</th><th>Recommendation</th></tr></thead><tbody>${body.join("")}</tbody></table></div>`;
+    const optional=optionalRows.length?`<details class="mc-optional-suggestions"><summary>Optional writing suggestions (${sentenceIssues.length+paraIssues.length})</summary><p class="std-note eng-threshold-note">Current guidelines: ${sentenceLimit} words per sentence and ${paragraphMin}–${paragraphMax} words per paragraph. <button type="button" class="eng-advanced-settings-link" aria-haspopup="dialog" aria-controls="eng-readability-dialog">Adjust writing limits</button>. Revise only where clarity improves.</p>${table(optionalRows)}</details>`:"";
+    $("eng-findings").innerHTML=`${rows.length?table(rows):""}${optional}<div class="eng-ledger-legacy" aria-hidden="true">${legacy.join("")}</div>`;
 
     bindInfoHelp("eng-report-info","eng-report-help");
     bindInfoHelp("eng-ledger-info","eng-ledger-help");
@@ -33557,7 +33652,7 @@ fteAnalyze=function(blocks){
 
   window.renderFteReport=function(res){
     LAST_FTE=res;
-    $("fte-report-sub").textContent=!res.reliable?"Unable to verify document structure reliably.":`${fteReviewSummary(res.issues)} · ${res.figures.length} figure${res.figures.length===1?"":"s"} · ${res.tables.length} table${res.tables.length===1?"":"s"} · ${fteEquationCountSummary(res)}`;
+    $("fte-report-sub").textContent=!res.reliable?"Unable to verify document structure reliably.":"";
 
     if(!res.reliable){
       $("fte-summary").innerHTML="";
@@ -33568,13 +33663,14 @@ fteAnalyze=function(blocks){
 
     // The manuscript-level validation summary table was removed from the UI.
     // All structural checks still feed the detailed ledger below.
-    $("fte-summary").innerHTML="";
+    $("fte-summary").innerHTML=`<details class="mc-report-details"><summary>Check details</summary><p>${res.figures.length} figures · ${res.tables.length} tables · ${escapeHtml(fteEquationCountSummary(res))}</p></details>`;
 
     const help=`<p class="sec-label">Figures, tables &amp; equations ledger <button type="button" class="info-help" id="fte-ledger-info" aria-label="Explain the figures tables and equations ledger" aria-expanded="false" title="What do these columns mean?">i</button></p><div class="ledger-help" id="fte-ledger-help" hidden><div class="ledger-help-grid"><b>Item</b><span>The Figure, Table, Equation, or structural item associated with the finding.</span><b>Check</b><span>The structural rule being assessed, such as numbering, citation order, cross-reference resolution, or panel lettering.</span><b>Finding</b><span>A concise description of what was detected.</span><b>Status</b><span>A short factual status for the detected condition.</span><b>Recommendation</b><span>The suggested next step. Select <b>View instances</b> when manuscript context is available.</span></div></div>`;
     const orderedIssues=ftePrioritizedIssues(res.issues);
     const body=orderedIssues.length?orderedIssues.map(it=>fteFindingRow(it,res.issues.indexOf(it))).join(""):`<tr><td colspan="5"><span class="verdict clean">No figure, table, or numbered-equation consistency issues detected.</span></td></tr>`;
     const legacy=orderedIssues.map(it=>fteLegacyIssue(it,res.issues.indexOf(it))).join("");
     $("fte-findings").innerHTML=`${help}<div class="ledger-scroll"><table class="ledger fte-reporting-table"><thead><tr><th>Item</th><th>Check</th><th>Finding</th><th>Status</th><th>Recommendation</th></tr></thead><tbody>${body}</tbody></table></div><div class="fte-ledger-legacy" aria-hidden="true">${legacy}</div>`;
+    if(!orderedIssues.length)$("fte-findings").innerHTML="";
     bindInfoHelp("fte-ledger-info","fte-ledger-help");
     bindLedgerButtons("#fte-findings","fte-view-instances");
     $("fte-report").hidden=false;
@@ -38871,19 +38967,23 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       const styleReview=styleNotes.length?`<div class="ref-style-review-detail"><b>Style review:</b> ${styleNotes.map(escapeHtml).join('<br>')}</div>`:'';
       const delimiterReview=p.referenceDelimiterReview?`<div class="ref-delimiter-review"><b>Delimiter review:</b> ${escapeHtml(p.referenceDelimiterReview.recommendation)}</div>`:'';
       const inferenceReview=doiInferenceNotes(p).map(note=>`<div class="ref-style-review-detail ref-doi-inference-review"><b>DOI-based suggestion:</b> ${escapeHtml(note)}</div>`).join('');
+      const doiLinkReview=!p.doi&&p.url&&['no','review'].includes(p._doiState)?`<div class="ref-style-review-detail ref-doi-link-review"><b>DOI review:</b> A source link is present. Check whether your target style requires a DOI and whether one is available.</div>`:'';
       const duplicate=duplicates.get(i);
       const duplicateReview=duplicate?`<div class="ref-duplicate-review" data-duplicate-group="${duplicate.group}">${escapeHtml(duplicate.message)}</div>`:'';
+      const needsAction=[p._authorState,p._yearState,p._titleState,p._sourceState,p._pagesState,p._volState,p._issueState,refIdentifierState(p)].some(st=>st==='no'||st==='review')||refSourceTypeUncertain(p)||styleNotes.length||delimiterReview||duplicate||inferenceReview||doiLinkReview;
+      if(!needsAction)return '';
       const volumeReview=p._volState==='review' && p.referenceFieldRegistry?.orderedJournalTail?.family==='locator-without-volume';
       const reviewRowClass=[styleNotes.length?'ref-row-style-review':'',p.referenceDelimiterReview?'ref-row-format-review':'',duplicate?'ref-row-duplicate-review':''].filter(Boolean).join(' ');
-      return `<tr class="${reviewRowClass}"><td class="t-abbr">${label}</td><td class="t-long">${tag}${snip}${refSourceTypeControl(p,i)}${styleReview}${delimiterReview}${duplicateReview}${inferenceReview}</td>`+
+      return `<tr class="${reviewRowClass}" data-ref-index="${i}"><td class="t-abbr">${label}</td><td class="t-long">${tag}<details class="mc-reference-entry"><summary>${snip}</summary>${escapeHtml(p.raw)}</details>${refSourceTypeUncertain(p)?refSourceTypeControl(p,i):refSourceTypeCanConfirm(p)?`<details class="mc-report-details"><summary>Source type</summary>${refSourceTypeControl(p,i)}</details>`:""}${styleReview}${delimiterReview}${duplicateReview}${inferenceReview}${doiLinkReview}</td>`+
         `<td>${cell(p._authorState)}</td><td>${cell(p._yearState)}</td><td>${cell(p._titleState)}</td><td>${cell(p._sourceState)}</td>`+
         `<td>${cell(p._pagesState)}</td><td${volumeReview?' data-missing-volume-review="1"':''}>${cell(p._volState)}</td><td${p._issueState==='review'&&!refSourceTypeUncertain(p)?' data-missing-issue-review="1" title="Your selected style or example includes issue numbers. Check whether this article has one."':''}>${cell(p._issueState||'na')}</td><td>${cell(refIdentifierState(p))}</td></tr>`;
     }).join('');
+    if(!body)return '';
     const cols=`<colgroup><col style="width:4%"><col style="width:40%"><col style="width:7%"><col style="width:6%"><col style="width:6%"><col style="width:7%"><col style="width:8%"><col style="width:8%"><col style="width:6%"><col style="width:8%"></colgroup>`;
     const head=`<thead><tr><th>Ref</th><th>Entry / type</th><th>Author</th><th>Year</th><th>Title</th><th>Source</th><th>Pages / article no.</th><th>Volume</th><th>Issue</th><th>DOI / Link</th></tr></thead>`;
     return `<div class="reference-ledger-block">
       <div class="reference-ledger-normal-head"><p class="sec-label">Reference ledger <button type="button" class="info-help inline-auto-help" data-help="yes = written separately in the reference; no = expected information not detected; review = check whether the field applies or verify a DOI-based suggestion shown in the entry; optional = not consistently required; n/a = not applicable to that reference type. For journal issues, not specified means no issue number was detected and its availability has not been established. It is not an error. A selected style or example that includes issues prompts review. Other references and DOI patterns do not make an issue number mandatory." aria-label="Explain Reference Ledger" title="Explain this table">i</button></p></div>
-      <div class="reference-ledger-key" aria-label="Reference ledger status key"><span><span class="yn y">Yes</span>: detected</span><span class="reference-ledger-key-sep">•</span><span><span class="yn n">No</span>: strongly expected</span><span class="reference-ledger-key-sep">•</span><span><span class="yn rev">Review</span>: possibly missing</span><span class="reference-ledger-key-sep">•</span><span><span class="yn opt">Optional</span>: not consistently required</span><span class="reference-ledger-key-sep">•</span><span><span class="yn na">N/A</span>: not applicable</span><span class="reference-ledger-key-sep">•</span><span><span class="yn unspecified">Not specified</span>: issue not detected; availability unknown</span></div>
+      <details class="mc-report-details"><summary>Status key</summary><div class="reference-ledger-key" aria-label="Reference ledger status key"><span><span class="yn y">Yes</span>: detected</span><span class="reference-ledger-key-sep">•</span><span><span class="yn n">No</span>: strongly expected</span><span class="reference-ledger-key-sep">•</span><span><span class="yn rev">Review</span>: possibly missing</span><span class="reference-ledger-key-sep">•</span><span><span class="yn opt">Optional</span>: not consistently required</span><span class="reference-ledger-key-sep">•</span><span><span class="yn na">N/A</span>: not applicable</span><span class="reference-ledger-key-sep">•</span><span><span class="yn unspecified">Not specified</span>: issue not detected; availability unknown</span></div></details>
       <div class="reference-ledger-floating" aria-hidden="true"><div class="reference-ledger-floating-title">Reference ledger</div><div class="reference-ledger-floating-scroll"><table class="ledger reference-ledger-table">${cols}${head}</table></div></div>
       <div class="ledger-scroll reference-ledger-scroll"><table class="ledger reference-ledger-table">${cols}${head}<tbody>${body}</tbody></table></div>
     </div>`;
@@ -38895,11 +38995,12 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
     baseRender(res,cross);
     const sub=document.getElementById('ref-report-sub');
     if(sub){
-      const target=res.cslStyleApplied?` · target CSL: ${res.cslStyleApplied.title}`:(res.cslStylePending?` · target CSL selected: ${res.cslStylePending.title}`:(res.manualStyleExampleApplied?' · reference example applied':res.manualStyleExampleUnsupported?' · reference example could not be used for journal formatting checks':''));
-      sub.textContent=`${res.count} references`+
-        (res.titleConvention&&res.titleConvention!=='uncertain'?` · titles ${res.titleConvention}`:'')+
-        (res.doiConvention&&res.doiConvention!=='uncertain'?` · DOIs ${res.doiConvention}`:'')+target+
-        (res.hadBody?'':' · in-text check skipped (no manuscript body detected)');
+      const target=res.cslStyleApplied?`Target style: ${res.cslStyleApplied.title}`:(res.cslStylePending?`Target style not checked (library unavailable): ${res.cslStylePending.title}`:(res.manualStyleExampleApplied?'Reference example applied':res.manualStyleExampleUnsupported?'Reference example could not be checked; provide a complete journal-article example':''));
+      const confidence=res.detect?.confidence;
+      const uncertain=confidence!=null&&(String(confidence).toLowerCase()==='low'||Number.isFinite(Number(confidence))&&Number(confidence)<(Number(confidence)>1?70:0.7));
+      sub.textContent=[target,res.hadBody?'':'In-text check skipped (no manuscript body detected)',uncertain?'Reference-section detection needs confirmation':''].filter(Boolean).join(' · ');
+      const metadata=[`${res.count} references`,res.style?`Detected style: ${res.style}`:'',res.titleConvention?`Titles: ${res.titleConvention}`:'',res.doiConvention?`DOIs: ${res.doiConvention}`:'',res.detect?`Section detection: ${res.detect.method}; confidence ${confidence}`:''].filter(Boolean).join(' · ');
+      document.getElementById('ref-ledger-wrap').insertAdjacentHTML('beforeend',`<details class="mc-report-details"><summary>Check details</summary><p>${escapeHtml(metadata)}</p></details>`);
     }
     const wrap=document.getElementById('ref-ledger-wrap');
     const visibleStyleSummary=wrap&&wrap.querySelector('.mc-ref-style-summary');
