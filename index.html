@@ -33409,7 +33409,7 @@ fteAnalyze=function(blocks){
     applyFilters(group);syncLedgerReview(group);updateTabs();addCleanBanners();updateOverviewUX();
     const history=$u(GROUP_REPORT[group])?.querySelector(".mc-review-history");
     if(state){
-      history?.querySelector("summary")?.focus();
+      history?.querySelector("summary")?.focus({preventScroll:true});
       const notice=history?.querySelector('[role="status"]');if(notice)notice.textContent=state==="reviewed"?"Item marked reviewed. Restore it from this history if needed.":"Item accepted as written. Restore it from this history if needed.";
     }else{
       let parent=record.row.parentElement;while(parent){if(parent.tagName==="DETAILS")parent.open=true;parent=parent.parentElement;}
