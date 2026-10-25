@@ -33729,7 +33729,7 @@ fteAnalyze=function(blocks){
     });
 
     const table=body=>`<div class="ledger-scroll"><table class="ledger eng-reporting-table"><thead><tr><th>Check</th><th>Location</th><th>Finding</th><th>Recommendation</th></tr></thead><tbody>${body.join("")}</tbody></table></div>`;
-    const optional=optionalRows.length?`<details class="mc-optional-suggestions"><summary>Optional writing suggestions (${sentenceIssues.length+paraIssues.length})</summary><p class="std-note eng-threshold-note">Current guidelines: ${sentenceLimit} words per sentence and ${paragraphMin}–${paragraphMax} words per paragraph. <button type="button" class="eng-advanced-settings-link" aria-haspopup="dialog" aria-controls="eng-readability-dialog">Adjust writing limits</button>. Revise only where clarity improves.</p>${table(optionalRows)}</details>`:"";
+    const optional=optionalRows.length?`<details class="mc-optional-suggestions" open><summary>Optional writing suggestions (${sentenceIssues.length+paraIssues.length})</summary><p class="std-note eng-threshold-note">Current guidelines: ${sentenceLimit} words per sentence and ${paragraphMin}–${paragraphMax} words per paragraph. <button type="button" class="eng-advanced-settings-link" aria-haspopup="dialog" aria-controls="eng-readability-dialog">Adjust writing limits</button>. Revise only where clarity improves.</p>${table(optionalRows)}</details>`:"";
     $("eng-findings").innerHTML=`${rows.length?table(rows):""}${optional}<div class="eng-ledger-legacy" aria-hidden="true">${legacy.join("")}</div>`;
 
     bindInfoHelp("eng-report-info","eng-report-help");
