@@ -33394,7 +33394,7 @@ fteAnalyze=function(blocks){
   }
   function enhanceLedgerReview(group){
     const report=$u(GROUP_REPORT[group]);if(!report)return;
-    const selectors={abbr:'.abbr-group-first,[id^="abbr-note-"]',ref:'.reference-ledger-scroll tbody > tr',unit:'tr[data-unit-review="1"]',num:'tr[data-num-review="1"]',eng:'tr[id^="eng-finding-row-"]',fte:'tr[id^="fte-finding-row-"]'};
+    const selectors={abbr:'.abbr-group-first',ref:'.reference-ledger-scroll tbody > tr',unit:'tr[data-unit-review="1"]',num:'tr[data-num-review="1"]',eng:'tr[id^="eng-finding-row-"]',fte:'tr[id^="fte-finding-row-"]'};
     const states=loadStates(),issues=allIssues(group);
     const records=[...report.querySelectorAll(selectors[group])].map(row=>{
       const rows=group==="abbr"&&row.dataset.abbrGroup!=null?[...row.parentElement.querySelectorAll("tr.abbr-finding-row")].filter(r=>r.dataset.abbrGroup===row.dataset.abbrGroup):[row];
@@ -33467,8 +33467,6 @@ fteAnalyze=function(blocks){
     }
     const referenceBlock=report.querySelector(".reference-ledger-block");
     if(referenceBlock)referenceBlock.hidden=records.length>0&&records.every(record=>reviewComplete(record.row));
-    const notes=report.querySelector(".abbr-report-notes");
-    if(notes)notes.hidden=records.filter(record=>notes.contains(record.row)).every(record=>reviewComplete(record.row));
     scheduleUniversalLedgerStickyHeaders();
     const historyRecords=records.filter(record=>reviewComplete(record.row));
     let history=report.querySelector(".mc-review-history");
