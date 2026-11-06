@@ -7092,6 +7092,9 @@ const UNIT_REGISTRY={
 const UNIT_ANALYTES=new Set(["COD","BOD","TOC","DOC","TSS","TDS","TS","VS","VSS","FS","TN","TP","TKN","N","P","NH4-N","NH3-N","NO3-N","NO2-N","PO4-P","CA2+","MG2+","CACO3","CL-","F-","SO4","SO4-S","S","H2S","H2","CH4","O2","CO2","N2"]);
 const UNIT_NONSTANDARD={sec:"s",secs:"s",hr:"h",hrs:"h",cc:"cm^3",mps:"m/s",kgs:"kg",mgs:"mg",mLs:"mL"};
 const UNIT_NAME_ALIASES={second:"s",seconds:"s",minute:"min",minutes:"min",hour:"h",hours:"h",day:"d",days:"d",metre:"m",metres:"m",meter:"m",meters:"m",litre:"L",litres:"L",liter:"L",liters:"L",millilitre:"mL",millilitres:"mL",milliliter:"mL",milliliters:"mL",gram:"g",grams:"g",kilogram:"kg",kilograms:"kg",kelvin:"K",pascal:"Pa",pascals:"Pa"};
+// Full length-unit names use the same symbols and scale rules as compact notation.
+for(const [name,symbol] of [["kilo","k"],["deci","d"],["centi","c"],["milli","m"],["micro","µ"],["nano","n"]])
+  for(const base of ["metre","meter"])for(const plural of ["","s"])UNIT_NAME_ALIASES[name+base+plural]=symbol+"m";
 const UNIT_UNSUPPORTED_TIME=/^(?:yrs?|years?|mos?|months?|wks?|weeks?|fortnights?)$/;
 const UNIT_BAD_CASE={KPa:"kPa",KPA:"kPa",kpa:"kPa",HZ:"Hz",hz:"Hz",PA:"Pa",KW:"kW",mw:"mW"};
 const UNIT_DIRECT_EXPRESSIONS={
@@ -7174,6 +7177,9 @@ function unitParseExpression(raw,opts={}){
   if(work==="%") return {raw:raw.trim(),valid:true,recognized:true,normalized:"%",dim:{},dimKey:"dimensionless",scale:.01,scaleKey:unitScaleKey(.01),offset:0,notationFamily:"single",analyte:null,flags,components:[{canonical:"%",exp:1}]};
   // A stated material basis is part of the measurement's identity, not prose
   // to discard. Accept this bounded grammar only after a mass denominator.
+  work=work.replace(/\b(dry|wet)\s*[-‐‑‒–—]\s*(?=(?:matter|weight|mass)\b)/gi,"$1 ");
+  const bracketBasis=work.match(/\s*([([])\s*((?:(?:of\s+(?:the\s+)?|on\s+(?:a\s+)?)?)(?:dry|wet)\s+(?:matter|weight|mass)(?:\s+basis)?)\s*([)\]])$/i);
+  if(bracketBasis&&({"(":")","[":"]"})[bracketBasis[1]]===bracketBasis[3])work=work.slice(0,bracketBasis.index)+" "+bracketBasis[2];
   const material=work.match(/\s+(?:of\s+(?:the\s+)?|on\s+(?:a\s+)?)?(dry|wet)\s+(matter|weight|mass)(?:\s+basis)?$/i);
   const materialBasis=material?`${material[1].toLowerCase()} ${material[2].toLowerCase()}`:"";
   if(material)work=work.slice(0,material.index);
@@ -7219,7 +7225,7 @@ function unitParseExpression(raw,opts={}){
         // A terminal "as N" qualifies the measured numerator, not its litre
         // denominator. An annotation inside a group retains its local basis.
         const numerator=!close&&pos===toks.length?components.filter(c=>c.exp>0&&!c.annotation&&(["M:1","N:1","Count:1","L:3"].includes(c.dimKey)||c.dimKey==="L:1"&&c.exp===3)):[];
-        if(needFactor||!annotation||!UNIT_ANALYTES.has(analyteKey(annotation))||!lastBasis&&numerator.length!==1)return false;
+        if(needFactor||!annotation||!(UNIT_ANALYTES.has(analyteKey(annotation))||/^(?:NO[23]|NH[34]|PO4|nitrate|nitrite|ammonium|ammonia|phosphate|sulfate|sulphate)$/i.test(annotation))||!lastBasis&&numerator.length!==1)return false;
         annotate(analyteKey(annotation),numerator.length===1?numerator[0]:components.at(-1));
         if(numerator.length===1)analyte=analyteKey(annotation);
         lastBasis=null;continue;
@@ -7292,7 +7298,7 @@ function unitCandidatePrefixes(rest,rangeContext=false){
   // or an explicitly introduced parameter/chemical label. Keep actual grouped
   // denominators and standalone K/pH units by requiring a valid preceding unit.
   const boundaries=/[([]\s*(?=[<>≤≥~≈+−-]?\s*\d)|\bpH\s*(?=(?:of|was|is)\b|=\s*[+−-]?\d|[0-9])|\b[A-Z][a-z]?\s+[-–]\s+(?=[A-Z][A-Z0-9]{1,}\b)/g;
-  const proseNotes=/[([]\s*as\s+(?:(?:previously|experimentally|independently|separately)\s+[a-z]+ed|(?:(?:[a-z]+ly)\s+){0,2}(?:shown|reported|described|stated|noted|illustrated|discussed|expected|calculated|determined|estimated|measured|obtained|given|found|[a-z]+ed(?=\s+(?:above|below|earlier|previously|here)\b)))(?=\s*[)\]]|\s+(?:[a-z]+ly|above|below|earlier|here|in|by|using|from|with|at|for)\b)/gi;
+  const proseNotes=/(?:[([]\s*|\b)as\s+(?:(?:previously|experimentally|independently|separately)\s+[a-z]+ed|(?:(?:[a-z]+ly)\s+){0,2}(?:shown|reported|observed|described|stated|noted|illustrated|discussed|expected|calculated|determined|estimated|measured|obtained|verified|corrected|normali[sz]ed|standardi[sz]ed|calibrated|validated|given|found|[a-z]+ed(?=\s+(?:above|below|earlier|previously|here)\b)))(?=\s*[)\]]|$|\s+(?:[a-z]+ly|above|below|earlier|here|in|by|using|from|with|at|for)\b)/gi;
   for(const boundary of [...rest.matchAll(boundaries),...rest.matchAll(proseNotes)].sort((a,b)=>a.index-b.index)){
     const prefix=rest.slice(0,boundary.index).trim(),parsed=unitParseExpression(prefix);
     const chemical=/^[A-Z][a-z]?\s+[-–]/.test(boundary[0]);
@@ -7355,8 +7361,11 @@ function unitCandidatePrefixes(rest,rangeContext=false){
     // A second explicitly unit-bearing endpoint is not an exponent of this unit.
     const endpoint=remainder.match(new RegExp('^\\s+[−‐‑‒–—-]\\s*('+UNIT_NUM_CORE+')\\s+(.+)$'));
     const nextQuantity=endpoint&&unitParseExpression(prefix)?.valid&&unitCandidatePrefixes(endpoint[2]).some(x=>unitParseExpression(x)?.valid);
-    const continued=!nextQuantity&&(["M:1","N:1","L:3"].includes(unitParseExpression(prefix)?.dimKey)&&/^\s+[A-Z][A-Za-z0-9₀-₉]*[⁺⁻+−-]?\s*\//.test(remainder)||/^\s*(?:\/|\^|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]|[−‐‑‒–—-]\s*[0-9⁰¹²³⁴⁵⁶⁷⁸⁹]|[·⋅×]\s*[A-Za-zµμΩ\p{Sc}])/u.test(remainder)||
-      /^\s*\(\s*as\b/i.test(remainder)||
+    // A plain analyte note stays local to the unit. A new paragraph or an
+    // explicit subject/predicate ("as LN was raised") begins ordinary prose.
+    const plainAs=/^[ \t]+as[ \t]+/i.test(remainder)&&!/^\s+as\s+[^\n,;!?]{0,100}\b(?:is|are|was|were|has|have|had|that)\b/i.test(remainder);
+    const continued=!nextQuantity&&(plainAs||["M:1","N:1","L:3"].includes(unitParseExpression(prefix)?.dimKey)&&/^\s+[A-Z][A-Za-z0-9₀-₉]*[⁺⁻+−-]?\s*\//.test(remainder)||/^\s*(?:\/|\^|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]|[−‐‑‒–—-]\s*[0-9⁰¹²³⁴⁵⁶⁷⁸⁹]|[·⋅×]\s*[A-Za-zµμΩ\p{Sc}])/u.test(remainder)||
+      /^\s*(?:(?:[([]\s*)+(?:as\b|[^()[\]\n]{0,80}\b(?:dry|wet|basis|solids|(?:fresh|lyophili[sz]ed|(?:air|freeze|oven)[-‐‑‒–—\s]+dried?)[-‐‑‒–—\s]+(?:matter|weight|mass))\b)|(?:(?:of\s+(?:the\s+)?|on\s+(?:a\s+)?)?)(?:ash[-‐‑‒–—\s]+free\s+)?(?:dry|wet|fresh|lyophili[sz]ed|(?:air|freeze|oven)[-‐‑‒–—\s]+dried?)[-‐‑‒–—\s]+(?:matter|weight|mass|basis|solids)\b)/i.test(remainder)||
       /%$/.test(prefix)&&/^\s*(?:\(\s*)?[wmv]\s*\//i.test(remainder)||
       (power&&(!power[2]||/[\^⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]/.test(power[0])||UNIT_UNSUPPORTED_TIME.test(power[1])||/\p{Sc}/u.test(power[1])||ABBR_CURRENCY_CODES.has(power[1])||unitParseComponent(power[1])))||
       (per&&(!per[1]||/^[\d(.]/.test(per[1])||UNIT_UNSUPPORTED_TIME.test(per[1].split(/\s/)[0])||unitParseComponent(per[1].split(/\s/)[0]))));
@@ -7570,8 +7579,12 @@ function unitExtractQuantities(text,context="body"){
         const m=c.match(/^(.+?)(?:\s*[·⋅×]\s*|\s+)((?:[A-Za-zµμΩ]+|\p{Sc})\s*(?:\^|[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]|[−‐‑‒–—-]\s*[0-9⁰¹²³⁴⁵⁶⁷⁸⁹])\S*)/u);
         return m&&unitParseExpression(m[1])?.valid;
       });
-      const annotated=candidates.slice().reverse().find(c=>{const m=c.match(/^(.+?)\s*\(\s*as\s+[^()]+\)$/i);return m&&unitParseExpression(m[1])?.valid;});
-      const incomplete=divided.find(c=>/(?:\/|\bper\b)\s*\S/.test(c))||divided[0]||powered||annotated;
+      const annotated=candidates.find(c=>{const m=c.match(/^(.+?)\s*(?:\(\s*as\s+[^()]+\)|\s+as\s+[^()]+)$/i);return m&&unitParseExpression(m[1])?.valid;});
+      const material=candidates.slice().reverse().find(c=>{
+        const m=c.match(/^(.+?)\s+(?:(?:of\s+(?:the\s+)?|on\s+(?:a\s+)?)?)(?:ash[-‐‑‒–—\s]+free\s+)?(?:dry|wet|fresh|lyophili[sz]ed|(?:air|freeze|oven)[-‐‑‒–—\s]+dried?)[-‐‑‒–—\s]+(?:matter|weight|mass|basis|solids)(?:\s+basis)?$/i);
+        return m&&unitParseExpression(m[1])?.valid;
+      });
+      const incomplete=material||annotated||divided.find(c=>/(?:\/|\bper\b)\s*\S/.test(c))||divided[0]||powered;
       if(incomplete){
         parsed=unitParseExpression(incomplete,{allowUnknown:true});rawUnit=incomplete;
         if(parsed&&!parsed.valid)parsed.unsupportedCompound=true;
@@ -9082,7 +9095,7 @@ function engLooksHeadingForScan(line){
    This classifier combines caption syntax, Word style/SEQ fields, media/table
    proximity, heading structure, and caption-continuation grammar. */
 const ENG_CAPTION_STYLE_RE=/(?:^|\b)(?:caption|figure\s*(?:caption|legend)?|fig\s*caption|table\s*(?:caption|title)|scheme\s*caption|image\s*caption|photo(?:graph)?\s*caption|plate\s*caption|chart\s*caption|graph\s*caption|diagram\s*caption|flowchart\s*caption|legend|graphical\s*abstract)(?:\b|$)/i;
-const ENG_CAPTION_REPORTING_VERB_RE=/^(?:(?:not\s+(?:only|merely|simply)|also|further|once|often|sometimes|always|never|now|still|already|[a-z]+ly)\s+){0,4}(?:sets?\s+out|records(?!\s+(?:of|from|for)\b)|shows?|showed|illustrates?|illustrated|depicts?|depicted|presents?|presented|demonstrates?|demonstrated|describes?|described|summari[sz]es?|summari[sz]ed|compares?|compared|provides?|provided|indicates?|indicated|reveals?|revealed|displays?|displayed|represents?|represented|highlights?|highlighted|contains?|contained|gives?|gave|reports?|reported|suggests?|suggested|confirms?|confirmed|lists?|listed|is|are|was|were|has|have|had|can|could|may|might|will|would|should)\b/i;
+const ENG_CAPTION_REPORTING_VERB_RE=/^(?:(?:not\s+(?:only|merely|simply)|also|alone|further|once|often|sometimes|always|never|now|still|already|[a-z]+ly)\s+){0,4}(?:(?:seems?|seemed|appears?|appeared|fails?|failed|helps?|helped)\s+(?:(?:[a-z]+ly|not)\s+){0,3}to|sets?\s+out|[a-z]{2,}(?:s|ed)\s+(?:the|an?|this|that|these|those|our|their|its)\b|(?:includes|supports|reflects|offers|compiles|details)(?!\s+(?:of|from|for|in|between)\b)|differ(?:s|ed)?\s+(?:[a-z]+ly\s+){0,2}(?:from|in|between)\b|records(?!\s+(?:of|from|for)\b)|shows?|showed|illustrates?|illustrated|depicts?|depicted|presents?|presented|demonstrates?|demonstrated|describes?|described|summari[sz]es?|summari[sz]ed|compares?|compared|provides?|provided|indicates?|indicated|reveals?|revealed|displays?|displayed|represents?|represented|highlights?|highlighted|contains?|contained|gives?|gave|reports?|reported|suggests?|suggested|confirms?|confirmed|lists?|listed|(?:is|are|was|were|has|have|had|do|does|did|can|could|may|might|will|would|should|must|shall)(?:n['’]t)?|cannot|won['’]t)\b/i;
 const ENG_CAPTION_NOTE_RE=/^(?:\(?[a-z]\)|[A-Z]\.|inset\s*:|the\s+inset\s+(?:shows?|illustrates?|depicts?)\b|inset\s+(?:shows?|illustrates?|depicts?)\b|error\s+bars?\s+(?:represent|show|indicate)\b|values?\s+(?:represent|show|indicate)\b|data\s+(?:represent|show|indicate)\b|symbols?\s+(?:represent|show|indicate)\b|(?:the\s+)?(?:dotted|dashed|solid)\s+lines?\s+(?:represent|show|indicate)\b|the\s+shaded\s+region\s+(?:represents?|indicates?)\b|colou?r(?:s)?\s+(?:represent|show|indicate)\b|arrows?\s+(?:represent|show|indicate)\b|scale\s+bars?\b|magnification\b|experimental\s+conditions?\s*:|operating\s+conditions?\s*:|reaction\s+conditions?\s*:|test\s+conditions?\s*:|conditions?\s*:|figure\s+note\s*:|legend\s*:|notes?\s*:|source(?:s)?\s*:|data\s+source\s*:|image\s+source\s*:|adapted\s+from\b|modified\s+from\b|reproduced\s+from\b|reprinted\s+from\b|abbreviations?\s*:)/i;
 const ENG_CAPTION_PROSE_PREFIX_RE=/^(?:as\s+(?:shown|presented|illustrated|depicted)\s+in|in|from|see)\s+(?:supplementary\s+)?(?:figure|fig\.?|table|scheme)\b/i;
 
@@ -9775,6 +9788,7 @@ function engMaskCitations(text){
   const numeric=/\[[0-9\s,;–—-]{1,80}\]|\([0-9\s,;–—-]{1,80}\)/g;
   return body.replace(/⟦(?:SUPCITE|refnum):[^⟧]+⟧/g,blank).replace(numeric,(m,index)=>{
     const raw=m.slice(1,-1).trim();
+    if(refIsClassificationRange(body,index,m.length)||refIsMeasurementEndpoint(body,index,m.length))return m;
     if(!/^\d{1,4}(?:\s*[,;–—-]\s*\d{1,4})*$/.test(raw))return m;
     const left=body.slice(Math.max(0,index-90),index),right=body.slice(index+m.length,index+m.length+60);
     if(/\b(?:eq(?:uation)?s?\.?|fig(?:ure)?s?\.?|tables?|coordinates?|interval|range|values?|temperatures?|concentrations?|measurements?|ratios?|dimensions?|pH|at|between|from|to|were|was|are|is|n\s*=)\s*$/i.test(left)||/[=±×÷]\s*$/.test(left))return m;
@@ -10533,6 +10547,8 @@ function engSentencePeriodProtected(text,index){
   if(/^nos$/i.test(word) && /^\s*\d/.test(right) && /\b(?:grant|award|project|contract|funding|approval|permit|certificate|reference|report|accession|catalog(?:ue)?)\s+Nos$/i.test(left)) return true;
   if(/^(?:etc|ltd|inc|co)$/i.test(word)||/\bet\s+al$/i.test(left)){
     if(/^\s+["'“‘(\[]*(?:Additionally|Furthermore|Moreover|However|Nevertheless|Meanwhile|Therefore|Thus|Consequently|Alternatively|In\s+(?:contrast|addition|summary))\b/u.test(right))return false;
+    if(/^\s+["'“‘(\[]*(?:The|An?|This|These|That|Those|Our|Their|Its)\s+[\p{L}\p{N}]/u.test(right)||
+       /^\s+["'“‘(\[]*(?:At|After|Before|During|Under|With|Without|From|For|In|On|By)\s+[^.!?;\n]{1,100},\s*[A-Za-zα-ωΑ-Ω]/u.test(right))return false;
     const subject=right.match(/^\s+["'“‘(\[]*(?:[A-Z]|[a-z]+[A-Z]|[α-ωΑ-Ω])[\p{L}\p{N}'’-]*\s+([^.!?\n]+)/u);
     if(subject){
       const words=subject[1].trim().split(/\s+/);
@@ -10540,8 +10556,8 @@ function engSentencePeriodProtected(text,index){
         const predicate=words.slice(n).join(" ");
         // Regular past-tense predicates provide grammatical evidence beyond a verb list.
         // Require a new subject and exclude noun modifiers such as "measured values".
-        if(/^[a-z]{3,}ed\b(?=\s+(?:during|after|before|under|over|within|throughout|at|in|on|from|to|by|with|without|when|while|as|the|a|an|blue|red|green|yellow|[a-z]+ly)\b|[.!?]|$)/i.test(predicate))return false;
-        if(ENG_CAPTION_REPORTING_VERB_RE.test(predicate)||/^(?:(?:[a-z]+ly)\s+){0,2}(?:(?:observ|measur|increas|decreas|declin|produc|requir|correlat)e[sd]?|remain(?:s|ed)?|ris(?:e[sn]?|ing)|rose|fall(?:s|en)?|fell|var(?:y|ies|ied)|depend(?:s|ed)?|finds?|found)\b/i.test(predicate))return false;
+        if((n===0||/^(?:of|from|in|on|under|with|without|at|across|between)\b/i.test(subject[1]))&&/^[a-z]{3,}ed\s+(?!(?:and|or)\b)[a-z]/i.test(predicate)||/^[a-z]{3,}ed\b(?=\s+(?:during|after|before|under|over|within|throughout|at|in|on|from|to|by|with|without|when|while|as|the|a|an|blue|red|green|yellow|[a-z]+ly)\b|[.!?]|$)/i.test(predicate))return false;
+        if(ENG_CAPTION_REPORTING_VERB_RE.test(predicate)||/^(?:(?:[a-z]+ly)\s+){0,2}(?:(?:observ|measur|increas|decreas|declin|produc|requir|correlat)e[sd]?|remain(?:s|ed)?|ris(?:e[sn]?|ing)|rose|fall(?:s|en)?|fell|becom(?:e|es)|became|grows?|grew|breaks?|broke|var(?:y|ies|ied)|depend(?:s|ed)?|finds?|found|go(?:es)?|went|takes?|took|loses?|lost|leads?|led|undergo(?:es)?|underwent|runs?|ran|brings?|brought|bears?|bore)\b/i.test(predicate))return false;
       }
     }
   }
@@ -11738,7 +11754,7 @@ function collectDefs(sent,si,add){
    These definitions must be accepted without pretending that an embedded term
    such as BET was itself expanded by the compound definition.
 */
-const ABBR_SCI_PARAMETER_HEAD_RE=/\b(?:surface\s+areas?|specific\s+surface\s+areas?|pore\s+volumes?|micropore\s+volumes?|mesopore\s+volumes?|total\s+pore\s+volumes?|pore\s+(?:diameters?|sizes?)|particle\s+sizes?|concentration|content|capacity|capacitance|loading|uptake|efficienc(?:y|ies)|removal\s+efficienc(?:y|ies)|recovery\s+efficienc(?:y|ies)|rate(?:\s+constant)?|constant|coefficient|density|current\s+density|power\s+density|energy\s+density|energy(?:\s+(?:input|output|consumption|recovery))?|power(?:\s+(?:input|output|consumption))?|flux|potential|voltage|current|resistances?|resistivity|conductivity|conductance|permeability|porosity|diameter|radius|thickness|length|width|height|area|volume|mass|weight|fraction|ratio|index|factor|yield|conversion|selectivity|recovery|removal|current\s+retention|retention|adsorption|absorbance|intensity|wavelength|frequency|temperature|pressure|time|retention\s+time|residence\s+time|turbidity|viscosity|velocity|flow\s+rate|dose|dosage|parameter|value|number)\s*$/i;
+const ABBR_SCI_PARAMETER_HEAD_RE=/\b(?:surface\s+areas?|specific\s+surface\s+areas?|pore\s+volumes?|micropore\s+volumes?|mesopore\s+volumes?|total\s+pore\s+volumes?|pore\s+(?:diameters?|sizes?)|particle\s+sizes?|concentration|content|capacity|capacitance|loading|uptake|efficienc(?:y|ies)|removal\s+efficienc(?:y|ies)|recovery\s+efficienc(?:y|ies)|rate(?:\s+constant)?|constant|coefficient|density|current\s+density|power\s+density|energy\s+density|energy(?:\s+(?:input|output|consumption|recovery))?|power(?:\s+(?:input|output|consumption))?|flux|potential|voltage|current|resistances?|resistivity|conductivity|conductance|permeability|porosity|diameter|radius|thickness|length|width|height|area|volume|mass|weight|fraction|ratio|index|factor|yield|conversion|selectivity|recovery|removal|current\s+retention|retention|adsorption|absorbance|intensity|wavelength|frequency|temperature|pressure|time|retention\s+time|residence\s+time|turbidity|viscosity|velocity|flow\s+rate|dose|dosage|force|displacement|amplitude|function|parameter|value|number)\s*$/i;
 const ABBR_SCI_SAMPLE_HEAD_RE=/\b(?:sample|specimen|reactor|experiment|run|group|batch|treatment|condition|case|series|route|site|location|station)\s*(?:no\.?\s*)?$/i;
 
 // Explicit script boundaries distinguish E_{E}, e_{E}, E_{e}, and plain EE.
@@ -11954,7 +11970,7 @@ function abbrLooksScientificShort(raw){
   const s=String(raw||"").trim().replace(/^[,;:]|[,;:]$/g,"").trim();
   if(abbrWordSymbolKey(s)) return true;
   if(!s || s.length>24) return false;
-  if(s==="P") return true; // Explicit scientific declarations; page syntax is screened separately.
+  if(s==="P"||s==="p") return true; // Explicit scientific declarations; page syntax is screened separately.
   if(abbrLooksOrdinaryLowercaseWord(s)) return false;
   if(/\b(?:et\s+al\.?|fig\.?|figure|table|eq\.?|equation|ref\.?|reference|doi|vol\.?|pp?\.?|inc\.?|ltd\.?|corp\.?)\b/i.test(s)) return false;
   if(/[<>=±%°\/]/.test(s) || /\b(?:19|20)\d{2}\b/.test(s)) return false;
@@ -12221,6 +12237,11 @@ function abbrSafeUnitExpression(raw){
     return !!(unit?.valid&&unit.recognized&&typeof unit.normalized==='string'&&unit.normalized&&Number.isFinite(unit.scale));
   }catch(_e){return false;}
 }
+function abbrStripDefinitionUnitNote(value){
+  const text=String(value||"").trim();
+  const note=text.match(/^(.+?)\s*(?:,\s*)?(?:(?:which|that)\s+(?:is|was)\s+)?(?:(?:measured|expressed|reported|given)\s+)?\bin\s+(.+)$/i);
+  return note&&abbrDescriptorLooksScientific(note[1].trim())&&abbrSafeUnitExpression(note[2].replace(/\bohms?\b/gi,"Ω"))?note[1].trim():text;
+}
 function abbrScalarValueAnnotation(raw){
   const scalar=value=>{
     const m=String(value||'').trim().replace(/(?<=\d)%$/," %").match(/^[~≈]?\s*([$€£₹¥])?\s*[-+−]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][-+−]?\d+|\s*[×x]\s*10(?:\^[-+−]?\d+|[⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺]+))?(?:\s+(?:thousand|million|billion|lakh|crore))?(?:\s+([^;=\[\]()]+))?$/u);
@@ -12421,11 +12442,14 @@ function collectEquationNomenclatureDefs(sent,si,add){
   const s=String(sent||"");
   const lead=s.replace(/^\s*(?:\([^)]{0,30}\)|\d+[.)]|eq(?:uation)?\.?\s*\d*[.:)]?)\s*/i,"");
   if(!/^where\b/i.test(lead))return;
-  const SYM=`(?!respectively\\b)(?:${ABBR_WORD_SYMBOL_SOURCE}|[α-ωΑ-Ω][A-Za-zα-ωΑ-Ω]{0,3}|[A-Za-z][A-Za-z0-9_]{0,14})`;
+  const SYM=`(?<![\\p{L}\\p{N}_])(?!(?:respectively|however|therefore|thus|here|in|contrast|turn)\\b)(?:${ABBR_WORD_SYMBOL_SOURCE}|[α-ωΑ-Ω][A-Za-zα-ωΑ-Ω]{0,3}|[A-Za-z][A-Za-z0-9_]{0,14})`;
   const VERB="(?:is\\s+defined\\s+as|is\\s+the|is|are|was|were|represents?|denotes?|indicates?|designates?|signif(?:y|ies)|refers?\\s+to|corresponds?\\s+to|stands?\\s+for)";
+  const connective="(?:however|therefore|thus|nevertheless|nonetheless|moreover|furthermore|consequently|hence|accordingly|otherwise|instead|also|here|in\\s+(?:addition|contrast|turn|particular))";
   const join="(?:,\\s*(?:(?:and|but|whereas|while)\\s+)?|\\s+(?:and|whereas|while)\\s+)";
   const SYMBOLS=`${SYM}(?:(?:\\s*,\\s*(?:and\\s+)?|\\s+and\\s+)${SYM})*`;
-  const clauseRe=new RegExp(`(${SYMBOLS})\\s+${VERB}\\s+(?:the\\s+|an?\\s+)?(.+?)(?=${join}${SYMBOLS}\\s+${VERB}\\b|;|\\.(?!\\d)|$)`,"giu");
+  // A declared numeric constant ends the preceding descriptor but is not an abbreviation.
+  const subjects=`(?:${SYMBOLS}|(?<![\\p{L}\\p{N}_])\\d+(?:\\.\\d+)?(?![\\p{L}\\p{N}_]))`;
+  const clauseRe=new RegExp(`(${subjects})\\s+${VERB}(?:\\s*,\\s*respectively\\s*,\\s*|\\s+)(?:the\\s+|an?\\s+)?(.+?)(?=${join}${subjects}\\s+${VERB}\\b|;|\\.(?!\\d)|$)`,"giu");
   // Split only top-level list separators; units and scripted indices may contain commas.
   const splitList=value=>{
     const out=[],stack=[];let start=0;
@@ -12440,35 +12464,72 @@ function collectEquationNomenclatureDefs(sent,si,add){
     }
     return stack.length?[]:[...out,value.slice(start).trim()];
   };
+  const validDescriptor=value=>abbrDescriptorLooksScientific(value)&&
+    (abbrTrimScientificDescriptorContext(value)===value||/^[a-z]+(?:ed|ing)\s+/i.test(value)&&abbrTrimScientificDescriptorContext(value)===value.replace(/^[a-z]+(?:ed|ing)\s+/i,""));
   const descriptor=value=>value.replace(/\s*(?:\(([^()]*)\)|\[([^\[\]]*)\])\s*$/,(all,round,square)=>abbrSafeUnitExpression(round??square)?"":all).trim();
+  const brackets=[],stack=[],projected=s.split("");
+  for(let i=0;i<s.length;i++){
+    if("([{".includes(s[i]))stack.push({start:i,close:{"(":")","[":"]","{":"}"}[s[i]]});
+    else if(")]}".includes(s[i])){
+      const group=stack.pop();
+      if(!group||group.close!==s[i]){stack.length=0;continue;}
+      if(!stack.length)brackets.push({start:group.start,end:i});
+    }
+  }
+  const beforeVerb=new RegExp(`^\\s+${VERB}\\b`,"iu"),symbolBefore=new RegExp(`(${SYM})\\s*$`,"u"),unsupportedAnnotations=[];
+  for(const b of brackets){
+    // Braces belong to explicit scripted symbols such as R_{ct}.
+    if(s[b.start]==="{")continue;
+    const after=s.slice(b.end+1),symbol=s.slice(0,b.start).match(symbolBefore)?.[1];
+    const declaration=beforeVerb.test(after)||symbol&&abbrLooksScientificShort(symbol)&&/^\s*(?:,|and\b)/i.test(after);
+    if(declaration&&!abbrSafeUnitExpression(s.slice(b.start+1,b.end)))unsupportedAnnotations.push(b);
+    for(let i=b.start+(declaration?0:1);i<b.end+(declaration?1:0);i++)projected[i]=" ";
+  }
+  const scan=projected.join("").replace(new RegExp(`([,;]\\s*)${connective}\\b\\s*,?\\s*(?=${SYMBOLS}\\s+${VERB}\\b)`,"giu"),(all,separator)=>separator+" ".repeat(all.length-separator.length));
+  const validJoin=new RegExp(`^\\s*(?:[,;]\\s*(?:(?:and|but|whereas|while)\\s+|${connective}\\b\\s*,?\\s*)?|(?:and|whereas|while)\\s+)$`,"i");
   const clauses=[];let m;
   clauseRe.lastIndex=s.length-lead.length+lead.match(/^where\b\s*[,;:]?\s*/i)[0].length;
-  while((m=clauseRe.exec(s))!==null){
-    let desc=String(m[2]||"").trim()
+  while((m=clauseRe.exec(scan))!==null){
+    const rawStart=m.index+m[0].length-m[2].length;
+    let descEnd=m.index+m[0].length;
+    while(descEnd>rawStart&&/\s/.test(s[descEnd-1]))descEnd--;
+    // Remove complete trailing annotations, including nested measurement notes.
+    let annotation;
+    while((annotation=brackets.find(b=>b.end===descEnd-1&&b.start>=rawStart))&&
+          (s[annotation.start]==="("||abbrDefContainsMeasurement(s.slice(annotation.start+1,annotation.end))||abbrSafeUnitExpression(s.slice(annotation.start+1,annotation.end)))){
+      descEnd=annotation.start;
+      while(descEnd>rawStart&&/\s/.test(s[descEnd-1]))descEnd--;
+    }
+    let desc=s.slice(rawStart,descEnd).trim()
       .replace(/\s*\(([^()]*)\)(?:\s+(?:during|in|for)\b.*)?$/,(match,annotation)=>abbrDefContainsMeasurement(annotation)||abbrSafeUnitExpression(annotation)?"":match)
       .replace(/\s*\([^)]*\)\s*$/,"")
       .replace(/\s*\([^()]*$/,"")
       .replace(/[,;:\s]+$/,"").trim();
-    const respectively=/(?:,\s*|\s+)respectively$/i.test(desc);
+    // Explicit equation/experiment context does not rename the physical quantity.
+    // Other qualifiers (of the membrane, at constant pressure, etc.) stay intact.
+    desc=abbrStripDefinitionUnitNote(desc);
+    const lexical=desc.replace(/\s+(?:in\s+(?:this|the\s+(?:present|current))\s+equation|during\s+(?:this|the)\s+(?:experiment|measurement|test|analysis)|under\s+(?:dry|wet|ambient)\s+conditions)\s*$/i,"");
+    if(lexical!==desc&&validDescriptor(lexical))desc=lexical;
+    const respectively=/(?:,\s*|\s+)respectively$/i.test(desc)||/\brespectively\s*,\s*$/i.test(s.slice(m.index,rawStart));
     if(respectively)desc=desc.replace(/(?:,\s*|\s+)respectively$/i,"").trim();
-    const longStart=m.index+m[0].length-m[2].length+(m[2].length-m[2].trimStart().length);
+    const longStart=rawStart+(s.slice(rawStart,descEnd).length-s.slice(rawStart,descEnd).trimStart().length);
     const symbols=splitList(m[1]);
-    clauses.push({sym1:symbols[0],sym2:symbols[1]||null,symbols,desc,respectively,at:m.index,longStart,end:m.index+m[0].length,join:s.slice(clauses.at(-1)?.end||0,m.index)});
+    clauses.push({sym1:symbols[0],sym2:symbols[1]||null,symbols,desc,respectively,unsupportedAnnotation:unsupportedAnnotations.some(b=>b.start>m.index&&b.end<rawStart),at:m.index,longStart,end:m.index+m[0].length,join:s.slice(clauses.at(-1)?.end||0,m.index)});
   }
   if(!clauses.length||!/^where\s*[,;:]?\s*$/i.test(s.slice(s.length-lead.length,clauses[0].at)))return;
   const commaList=clauses.length>=2&&clauses.slice(1).some(c=>/^\s*,\s*(?:(?:and|but|while|whereas)\s+)?$/i.test(c.join));
   for(const c of clauses){
     const descriptorHead=c.desc.split(/\s+(?:which|that)\b/i)[0];
-    if(/\b(?:no\s+longer|neither|different\s+from|equal\s+to|similar\s+to|equivalent\s+to)\b/i.test(descriptorHead)||/^(?:[a-z]+ly\s+)*(?:unlike\b|(?:[a-z]+(?:ed|able)|close|proportional|distinct)\s+(?:to|from|with)\b)/i.test(descriptorHead))continue;
-    if(!c.desc||c.desc.length<2||/\b(?:than|is|are|was|were|has|have|had|be|been|being|can|could|may|might|must|will|would|should|if|when|where|which|that|not|never)\b/i.test(descriptorHead))continue;
-    if(c!==clauses[0]&&!/^\s*(?:[,;]\s*(?:(?:and|but|whereas|while)\s+|(?:however|therefore|thus|here|in\s+contrast|in\s+turn)\s*,\s*)?|(?:and|whereas|while)\s+)$/i.test(c.join))continue;
+    if(/\b(?:no\s+longer|neither|different\s+from|equal\s+to|similar\s+to|equivalent\s+to)\b/i.test(descriptorHead)||/^(?:[a-z]+ly\s+)*(?:unlike\b|(?:in)?dependent\s+(?:on|upon|of)\b|(?:an?\s+)?(?:(?:(?:strictly|monotonically)\s+)?(?:increasing|decreasing)\s+)?function\s+of\b|(?:similar|comparable|equivalent|equal|different)\s+in\s+[a-z]+(?:\s+[a-z]+){0,2}\s+(?:to|from)\b|(?:[a-z]+(?:ed|able)|given|shown|read|taken|kept|close|proportional|distinct)\s+(?:(?:[a-z]+ly|constant|steady|unchanged)\s+){0,3}(?:to|from|with|by|using|in|as|against|alongside|on|off|throughout|under|at)\b)/i.test(descriptorHead))continue;
+    if(c.unsupportedAnnotation||!c.desc||c.desc.length<2||/^[~≈+−-]?(?:\d|\.\d)/.test(c.desc)||/\b(?:than|is|are|was|were|has|have|had|be|been|being|can|could|may|might|must|will|would|should|if|when|where|which|that|not|never)\b/i.test(descriptorHead))continue;
+    if(c!==clauses[0]&&!validJoin.test(c.join))continue;
     if(!abbrLooksScientificShort(c.sym1)||/^(?:it|we|he|she|they|this|that)$/i.test(c.sym1))continue;
     if(c.symbols.length>2||c.respectively){
       // Map an explicit list only when each symbol has one clear descriptor.
       const descriptions=splitList(c.desc).map(descriptor);
       if(!c.respectively||new Set(c.symbols).size!==c.symbols.length||descriptions.length!==c.symbols.length||
         !c.symbols.every(sym=>abbrLooksScientificShort(sym)&&!/^(?:it|we|he|she|they|this|that)$/i.test(sym))||
-        !descriptions.every(d=>abbrDescriptorLooksScientific(d)&&abbrTrimScientificDescriptorContext(d)===d))continue;
+        !descriptions.every(validDescriptor))continue;
       let from=c.at;
       c.symbols.forEach((sym,i)=>{
         const at=s.indexOf(sym,from);from=at+sym.length;
@@ -12486,7 +12547,7 @@ function collectEquationNomenclatureDefs(sent,si,add){
       add(c.sym1,d1,si,"scientific-reverse",{definitionType:abbrScientificDefinitionType(c.sym1,d1),shortStart:c.at,shortEnd:c.at+c.sym1.length,semanticDefinition:true});
       if(p2>=0)add(c.sym2,d2,si,"scientific-reverse",{definitionType:abbrScientificDefinitionType(c.sym2,d2),shortStart:p2,shortEnd:p2+c.sym2.length,semanticDefinition:true});
     }else{
-      if((!commaList||/^\s+and\s+$/i.test(c.join))&&(!abbrDescriptorLooksScientific(descriptorHead)||abbrTrimScientificDescriptorContext(descriptorHead)!==descriptorHead))continue;
+      if((!commaList||/^\s+and\s+$/i.test(c.join))&&!validDescriptor(descriptorHead))continue;
       add(c.sym1,c.desc,si,"scientific-reverse",{definitionType:abbrScientificDefinitionType(c.sym1,c.desc),shortStart:c.at,shortEnd:c.at+c.sym1.length,longStart:c.longStart,longEnd:c.longStart+c.desc.length,semanticDefinition:true});
     }
   }
@@ -16871,6 +16932,7 @@ const ABBR_NONESSENTIAL_LEADING_MODIFIERS=new Set([
 ]);
 
 function abbrNormalizeDefinitionFullForm(value,abbr=""){
+  value=abbrStripDefinitionUnitNote(value);
   let raw=abbrListClean(value).replace(/^(?:and|or)\s+(?=[A-Za-z]+-\d)/i,"")
     .replace(/([A-Za-z][‐‑‒–—−-]\d+)\s+H(?=[‐‑‒–—−-]\d)/g,"$1H");
   const supplier=raw.match(/^(.*?)\s+\(([^()]+)\)$/);
@@ -16954,6 +17016,7 @@ function abbrDefinitionMeaningKey(value,abbr=""){
 }
 
 function abbrDefinitionsEquivalent(a,b,abbr=""){
+  a=abbrStripDefinitionUnitNote(a);b=abbrStripDefinitionUnitNote(b);
   // Lexical case/punctuation cleanup must not merge different elements,
   // stoichiometries or ion charges after formula formatting is normalized.
   const aFormulas=[],bFormulas=[];
@@ -26437,9 +26500,77 @@ function refLooksLikeTableNoteOrAbbreviationKey(s){
   return false;
 }
 
+function refIsClassificationRange(text,index,length){
+  // Scan each declared list one item at a time. Never repeat an entire label/list
+  // regular expression: long manuscripts must not trigger nested backtracking.
+  if(refIsClassificationRange.cache?.text!==text){
+    const spans=new Set(),scalar=String.raw`[+−-]?(?:\d+(?:\.\d+)?|\.\d+)`;
+    const value=new RegExp(`^(?:${scalar}\\s*(?:[-‐‑‒–—−]|to)\\s*${scalar}|(?:[<>≤≥]=?|above|below|over|under|greater\\s+than|less\\s+than|at\\s+(?:least|most))\\s*${scalar}|${scalar}\\s*(?:and|or)\\s*(?:above|below|more|less))$`,"i");
+    const word=String.raw`[\p{L}][\p{L}\p{N}'’_-]*`;
+    const item=new RegExp(`(["“‘']?${word}(?:[ \\t]+${word}){0,5}\\+?["”’']?)\\s*(\\([^()\\[\\]\\n]{1,80}\\)|\\[[^()\\[\\]\\n]{1,80}\\])`,"guy");
+    const separator=/\s*(?:[,;]\s*(?:(?:and|or)\s+)?|\s+(?:and|or)\s+)/y;
+    const category=String.raw`(?:(?:score|index|rating)\s+)?(?:categories|bands|classes|levels|ranges|classification)`;
+    const intro=new RegExp(String.raw`\b(?:${category}\s*(?:(?:are|were|is|was)\s+(?:(?:(?:defined|classified|categorised|categorized|labelled|labeled|grouped)\s+(?:as|into)|as\s+follows)\s*:?\s*)?|(?:include[sd]?|comprise[sd]?|consist(?:s|ed)?\s+of)\s+|:\s*)|(?:classif(?:y|ied)|categori[sz](?:e|ed)|label(?:led|ed))\s+(?:the\s+)?(?:scores?|values?|measurements?|results?)\s+as\s+)`,"giu");
+    const postfix=new RegExp(`^\\s+(?:are|were)\\s+(?:the\\s+)?${category}\\b`,"iu");
+    const readList=start=>{
+      const list=[];let end=start;
+      while(end<text.length){
+        item.lastIndex=end;const pair=item.exec(text);
+        if(!pair||!value.test(pair[2].slice(1,-1).trim()))break;
+        const label=pair[1],quoted=/^["“‘']/.test(label);
+        // Unquoted passive predicates are source statements, not category names.
+        // Quoted labels such as "Treated" remain explicit data declarations.
+        if(!quoted&&(/\b(?:see|cf|references?|citations?|sources?|studies|authors?|according|following|by|in|from|using|via|elsewhere|previously)\b/i.test(label)||
+          /^(?:(?:[a-z]+ly)\s+)*(?:[a-z]+ed|[a-z]+ing|shown|given|found|read|taken|kept)\b/i.test(label)||ENG_CAPTION_REPORTING_VERB_RE.test(label)))break;
+        list.push({index:pair.index+pair[0].lastIndexOf(pair[2]),length:pair[2].length});
+        end=item.lastIndex;separator.lastIndex=end;
+        const join=separator.exec(text);
+        if(!join||/\n\s*\n/.test(join[0]))break;
+        item.lastIndex=separator.lastIndex;
+        if(!item.exec(text))break;
+        end=separator.lastIndex;
+      }
+      return {list,end:list.length?list.at(-1).index+list.at(-1).length:start};
+    };
+    const add=list=>list.forEach(p=>spans.add(`${p.index}:${p.length}`));
+    for(const m of text.matchAll(intro)){
+      const {list}=readList(m.index+m[0].length);
+      const explicit=/\b(?:include[sd]?|comprise[sd]?|consist(?:s|ed)?\s+of|as|into)\s*:?\s*$/i.test(m[0])||/["“‘']/.test(text[m.index+m[0].length]||"");
+      if(list.length>=2||explicit)add(list);
+    }
+    // Postposed declarations: "Low (1–3), High (>3) were the score bands."
+    const first=new RegExp(item.source,"gu");let m;
+    while((m=first.exec(text))!==null){
+      const {list,end}=readList(m.index);
+      if(list.length&&postfix.test(text.slice(end,end+100)))add(list);
+      first.lastIndex=Math.max(first.lastIndex,end);
+    }
+    refIsClassificationRange.cache={text,spans};
+  }
+  return refIsClassificationRange.cache.spans.has(`${index}:${length}`);
+}
+
+function refIsMeasurementEndpoint(text,index,length){
+  // A local pH assignment is data; "reported in" and "determined using"
+  // remain attribution cues. Share this decision with style and readability.
+  if(/^(?:\(\s*[+−-]?\d+(?:\.\d+)?\s*\)|\[\s*[+−-]?\d+(?:\.\d+)?\s*\])$/.test(text.slice(index,index+length))&&
+     /\bpH(?:\s+(?:levels?|values?))?\s+(?:(?:was|were|is|are)\s+)?(?:(?:recorded|reported|measured)\s+as\s+|(?:observed|determined|found)(?:\s+to\s+be|\s+(?:was|were|is|are))\s+)?$/i.test(text.slice(Math.max(0,index-160),index)))return true;
+  // Both endpoints need one explicit measurement subject and a connected
+  // between/and or from/to construction; nearby measurement prose is insufficient.
+  const value=String.raw`(?:\(\s*[+−-]?\d+(?:\.\d+)?\s*\)|\[\s*[+−-]?\d+(?:\.\d+)?\s*\])`;
+  const subject=String.raw`(?:values?|measurements?|concentrations?|temperatures?|ratios?|pH|volumes?|mass|masses|lengths?|widths?|heights?|depths?)`;
+  const verb=String.raw`(?:(?:was|were|is|are|lay|lie|lies|ranged|varied|fell|rose|changed|increased|decreased|remained|[a-z]+ly)\s+){0,4}`;
+  const pair=new RegExp(`\\b${subject}\\s+${verb}(?:between\\s*${value}\\s+and\\s*${value}|from\\s*${value}\\s+to\\s*${value})`,"gi");
+  const start=Math.max(0,index-250),window=text.slice(start,index+length+100);
+  for(const m of window.matchAll(pair))for(const endpoint of m[0].matchAll(new RegExp(value,"g")))
+    if(start+m.index+endpoint.index===index&&endpoint[0].length===length)return true;
+  return false;
+}
+
 function detectCiteStyle(body){
-  const br=(body.match(/\[\d{1,3}(?:[–,\-]\s*\d{1,3})*\]/g)||[]).length;
-  const par=(body.match(/\(\d{1,3}(?:[,–\-]\s*\d{1,3})*\)/g)||[]).length;
+  const count=re=>[...body.matchAll(re)].filter(m=>!refIsClassificationRange(body,m.index,m[0].length)&&!refIsMeasurementEndpoint(body,m.index,m[0].length)).length;
+  const br=count(/\[\d{1,3}(?:[–,\-]\s*\d{1,3})*\]/g);
+  const par=count(/\(\d{1,3}(?:[,–\-]\s*\d{1,3})*\)/g);
   const ay=(body.match(/\([A-Z][A-Za-z'’-]+(?:\s+(?:et al\.?|and|&)\s+[A-Z][A-Za-z'’-]+)?,?\s*(?:19|20)\d{2}[a-z]?\)/g)||[]).length
         +(body.match(/[A-Z][A-Za-z'’-]+\s+et al\.?,?\s*\(?(?:19|20)\d{2}/g)||[]).length;
   if(br>=3 && br>=par && br>=ay) return "numeric_brackets";
@@ -27050,6 +27181,7 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
     const listNums=new Set(parsed.map(p=>p.num).filter(n=>Number.isSafeInteger(n)&&n>0));
     const candidates=[...citationText.matchAll(/\[([^()[\]]*)\]|\(([^()[\]]*)\)|\[([^()[\]]*\d[^()[\]]*)(?=\[|$)/g)].filter(m=>{
       const raw=(m[1]??m[2]??m[3]).trim();
+      if(refIsClassificationRange(citationText,m.index,m[0].length)||refIsMeasurementEndpoint(citationText,m.index,m[0].length))return false;
       if(/^[-+]?\d+\.\d+$/.test(raw))return false;
       // Capture numeric lists with attached suffixes too: unsupported labels
       // must make coverage partial, not silently establish an uncited source.
@@ -27061,9 +27193,9 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
       const equationCore=paragraph.slice(0,m.index-start).trim();
       if(!paragraph.slice(m.index-start+m[0].length).trim()&&ftePlainEquationLike(equationCore||citationText.slice(0,start).trimEnd().split('\n').at(-1)||''))return false;
       const left=citationText.slice(Math.max(0,m.index-160),m.index),right=citationText.slice(m.index+m[0].length,m.index+m[0].length+60);
-      const lead=left.replace(/(?:[([]\s*[\d.,;+\s–—-]+[)\]]\s*(?:,\s*)?(?:(?:and|or|to|through|&)\s*)?)+$/i,"");
+      const lead=left.replace(/(?:[([]\s*[\d.,;+\s–—-]+[)\]]\s*(?:,\s*)?(?:(?:(?:up|down)\s+to|and|or|to|towards?|from|through|&)\s*)?(?:(?:[a-z]+ly|about|around|nearly|roughly)\s+)*)+$/i,"");
       if(/\b(?:coordinates?|intervals?|vectors?|arrays?|matri(?:x|ces)|tuples?|dimensions?|shapes?|years?|campaigns?|seasons?|counts?|sample\s+sizes?|numbers?\s+of\s+(?:samples|replicates|participants|observations))(?:\s+(?:was|were|is|are|of|equal|equals|to|given|as|set|at|reported|estimated|measured|approximately|about|respectively))*\s*[:=]?\s*$/i.test(lead)||/[=±×÷]\s*$/.test(left))return false;
-      if(/\b(?:values?|measurements?|concentrations?|temperatures?|ratios?|pH|volumes?|mass|masses|lengths?|widths?|heights?|depths?)(?:\s+(?:was|were|is|are|of|equal|equals|to|given|as|set|at|adjusted|reached|reported|estimated|measured|approximately|about|respectively|(?:(?:[a-z]+ly|further|still|then)\s+){0,2}(?:increased|decreased|rose|fell|declined|changed|varied|ranged|remained|adjusted|maintained|held|kept|stabili[sz]ed|settled|buffered)(?:\s+(?:[a-z]+ly|further|still|then|constant|steady|stable|unchanged)){0,2}\s+(?:to|by|from|between|at)))+\s*[:=]?\s*$/i.test(lead))return false;
+      if(/\b(?:values?|measurements?|concentrations?|temperatures?|ratios?|pH|volumes?|mass|masses|lengths?|widths?|heights?|depths?)(?:\s+(?:was|were|is|are|has|have|had|be|been|being|can|could|may|might|will|would|should|must|not|never|[a-z]+ly|still|then|further|of|equal|equals|to|given|as|set|at|adjusted|reached|reported|estimated|measured|approximately|about|respectively|(?:(?:[a-z]+ly|further|still|then)\s+){0,2}(?:increased|decreased|reduced|raised|lowered|shifted|dropped|rose|fell|declined|changed|varied|ranged|remained|adjusted|maintained|held|kept|stabili[sz]ed|settled|buffered)(?:\s+(?:[a-z]+ly|further|still|then|constant|steady|stable|unchanged)){0,2}\s+(?:to|by|from|between|at)))+\s*[:=]?\s*$/i.test(lead))return false;
       // A directly assigned value followed by a recognized unit is a quantity,
       // irrespective of the parameter noun. Keep this local to the candidate;
       // words such as pressure elsewhere do not veto a genuine citation.
@@ -27094,9 +27226,10 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
       if(values.size)styles.add(m[0][0]);
       for(const n of values){cited.add(n);if(!contexts.has(n))contexts.set(n,context(m));}
     }
-    citationCoverage={status:unverified.length?'partial':cited.size?'complete':'unavailable',styles:[...styles],unverified:unverified.length,checked:candidates.length-unverified.length};
+    const authorDateOnly=!candidates.length&&detectCiteStyle(bodyText)==="author_year";
+    citationCoverage={status:authorDateOnly?'not_applicable':unverified.length?'partial':cited.size?'complete':'unavailable',styles:authorDateOnly?['author_year']:[...styles],unverified:unverified.length,checked:candidates.length-unverified.length};
     if(styles.size>1)issues.push({level:"warn",idx:-1,label:"Citation style",code:"REFERENCE_CITATION_STYLE_MIXED",msg:"Numeric citations use both square brackets and parentheses. Both formats were checked; use the format required by your target style consistently."});
-    if(unverified.length||!cited.size)issues.push({level:"warn",idx:-1,label:"Citation cross-check",code:"REFERENCE_CITATION_COVERAGE",context:unverified.slice(0,3).map(context).join(" | "),msg:unverified.length
+    if(!authorDateOnly&&(unverified.length||!cited.size))issues.push({level:"warn",idx:-1,label:"Citation cross-check",code:"REFERENCE_CITATION_COVERAGE",context:unverified.slice(0,3).map(context).join(" | "),msg:unverified.length
       ?`${unverified.length} numeric citation expression${unverified.length===1?' could':'s could'} not be fully checked because a number, suffix, or range uses unsupported syntax, is invalid, or is too large to expand safely. Check those expressions; no sources have been flagged as uncited from this incomplete scan.`
       :"No supported in-text numeric citations were identified. Check whether citations are missing or use another format; the numeric citation cross-check is unavailable."});
     if(cited.size){
@@ -27935,13 +28068,24 @@ function numberCheck(text,tables=[]){
       if(!COUNT_NOUNS.has(word.toLowerCase())) continue;
       if(/\b[nN](?:[₀-₉ₐ-ₜᵢᵣᵤᵥ]+|_(?:\{[\p{L}\p{N},+-]{1,20}\}|[A-Za-z0-9]+))?\s*(?:[=<>≤≥≈≠]|[<>]=)\s*$/u.test(s.slice(0,m.index+m[1].length)))continue;
       const densityTail=s.slice(m.index+m[0].length);
-      if(word.toLowerCase()==="times"&&/^\s+(?:higher|lower|greater|less|more|larger|smaller|faster|slower|as|the|that|those|[a-z]\b|[+−-]?\d)\b/i.test(densityTail))continue;
+      if(word.toLowerCase()==="times"){
+        const comparative=densityTail.match(/^\s+((?!(?:after|thereafter|earlier|later|together|whenever|however|either|neither|other|another|whether|under|over)\b)[a-z]{3,}er)\b/i);
+        const compared=comparative&&!/^\s+(?:[a-z]{3,}ed|is|are|was|were|has|have|had|does|did|will|would|can|could)\b/i.test(densityTail.slice(comparative[0].length))&&(/^(?:\s*[,.!?;:)]|\s*$|\s+(?:under|at|in|with|during|after|before|for|on|over|across|throughout|when|and|or)\b)/i.test(densityTail.slice(comparative[0].length))||/^\s+(?:[a-z]+ly\s+){0,2}than\b/i.test(densityTail.slice(comparative[0].length))||/\b(?:is|are|was|were|be|been|became)\s*(?:(?:about|approximately|nearly|roughly|almost)\s*)?$/i.test(s.slice(0,m.index+m[1].length)));
+        if(compared||/^\s+(?:higher|lower|greater|less|more|larger|smaller|longer|shorter|faster|slower|wider|narrower|thicker|thinner|stronger|weaker|heavier|lighter|brighter|darker|deeper|shallower|rougher|smoother|steeper|sharper|clearer|quicker|better|worse|as|the|that|those|[a-z]\b|[+−-]?\d)\b/i.test(densityTail))continue;
+      }
+      const groupedDenominator=densityTail.match(/^\s*(?:\/\s*|per\s+)(\([^()\n]{1,60}\)|\[[^\[\]\n]{1,60}\])/i);
+      if(groupedDenominator){
+        const denominatorUnit=groupedDenominator[1].slice(1,-1).trim().replace(new RegExp("^(?:"+UNIT_NUM_CORE+")\\s*(?=[A-Za-zµμΩ])"),"");
+        if(unitParseExpression(denominatorUnit)?.valid)continue;
+      }
+      const scaledDenominator=densityTail.match(new RegExp("^\\s*(?:/\\s*|per\\s+)(?:"+UNIT_NUM_CORE+")\\s*(?=[A-Za-zµμΩ])","i"));
+      if(scaledDenominator&&unitCandidatePrefixes(densityTail.slice(scaledDenominator[0].length)).some(unit=>unitParseExpression(unit)?.valid))continue;
       const denominator=densityTail.match(/^\s+per\s+(?:(?:square|cubic)\s+)?([A-Za-zµμ]+)\b/i);
       if(denominator&&unitParseExpression(denominator[1])?.valid)continue;
       if(/^\s*\/\s*[A-Za-zµμ]/.test(densityTail)||/^\s+[A-Za-zµμ]+(?:[−⁻-][¹²³\d]+|\^-\d+)/.test(densityTail))continue;
       if(/^\s+per\b/i.test(densityTail)&&unitCandidatePrefixes(densityTail).some(unit=>unitParseExpression(unit)?.valid))continue;
       const pre=(s.slice(0,m.index+m[1].length).trim().split(/\s+/).pop()||"").toLowerCase().replace(/[^a-z]/g,"");
-      if(IDENT_WORDS.has(pre)) continue;
+      if(IDENT_WORDS.has(pre)&&word.toLowerCase()!=="times") continue;
       out.push({cat:"count",msg:`Spell out small whole numbers used as ordinary counts in prose: write "${NUM_WORD9[digit]} ${word}" rather than "${digit} ${word}". Keep numerals for measurements, statistics, and labels.`,snippet:numSnip(s,m.index+m[1].length,m[0].length-m[1].length)});
     }
   });
@@ -33415,10 +33559,12 @@ fteAnalyze=function(blocks){
 
   function enhanceIssue(issue){
     if(issue.dataset.uxEnhanced)return; issue.dataset.uxEnhanced="1"; issue.dataset.issueId=fingerprint(issue); issue.dataset.priority=priorityOf(issue);
-    const st=loadStates()[issue.dataset.issueId]; if(st?.state==="reviewed")issue.classList.add("mc-reviewed"); if(st?.state==="not_issue")issue.classList.add("mc-not-issue");
+    const reviewable=groupFor(issue)!=="eng";
+    if(!reviewable)issue.classList.remove("mc-reviewed","mc-not-issue");
+    const st=reviewable?loadStates()[issue.dataset.issueId]:null; if(st?.state==="reviewed")issue.classList.add("mc-reviewed"); if(st?.state==="not_issue")issue.classList.add("mc-not-issue");
     const msg=issue.querySelector(".body .msg"); if(msg&&!msg.querySelector(":scope > .mc-issue-label")){const l=document.createElement("span");l.className="mc-issue-label";l.textContent="Finding";msg.prepend(l)}
     issue.querySelectorAll(".snip").forEach(s=>s.classList.add("mc-evidence")); issue.querySelectorAll(".std-note").forEach(s=>s.classList.add("mc-suggested"));
-    const body=issue.querySelector(".body")||issue; const actions=document.createElement("div");actions.className="mc-issue-actions";actions.innerHTML='<button type="button" class="mc-issue-btn mc-why">Why was this identified?</button><button type="button" class="mc-issue-btn mc-reviewed-btn">✓ Mark reviewed</button><button type="button" class="mc-issue-btn not-issue mc-not-issue-btn">Accept as written</button>';body.appendChild(actions);
+    const body=issue.querySelector(".body")||issue; const actions=document.createElement("div");actions.className="mc-issue-actions";actions.innerHTML='<button type="button" class="mc-issue-btn mc-why">Why was this identified?</button>'+(reviewable?'<button type="button" class="mc-issue-btn mc-reviewed-btn">✓ Mark reviewed</button><button type="button" class="mc-issue-btn not-issue mc-not-issue-btn">Accept as written</button>':'');body.appendChild(actions);
     const reviewed=actions.querySelector(".mc-reviewed-btn"),not=actions.querySelector(".mc-not-issue-btn"); if(issue.classList.contains("mc-reviewed"))reviewed.classList.add("active"); if(issue.classList.contains("mc-not-issue"))not.classList.add("active");
     actions.querySelector(".mc-why")?.addEventListener("click",()=>toggleWhy(issue)); reviewed?.addEventListener("click",()=>toggleReviewed(issue)); not?.addEventListener("click",()=>toggleNotIssue(issue));
   }
@@ -33441,7 +33587,7 @@ fteAnalyze=function(blocks){
     el.classList.toggle("mc-not-issue",state==="not_issue");
   }
   function enhanceLedgerReview(group){
-    const report=$u(GROUP_REPORT[group]);if(!report)return;
+    const report=$u(GROUP_REPORT[group]);if(!report||group==="eng")return;
     const selectors={abbr:'.abbr-group-first',ref:'.reference-ledger-scroll tbody > tr',unit:'tr[data-unit-review="1"]',num:'tr[data-num-review="1"]',eng:'tr[id^="eng-finding-row-"]',fte:'tr[id^="fte-finding-row-"]'};
     const states=loadStates(),issues=allIssues(group);
     const records=[...report.querySelectorAll(selectors[group])].map(row=>{
@@ -33490,6 +33636,7 @@ fteAnalyze=function(blocks){
   }
   function syncLedgerReview(group){
     const report=$u(GROUP_REPORT[group]);if(!report)return;
+    if(group==="eng"){report.querySelector(".mc-review-history")?.remove();scheduleUniversalLedgerStickyHeaders();return;}
     const records=UX_LEDGER_ITEMS.get(group)||[];
     records.forEach(record=>{
       if(record.members.length){
@@ -33604,7 +33751,7 @@ fteAnalyze=function(blocks){
   function updateFloating(){if(!$u("mc-floating-nav"))return;const active=document.querySelector('#results-tabs .rtab.active')?.dataset?.tab||"overview";$u("mc-back-overview").hidden=$u("results-tabs")?.hidden||active==="overview";$u("mc-back-top").hidden=window.scrollY<700}
 
   function ensureGuided(){if($u("mc-guided"))return;const d=document.createElement("div");d.className="mc-guided";d.id="mc-guided";d.hidden=true;d.innerHTML='<section class="mc-guided-panel" role="dialog" aria-modal="true" aria-labelledby="mc-guided-title"><div class="mc-guided-head"><div><div class="mc-guided-kicker">Guided review</div><h2 id="mc-guided-title">Review one finding at a time</h2></div><button class="mc-guided-close" aria-label="Close guided review">×</button></div><div id="mc-guided-content"></div><div class="mc-guided-controls"><button data-g="prev">← Previous</button><button data-g="reviewed">✓ Mark reviewed</button><button data-g="not">Accept as written</button><span class="spacer"></span><button data-g="next" class="primary">Next →</button></div></section>';document.body.appendChild(d);d.querySelector(".mc-guided-close").onclick=closeGuided;d.addEventListener("click",e=>{if(e.target===d)closeGuided()});d.querySelector('[data-g="prev"]').onclick=()=>guidedMove(-1);d.querySelector('[data-g="next"]').onclick=()=>guidedMove(1);d.querySelector('[data-g="reviewed"]').onclick=()=>{const x=UX_GUIDED_ITEMS[UX_GUIDED_INDEX];if(x)setState(x,"reviewed");UX_GUIDED_ITEMS=UX_GUIDED_ITEMS.filter(y=>!reviewComplete(y));UX_GUIDED_INDEX=Math.min(UX_GUIDED_INDEX,Math.max(0,UX_GUIDED_ITEMS.length-1));renderGuided()};d.querySelector('[data-g="not"]').onclick=()=>{const x=UX_GUIDED_ITEMS[UX_GUIDED_INDEX];if(x)setState(x,"not_issue","guided review");UX_GUIDED_ITEMS=UX_GUIDED_ITEMS.filter(y=>!y.classList.contains("mc-not-issue"));UX_GUIDED_INDEX=Math.min(UX_GUIDED_INDEX,Math.max(0,UX_GUIDED_ITEMS.length-1));renderGuided()};document.addEventListener("keydown",e=>{if(e.key==="Escape"&&!d.hidden)closeGuided()})}
-  function openGuided(){UX_GUIDED_ITEMS=allIssues().filter(i=>!i.classList.contains("mc-not-issue")&&!i.classList.contains("mc-reviewed")).sort((a,b)=>({critical:0,review:1,style:2}[priorityOf(a)]??3)-({critical:0,review:1,style:2}[priorityOf(b)]??3));UX_GUIDED_INDEX=0;ensureGuided();$u("mc-guided").hidden=false;document.body.style.overflow="hidden";renderGuided()}
+  function openGuided(){UX_GUIDED_ITEMS=allIssues().filter(i=>groupFor(i)!=="eng"&&!i.classList.contains("mc-not-issue")&&!i.classList.contains("mc-reviewed")).sort((a,b)=>({critical:0,review:1,style:2}[priorityOf(a)]??3)-({critical:0,review:1,style:2}[priorityOf(b)]??3));UX_GUIDED_INDEX=0;ensureGuided();$u("mc-guided").hidden=false;document.body.style.overflow="hidden";renderGuided()}
   function closeGuided(){if($u("mc-guided"))$u("mc-guided").hidden=true;document.body.style.overflow=""}
   function guidedMove(d){if(!UX_GUIDED_ITEMS.length)return;UX_GUIDED_INDEX=Math.max(0,Math.min(UX_GUIDED_ITEMS.length-1,UX_GUIDED_INDEX+d));renderGuided()}
   function renderGuided(){const host=$u("mc-guided-content");if(!host)return;if(!UX_GUIDED_ITEMS.length){host.innerHTML='<div class="mc-module-clean-banner">✓ No findings currently awaiting review.</div>';return}const x=UX_GUIDED_ITEMS[UX_GUIDED_INDEX],msg=x.querySelector(".msg")?.textContent?.replace(/\s+/g," ").trim()||"Finding",contextNodes=[...x.querySelectorAll(".duplicate-definition-context")],contextHtml=contextNodes.length?contextNodes.map((n,idx)=>{const lab=n.querySelector(".duplicate-definition-context-label")?.textContent?.trim()||`Definition ${idx+1}`;const txt=n.querySelector(".snip")?.textContent?.replace(/\s+/g," ").trim()||"";return txt?`<div class="mc-guided-context-item"><b>${escapeHtml(lab)}</b>${escapeHtml(txt)}</div>`:""}).join(""):`<div class="mc-guided-context-item">${escapeHtml(x.querySelector(".snip")?.textContent?.trim()||"No manuscript excerpt was attached to this finding.")}</div>`,sug=x.querySelector(".std-note")?.textContent?.replace(/^(?:Suggested|Recommendation):\s*/i,"").trim()||"Review the manuscript context and apply a change only when appropriate.";host.innerHTML=`<div class="mc-guided-meta">${UX_GUIDED_INDEX+1} of ${UX_GUIDED_ITEMS.length} · ${escapeHtml(GROUP_LABEL[groupFor(x)]||"")} · ${escapeHtml(priorityOf(x))}</div><div class="mc-guided-problem"><b>Finding</b>${escapeHtml(msg)}</div><div class="mc-guided-evidence"><b>Manuscript context</b>${contextHtml}</div><div class="mc-guided-action"><b>Recommendation</b>${escapeHtml(sug)}</div>`;const panel=$u("mc-guided")?.querySelector(".mc-guided-panel");if(panel)panel.scrollTop=0}
@@ -35643,13 +35790,13 @@ fteAnalyze=function(blocks){
   }
   function mcPHCheck(text){
     const out=[],groups=new Map();
-    const re=/\bpH\b\s*(?:values?\s*)?(?:=|:|of\s+)?\s*(?:(?:was|were|is|are|of|to|at|reached|became|remained|measured|recorded|found|near|around|about|approximately|adjusted\s+to|set\s+to|maintained\s+at|kept\s+at|held\s+at|fixed\s+at|controlled\s+at|equal\s+to|close\s+to)\s+)*([~≈<>≤≥]=?\s*)?(\d{1,2}(?:\.\d+)?(?:\s*(?:[,–—-]|\band\b|\bor\b|\bto\b)\s*(?:and\s+)?\d{1,2}(?:\.\d+)?)*)(?!\d|\.\d)/gi;
+    const re=/\bpH\b\s*(?:values?\s*)?(?:=|:|of\s+)?\s*(?:(?:was|were|is|are|of|to|at|reached|became|remained|measured|recorded|found|near|around|about|approximately|adjusted\s+to|set\s+to|maintained\s+at|kept\s+at|held\s+at|fixed\s+at|controlled\s+at|equal\s+to|close\s+to|(?:ranged|increased|decreased|rose|fell|declined|changed|varied|shifted|dropped|reduced|raised|lowered)\s+from)\s+)*([~≈<>≤≥]=?\s*)?(\d{1,2}(?:\.\d+)?(?:\s*(?:[,–—-]|\band\b|\bor\b|\bto\b)\s*(?:and\s+)?(?:(?:about|approximately|around|near)\s+)?\d{1,2}(?:\.\d+)?)*)(?!\d|\.\d)/gi;
     for(const m of text.matchAll(re)){
       const end=m.index+m[0].length,clause=mcClauseWindow(text,m.index,end);
       const before=mcCleanContextText(text.slice(clause.start,m.index)),after=mcCleanContextText(text.slice(end,clause.end));
       const lead=before+" "+m[0].slice(0,m[0].indexOf(m[2]));
-      const local=lead.split(/\b(?:whereas|while|but|however)\b/i).at(-1);
-      const setting=/\b(?:adjust(?:ed|ing)?|set|maintain(?:ed)?|kept|held|fixed|controlled|buffer(?:ed)?|synthesi[sz](?:ed|ing)|prepared|preparation)\b[^;]{0,90}$/i.test(local)||
+      const local=lead.split(/[,;]|\b(?:whereas|while|but|however|and)\b/i).at(-1);
+      const setting=/\b(?:target|nominal|specified|required|prescribed|desired)(?:\s+(?:initial|final|inlet|outlet|effluent|influent|anolyte|catholyte|operating)){0,3}\s*$/i.test(before)||/\b(?:adjust(?:ed|ing)?|set|maintain(?:ed)?|kept|held|fixed|controlled|buffer(?:ed)?|synthesi[sz](?:ed|ing)|prepared|preparation)\b[^;]{0,90}$/i.test(local)||
         /^\s*(?:phosphate\s+|bicarbonate\s+)?buffer\b/i.test(after)||
         /\b(?:standard\s+hydrogen\s+electrode|SHE|reference\s+electrode)\b/i.test(local)||
         /\bat\s+pH\b/i.test(local)&&!/\b(?:measured|recorded|effluent|influent|anolyte|catholyte)\b/i.test(local);
