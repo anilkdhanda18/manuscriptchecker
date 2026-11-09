@@ -7299,7 +7299,9 @@ function unitCandidatePrefixes(rest,rangeContext=false){
   // denominators and standalone K/pH units by requiring a valid preceding unit.
   const boundaries=/[([]\s*(?=[<>≤≥~≈+−-]?\s*\d)|\bpH\s*(?=(?:of|was|is)\b|=\s*[+−-]?\d|[0-9])|\b[A-Z][a-z]?\s+[-–]\s+(?=[A-Z][A-Z0-9]{1,}\b)/g;
   const proseNotes=/(?:[([]\s*|\b)as\s+(?:(?:previously|experimentally|independently|separately)\s+[a-z]+ed|(?:(?:[a-z]+ly)\s+){0,2}(?:shown|reported|observed|described|stated|noted|illustrated|discussed|expected|calculated|determined|estimated|measured|obtained|verified|corrected|normali[sz]ed|standardi[sz]ed|calibrated|validated|given|found|[a-z]+ed(?=\s+(?:above|below|earlier|previously|here)\b)))(?=\s*[)\]]|$|\s+(?:[a-z]+ly|above|below|earlier|here|in|by|using|from|with|at|for)\b)/gi;
-  for(const boundary of [...rest.matchAll(boundaries),...rest.matchAll(proseNotes)].sort((a,b)=>a.index-b.index)){
+  const proseAs=/(?:[([]\s*|\b)as\s+((?:[\p{L}][\p{L}\p{N}'’-]*\s+){1,6})(?:[a-z]{3,}ed|rose|fell|grew|ran|became)(?=\s*(?:[)\],;.!?]|$)|\s+(?:[a-z]+ly|from|to|by|at|in|on|under|over|during|after|before|with|without|and|while|when)\b)/giu;
+  const clauses=[...rest.matchAll(proseAs)].filter(m=>m[1].trim().split(/\s+/).some(word=>!/^(?:the|an?|[a-z]+ly|already|still|not|yet|now|also)$/i.test(word)));
+  for(const boundary of [...rest.matchAll(boundaries),...rest.matchAll(proseNotes),...clauses].sort((a,b)=>a.index-b.index)){
     const prefix=rest.slice(0,boundary.index).trim(),parsed=unitParseExpression(prefix);
     const chemical=/^[A-Z][a-z]?\s+[-–]/.test(boundary[0]);
     if(parsed?.valid&&(!chemical||["L:-3|N:1","L:-3|M:1"].includes(parsed.dimKey))){rest=prefix;break;}
@@ -9095,7 +9097,7 @@ function engLooksHeadingForScan(line){
    This classifier combines caption syntax, Word style/SEQ fields, media/table
    proximity, heading structure, and caption-continuation grammar. */
 const ENG_CAPTION_STYLE_RE=/(?:^|\b)(?:caption|figure\s*(?:caption|legend)?|fig\s*caption|table\s*(?:caption|title)|scheme\s*caption|image\s*caption|photo(?:graph)?\s*caption|plate\s*caption|chart\s*caption|graph\s*caption|diagram\s*caption|flowchart\s*caption|legend|graphical\s*abstract)(?:\b|$)/i;
-const ENG_CAPTION_REPORTING_VERB_RE=/^(?:(?:not\s+(?:only|merely|simply)|also|alone|further|once|often|sometimes|always|never|now|still|already|[a-z]+ly)\s+){0,4}(?:(?:seems?|seemed|appears?|appeared|fails?|failed|helps?|helped)\s+(?:(?:[a-z]+ly|not)\s+){0,3}to|sets?\s+out|[a-z]{2,}(?:s|ed)\s+(?:the|an?|this|that|these|those|our|their|its)\b|(?:includes|supports|reflects|offers|compiles|details)(?!\s+(?:of|from|for|in|between)\b)|differ(?:s|ed)?\s+(?:[a-z]+ly\s+){0,2}(?:from|in|between)\b|records(?!\s+(?:of|from|for)\b)|shows?|showed|illustrates?|illustrated|depicts?|depicted|presents?|presented|demonstrates?|demonstrated|describes?|described|summari[sz]es?|summari[sz]ed|compares?|compared|provides?|provided|indicates?|indicated|reveals?|revealed|displays?|displayed|represents?|represented|highlights?|highlighted|contains?|contained|gives?|gave|reports?|reported|suggests?|suggested|confirms?|confirmed|lists?|listed|(?:is|are|was|were|has|have|had|do|does|did|can|could|may|might|will|would|should|must|shall)(?:n['’]t)?|cannot|won['’]t)\b/i;
+const ENG_CAPTION_REPORTING_VERB_RE=/^(?:(?:not\s+(?:only|merely|simply)|also|alone|further|once|often|sometimes|always|never|now|still|already|[a-z]+ly)\s+){0,4}(?:(?:seems?|seemed|appears?|appeared|fails?|failed|helps?|helped)\s+(?:(?:[a-z]+ly|not)\s+){0,3}to|sets?\s+out|[a-z]{2,}(?:s|ed)\s+(?:the|an?|this|that|these|those|our|their|its)\b|(?:(?:includes|reflects|offers|compiles)(?!\s+(?:of|from|for|in|between)\b)|(?:supports|details)(?!\s+(?:(?:of|from|for|in|between|with|on|under|at|within)\b|(?:[a-z]+ed|given|shown|made|built)\s+(?:by|for|in|on|under|at|with|from|to)\b|[a-z]+ing\s+(?:the|an?|this|these|that|those|to|from|in|on|for|with)\b|[a-z]+(?:ant|ent|ive|able|ible)\s+(?:to|for|with|in)\b)))|differ(?:s|ed)?\s+(?:[a-z]+ly\s+){0,2}(?:from|in|between)\b|records(?!\s+(?:of|from|for)\b)|shows?|showed|illustrates?|illustrated|depicts?|depicted|presents?|presented|demonstrates?|demonstrated|describes?|described|summari[sz]es?|summari[sz]ed|compares?|compared|provides?|provided|indicates?|indicated|reveals?|revealed|displays?|displayed|represents?|represented|highlights?|highlighted|contains?|contained|gives?|gave|reports?|reported|suggests?|suggested|confirms?|confirmed|lists?|listed|(?:is|are|was|were|has|have|had|do|does|did|can|could|may|might|will|would|should|must|shall)(?:n['’]t)?|cannot|won['’]t)\b/i;
 const ENG_CAPTION_NOTE_RE=/^(?:\(?[a-z]\)|[A-Z]\.|inset\s*:|the\s+inset\s+(?:shows?|illustrates?|depicts?)\b|inset\s+(?:shows?|illustrates?|depicts?)\b|error\s+bars?\s+(?:represent|show|indicate)\b|values?\s+(?:represent|show|indicate)\b|data\s+(?:represent|show|indicate)\b|symbols?\s+(?:represent|show|indicate)\b|(?:the\s+)?(?:dotted|dashed|solid)\s+lines?\s+(?:represent|show|indicate)\b|the\s+shaded\s+region\s+(?:represents?|indicates?)\b|colou?r(?:s)?\s+(?:represent|show|indicate)\b|arrows?\s+(?:represent|show|indicate)\b|scale\s+bars?\b|magnification\b|experimental\s+conditions?\s*:|operating\s+conditions?\s*:|reaction\s+conditions?\s*:|test\s+conditions?\s*:|conditions?\s*:|figure\s+note\s*:|legend\s*:|notes?\s*:|source(?:s)?\s*:|data\s+source\s*:|image\s+source\s*:|adapted\s+from\b|modified\s+from\b|reproduced\s+from\b|reprinted\s+from\b|abbreviations?\s*:)/i;
 const ENG_CAPTION_PROSE_PREFIX_RE=/^(?:as\s+(?:shown|presented|illustrated|depicted)\s+in|in|from|see)\s+(?:supplementary\s+)?(?:figure|fig\.?|table|scheme)\b/i;
 
@@ -10556,7 +10558,7 @@ function engSentencePeriodProtected(text,index){
         const predicate=words.slice(n).join(" ");
         // Regular past-tense predicates provide grammatical evidence beyond a verb list.
         // Require a new subject and exclude noun modifiers such as "measured values".
-        if((n===0||/^(?:of|from|in|on|under|with|without|at|across|between)\b/i.test(subject[1]))&&/^[a-z]{3,}ed\s+(?!(?:and|or)\b)[a-z]/i.test(predicate)||/^[a-z]{3,}ed\b(?=\s+(?:during|after|before|under|over|within|throughout|at|in|on|from|to|by|with|without|when|while|as|the|a|an|blue|red|green|yellow|[a-z]+ly)\b|[.!?]|$)/i.test(predicate))return false;
+        if(/^[a-z]{3,}ed\s+(?!(?:and|or)\b)[a-z]/i.test(predicate)||/^[a-z]{3,}ed\b(?=\s+(?:during|after|before|under|over|within|throughout|at|in|on|from|to|by|with|without|when|while|as|the|a|an|blue|red|green|yellow|[a-z]+ly)\b|[.!?]|$)/i.test(predicate))return false;
         if(ENG_CAPTION_REPORTING_VERB_RE.test(predicate)||/^(?:(?:[a-z]+ly)\s+){0,2}(?:(?:observ|measur|increas|decreas|declin|produc|requir|correlat)e[sd]?|remain(?:s|ed)?|ris(?:e[sn]?|ing)|rose|fall(?:s|en)?|fell|becom(?:e|es)|became|grows?|grew|breaks?|broke|var(?:y|ies|ied)|depend(?:s|ed)?|finds?|found|go(?:es)?|went|takes?|took|loses?|lost|leads?|led|undergo(?:es)?|underwent|runs?|ran|brings?|brought|bears?|bore)\b/i.test(predicate))return false;
       }
     }
@@ -12449,7 +12451,7 @@ function collectEquationNomenclatureDefs(sent,si,add){
   const SYMBOLS=`${SYM}(?:(?:\\s*,\\s*(?:and\\s+)?|\\s+and\\s+)${SYM})*`;
   // A declared numeric constant ends the preceding descriptor but is not an abbreviation.
   const subjects=`(?:${SYMBOLS}|(?<![\\p{L}\\p{N}_])\\d+(?:\\.\\d+)?(?![\\p{L}\\p{N}_]))`;
-  const clauseRe=new RegExp(`(${subjects})\\s+${VERB}(?:\\s*,\\s*respectively\\s*,\\s*|\\s+)(?:the\\s+|an?\\s+)?(.+?)(?=${join}${subjects}\\s+${VERB}\\b|;|\\.(?!\\d)|$)`,"giu");
+  const clauseRe=new RegExp(`(${subjects})\\s+${VERB}(?:(?:\\s*,\\s*|\\s+)respectively\\b\\s*,?\\s*|\\s+)(?:the\\s+|an?\\s+)?(.+?)(?=${join}${subjects}\\s+${VERB}\\b|;|\\.(?!\\d)|$)`,"giu");
   // Split only top-level list separators; units and scripted indices may contain commas.
   const splitList=value=>{
     const out=[],stack=[];let start=0;
@@ -12464,9 +12466,9 @@ function collectEquationNomenclatureDefs(sent,si,add){
     }
     return stack.length?[]:[...out,value.slice(start).trim()];
   };
-  const validDescriptor=value=>abbrDescriptorLooksScientific(value)&&
+  const validDescriptor=(value,mapped=false)=>(abbrDescriptorLooksScientific(value)||mapped&&abbrDescriptorLooksScientific(value.match(/^(.+?)\s+(?:of|in|at|under|within|between|for)\s+\S/i)?.[1]))&&
     (abbrTrimScientificDescriptorContext(value)===value||/^[a-z]+(?:ed|ing)\s+/i.test(value)&&abbrTrimScientificDescriptorContext(value)===value.replace(/^[a-z]+(?:ed|ing)\s+/i,""));
-  const descriptor=value=>value.replace(/\s*(?:\(([^()]*)\)|\[([^\[\]]*)\])\s*$/,(all,round,square)=>abbrSafeUnitExpression(round??square)?"":all).trim();
+  const descriptor=value=>abbrStripDefinitionUnitNote(value.replace(/\s*(?:\(([^()]*)\)|\[([^\[\]]*)\])\s*$/,(all,round,square)=>abbrSafeUnitExpression(round??square)?"":all).trim());
   const brackets=[],stack=[],projected=s.split("");
   for(let i=0;i<s.length;i++){
     if("([{".includes(s[i]))stack.push({start:i,close:{"(":")","[":"]","{":"}"}[s[i]]});
@@ -12510,7 +12512,7 @@ function collectEquationNomenclatureDefs(sent,si,add){
     desc=abbrStripDefinitionUnitNote(desc);
     const lexical=desc.replace(/\s+(?:in\s+(?:this|the\s+(?:present|current))\s+equation|during\s+(?:this|the)\s+(?:experiment|measurement|test|analysis)|under\s+(?:dry|wet|ambient)\s+conditions)\s*$/i,"");
     if(lexical!==desc&&validDescriptor(lexical))desc=lexical;
-    const respectively=/(?:,\s*|\s+)respectively$/i.test(desc)||/\brespectively\s*,\s*$/i.test(s.slice(m.index,rawStart));
+    const respectively=/(?:,\s*|\s+)respectively$/i.test(desc)||/\brespectively\s*,?\s*$/i.test(s.slice(m.index,rawStart));
     if(respectively)desc=desc.replace(/(?:,\s*|\s+)respectively$/i,"").trim();
     const longStart=rawStart+(s.slice(rawStart,descEnd).length-s.slice(rawStart,descEnd).trimStart().length);
     const symbols=splitList(m[1]);
@@ -12520,7 +12522,7 @@ function collectEquationNomenclatureDefs(sent,si,add){
   const commaList=clauses.length>=2&&clauses.slice(1).some(c=>/^\s*,\s*(?:(?:and|but|while|whereas)\s+)?$/i.test(c.join));
   for(const c of clauses){
     const descriptorHead=c.desc.split(/\s+(?:which|that)\b/i)[0];
-    if(/\b(?:no\s+longer|neither|different\s+from|equal\s+to|similar\s+to|equivalent\s+to)\b/i.test(descriptorHead)||/^(?:[a-z]+ly\s+)*(?:unlike\b|(?:in)?dependent\s+(?:on|upon|of)\b|(?:an?\s+)?(?:(?:(?:strictly|monotonically)\s+)?(?:increasing|decreasing)\s+)?function\s+of\b|(?:similar|comparable|equivalent|equal|different)\s+in\s+[a-z]+(?:\s+[a-z]+){0,2}\s+(?:to|from)\b|(?:[a-z]+(?:ed|able)|given|shown|read|taken|kept|close|proportional|distinct)\s+(?:(?:[a-z]+ly|constant|steady|unchanged)\s+){0,3}(?:to|from|with|by|using|in|as|against|alongside|on|off|throughout|under|at)\b)/i.test(descriptorHead))continue;
+    if(/\b(?:no\s+longer|neither|different\s+from|equal\s+to|similar\s+to|equivalent\s+to)\b/i.test(descriptorHead)||/^(?:[a-z]+ly\s+)*(?:unlike\b|(?:in)?dependent\s+(?:on|upon|of)\b|(?:an?\s+)?(?:(?:(?:strictly|monotonically)\s+)?(?:increasing|decreasing)\s+)?function\s+of\b|(?:similar|comparable|equivalent|equal|different)\s+in\s+[a-z]+(?:\s+[a-z]+){0,2}\s+(?:to|from)\b|(?:[a-z]+(?:ed|able)|given|shown|read|taken|kept|held|set|drawn|left|put|made|brought|sent|built|found|bound|close|proportional|distinct)\s+(?:(?:(?:[a-z]+ly|constant|steady|unchanged)\s+){0,3}(?:to|from|with|by|using|in|as|against|alongside|on|off|during|through|throughout|under|at)\b|(?:[a-z]+ly\s+){0,3}(?:constant|steady|unchanged)\s*$))/i.test(descriptorHead))continue;
     if(c.unsupportedAnnotation||!c.desc||c.desc.length<2||/^[~≈+−-]?(?:\d|\.\d)/.test(c.desc)||/\b(?:than|is|are|was|were|has|have|had|be|been|being|can|could|may|might|must|will|would|should|if|when|where|which|that|not|never)\b/i.test(descriptorHead))continue;
     if(c!==clauses[0]&&!validJoin.test(c.join))continue;
     if(!abbrLooksScientificShort(c.sym1)||/^(?:it|we|he|she|they|this|that)$/i.test(c.sym1))continue;
@@ -12529,7 +12531,7 @@ function collectEquationNomenclatureDefs(sent,si,add){
       const descriptions=splitList(c.desc).map(descriptor);
       if(!c.respectively||new Set(c.symbols).size!==c.symbols.length||descriptions.length!==c.symbols.length||
         !c.symbols.every(sym=>abbrLooksScientificShort(sym)&&!/^(?:it|we|he|she|they|this|that)$/i.test(sym))||
-        !descriptions.every(validDescriptor))continue;
+        !descriptions.every(value=>validDescriptor(value,true)))continue;
       let from=c.at;
       c.symbols.forEach((sym,i)=>{
         const at=s.indexOf(sym,from);from=at+sym.length;
@@ -26506,22 +26508,22 @@ function refIsClassificationRange(text,index,length){
   if(refIsClassificationRange.cache?.text!==text){
     const spans=new Set(),scalar=String.raw`[+−-]?(?:\d+(?:\.\d+)?|\.\d+)`;
     const value=new RegExp(`^(?:${scalar}\\s*(?:[-‐‑‒–—−]|to)\\s*${scalar}|(?:[<>≤≥]=?|above|below|over|under|greater\\s+than|less\\s+than|at\\s+(?:least|most))\\s*${scalar}|${scalar}\\s*(?:and|or)\\s*(?:above|below|more|less))$`,"i");
-    const word=String.raw`[\p{L}][\p{L}\p{N}'’_-]*`;
+    const word=String.raw`[\p{L}\p{N}][\p{L}\p{N}'’_-]*`;
     const item=new RegExp(`(["“‘']?${word}(?:[ \\t]+${word}){0,5}\\+?["”’']?)\\s*(\\([^()\\[\\]\\n]{1,80}\\)|\\[[^()\\[\\]\\n]{1,80}\\])`,"guy");
     const separator=/\s*(?:[,;]\s*(?:(?:and|or)\s+)?|\s+(?:and|or)\s+)/y;
     const category=String.raw`(?:(?:score|index|rating)\s+)?(?:categories|bands|classes|levels|ranges|classification)`;
-    const intro=new RegExp(String.raw`\b(?:${category}\s*(?:(?:are|were|is|was)\s+(?:(?:(?:defined|classified|categorised|categorized|labelled|labeled|grouped)\s+(?:as|into)|as\s+follows)\s*:?\s*)?|(?:include[sd]?|comprise[sd]?|consist(?:s|ed)?\s+of)\s+|:\s*)|(?:classif(?:y|ied)|categori[sz](?:e|ed)|label(?:led|ed))\s+(?:the\s+)?(?:scores?|values?|measurements?|results?)\s+as\s+)`,"giu");
+    const intro=new RegExp(String.raw`\b(?:${category}\s*(?:(?:are|were|is|was)\s+(?:(?:(?:[a-z]+ly\s+){0,2}(?:defined|classified|categorised|categorized|labelled|labeled|grouped)\s+(?:as|into)|as\s+follows)\s*:?\s*)?|(?:include[sd]?|comprise[sd]?|consist(?:s|ed)?\s+of)\s+|:\s*)|(?:classif(?:y|ied)|categori[sz](?:e|ed)|label(?:led|ed))\s+(?:the\s+)?(?:scores?|values?|measurements?|results?)\s+as\s+)`,"giu");
     const postfix=new RegExp(`^\\s+(?:are|were)\\s+(?:the\\s+)?${category}\\b`,"iu");
-    const readList=start=>{
+    const readList=(start,explicit=false)=>{
       const list=[];let end=start;
       while(end<text.length){
         item.lastIndex=end;const pair=item.exec(text);
         if(!pair||!value.test(pair[2].slice(1,-1).trim()))break;
         const label=pair[1],quoted=/^["“‘']/.test(label);
-        // Unquoted passive predicates are source statements, not category names.
-        // Quoted labels such as "Treated" remain explicit data declarations.
+        // Explicit declarations may name participles ("Treated"). Without
+        // that evidence, passive predicates still indicate source statements.
         if(!quoted&&(/\b(?:see|cf|references?|citations?|sources?|studies|authors?|according|following|by|in|from|using|via|elsewhere|previously)\b/i.test(label)||
-          /^(?:(?:[a-z]+ly)\s+)*(?:[a-z]+ed|[a-z]+ing|shown|given|found|read|taken|kept)\b/i.test(label)||ENG_CAPTION_REPORTING_VERB_RE.test(label)))break;
+          !explicit&&(/^(?:(?:[a-z]+ly)\s+)*(?:[a-z]+ed|[a-z]+ing|shown|given|found|read|taken|kept)\b/i.test(label)||ENG_CAPTION_REPORTING_VERB_RE.test(label))))break;
         list.push({index:pair.index+pair[0].lastIndexOf(pair[2]),length:pair[2].length});
         end=item.lastIndex;separator.lastIndex=end;
         const join=separator.exec(text);
@@ -26534,16 +26536,20 @@ function refIsClassificationRange(text,index,length){
     };
     const add=list=>list.forEach(p=>spans.add(`${p.index}:${p.length}`));
     for(const m of text.matchAll(intro)){
-      const {list}=readList(m.index+m[0].length);
       const explicit=/\b(?:include[sd]?|comprise[sd]?|consist(?:s|ed)?\s+of|as|into)\s*:?\s*$/i.test(m[0])||/["“‘']/.test(text[m.index+m[0].length]||"");
+      const {list}=readList(m.index+m[0].length,explicit);
       if(list.length>=2||explicit)add(list);
     }
     // Postposed declarations: "Low (1–3), High (>3) were the score bands."
-    const first=new RegExp(item.source,"gu");let m;
-    while((m=first.exec(text))!==null){
-      const {list,end}=readList(m.index);
+    const bracket=/\([^()\[\]\n]{1,80}\)|\[[^()\[\]\n]{1,80}\]/g;
+    const labelEnd=new RegExp(`(?<![\\p{L}\\p{N}'’_-])(["“‘']?${word}(?:[ \\t]+${word}){0,5}\\+?["”’']?)[ \\t]*$`,"u");
+    for(let m;(m=bracket.exec(text))!==null;){
+      if(!value.test(m[0].slice(1,-1).trim()))continue;
+      const start=Math.max(0,m.index-300),label=text.slice(start,m.index).match(labelEnd);
+      if(!label||start>0&&label.index===0&&/[\p{L}\p{N}'’_-]/u.test(text[start-1]))continue;
+      const {list,end}=readList(start+label.index,true);
       if(list.length&&postfix.test(text.slice(end,end+100)))add(list);
-      first.lastIndex=Math.max(first.lastIndex,end);
+      bracket.lastIndex=Math.max(bracket.lastIndex,end);
     }
     refIsClassificationRange.cache={text,spans};
   }
@@ -26554,7 +26560,7 @@ function refIsMeasurementEndpoint(text,index,length){
   // A local pH assignment is data; "reported in" and "determined using"
   // remain attribution cues. Share this decision with style and readability.
   if(/^(?:\(\s*[+−-]?\d+(?:\.\d+)?\s*\)|\[\s*[+−-]?\d+(?:\.\d+)?\s*\])$/.test(text.slice(index,index+length))&&
-     /\bpH(?:\s+(?:levels?|values?))?\s+(?:(?:was|were|is|are)\s+)?(?:(?:recorded|reported|measured)\s+as\s+|(?:observed|determined|found)(?:\s+to\s+be|\s+(?:was|were|is|are))\s+)?$/i.test(text.slice(Math.max(0,index-160),index)))return true;
+     /\bpH(?:\s+(?:levels?|values?))?\s+(?:(?:was|were|is|are)\s+)?(?:(?:recorded|reported|measured)\s+as\s+|(?:adjusted|set|raised|lowered|increased|decreased|declined)\s+to\s+|(?:maintained|held|kept|observed|measured|recorded)\s+at\s+|(?:observed|determined|found)(?:\s+to\s+be|\s+(?:was|were|is|are))\s+)?$/i.test(text.slice(Math.max(0,index-160),index)))return true;
   // Both endpoints need one explicit measurement subject and a connected
   // between/and or from/to construction; nearby measurement prose is insufficient.
   const value=String.raw`(?:\(\s*[+−-]?\d+(?:\.\d+)?\s*\)|\[\s*[+−-]?\d+(?:\.\d+)?\s*\])`;
@@ -26572,7 +26578,7 @@ function detectCiteStyle(body){
   const br=count(/\[\d{1,3}(?:[–,\-]\s*\d{1,3})*\]/g);
   const par=count(/\(\d{1,3}(?:[,–\-]\s*\d{1,3})*\)/g);
   const ay=(body.match(/\([A-Z][A-Za-z'’-]+(?:\s+(?:et al\.?|and|&)\s+[A-Z][A-Za-z'’-]+)?,?\s*(?:19|20)\d{2}[a-z]?\)/g)||[]).length
-        +(body.match(/[A-Z][A-Za-z'’-]+\s+et al\.?,?\s*\(?(?:19|20)\d{2}/g)||[]).length;
+        +(body.match(/\b[A-Z][A-Za-z'’-]+\s+et al\.?,?\s*\(?(?:19|20)\d{2}/g)||[]).length;
   if(br>=3 && br>=par && br>=ay) return "numeric_brackets";
   if(ay>=3 && ay>=br) return "author_year";
   if(par>=3 && par>br) return "numeric_parentheses";
@@ -28069,8 +28075,8 @@ function numberCheck(text,tables=[]){
       if(/\b[nN](?:[₀-₉ₐ-ₜᵢᵣᵤᵥ]+|_(?:\{[\p{L}\p{N},+-]{1,20}\}|[A-Za-z0-9]+))?\s*(?:[=<>≤≥≈≠]|[<>]=)\s*$/u.test(s.slice(0,m.index+m[1].length)))continue;
       const densityTail=s.slice(m.index+m[0].length);
       if(word.toLowerCase()==="times"){
-        const comparative=densityTail.match(/^\s+((?!(?:after|thereafter|earlier|later|together|whenever|however|either|neither|other|another|whether|under|over)\b)[a-z]{3,}er)\b/i);
-        const compared=comparative&&!/^\s+(?:[a-z]{3,}ed|is|are|was|were|has|have|had|does|did|will|would|can|could)\b/i.test(densityTail.slice(comparative[0].length))&&(/^(?:\s*[,.!?;:)]|\s*$|\s+(?:under|at|in|with|during|after|before|for|on|over|across|throughout|when|and|or)\b)/i.test(densityTail.slice(comparative[0].length))||/^\s+(?:[a-z]+ly\s+){0,2}than\b/i.test(densityTail.slice(comparative[0].length))||/\b(?:is|are|was|were|be|been|became)\s*(?:(?:about|approximately|nearly|roughly|almost)\s*)?$/i.test(s.slice(0,m.index+m[1].length)));
+        const comparative=densityTail.match(/^\s+((?!(?:after|thereafter|earlier|later|together|whenever|however|either|neither|other|another|whether|rather|under|over|water|buffer|paper|copper|filter|chamber)\b)[a-z]{3,}er)\b/i);
+        const compared=comparative&&!/^\s+(?:[a-z]{3,}ed|is|are|was|were|has|have|had|does|did|will|would|can|could)\b/i.test(densityTail.slice(comparative[0].length))&&(/^(?:\s*[,.!?;:)]|\s*$|\s+(?:under|at|in|with|during|after|before|for|on|over|across|throughout|when|and|or)\b)/i.test(densityTail.slice(comparative[0].length))||/^\s+(?:[a-z]+ly\s+){0,2}than\b/i.test(densityTail.slice(comparative[0].length))||/^\s+(?!(?:than|then|because|although|until|since|if|as|so|to|not|we|they|it)\b)[a-z][a-z-]*(?:\s|[,.!?;:]|$)/i.test(densityTail.slice(comparative[0].length))||/\b(?:is|are|was|were|be|been|became)\s*(?:(?:about|approximately|nearly|roughly|almost)\s*)?$/i.test(s.slice(0,m.index+m[1].length)));
         if(compared||/^\s+(?:higher|lower|greater|less|more|larger|smaller|longer|shorter|faster|slower|wider|narrower|thicker|thinner|stronger|weaker|heavier|lighter|brighter|darker|deeper|shallower|rougher|smoother|steeper|sharper|clearer|quicker|better|worse|as|the|that|those|[a-z]\b|[+−-]?\d)\b/i.test(densityTail))continue;
       }
       const groupedDenominator=densityTail.match(/^\s*(?:\/\s*|per\s+)(\([^()\n]{1,60}\)|\[[^\[\]\n]{1,60}\])/i);
@@ -35796,7 +35802,7 @@ fteAnalyze=function(blocks){
       const before=mcCleanContextText(text.slice(clause.start,m.index)),after=mcCleanContextText(text.slice(end,clause.end));
       const lead=before+" "+m[0].slice(0,m[0].indexOf(m[2]));
       const local=lead.split(/[,;]|\b(?:whereas|while|but|however|and)\b/i).at(-1);
-      const setting=/\b(?:target|nominal|specified|required|prescribed|desired)(?:\s+(?:initial|final|inlet|outlet|effluent|influent|anolyte|catholyte|operating)){0,3}\s*$/i.test(before)||/\b(?:adjust(?:ed|ing)?|set|maintain(?:ed)?|kept|held|fixed|controlled|buffer(?:ed)?|synthesi[sz](?:ed|ing)|prepared|preparation)\b[^;]{0,90}$/i.test(local)||
+      const setting=/\b(?:target|nominal|specified|required|prescribed|desired)(?:\s+(?!(?:is|are|was|were|has|have|had|be|been|being|and|or|but|whereas|while|of|for|to|from|at|in|with|without|the|an?|this|these|that|those|we|they)\b)[a-z][a-z-]*){0,6}\s*$/i.test(before)||/\b(?:adjust(?:ed|ing)?|set|maintain(?:ed)?|kept|held|fixed|controlled|buffer(?:ed)?|synthesi[sz](?:ed|ing)|prepared|preparation)\b[^;]{0,90}$/i.test(local)||
         /^\s*(?:phosphate\s+|bicarbonate\s+)?buffer\b/i.test(after)||
         /\b(?:standard\s+hydrogen\s+electrode|SHE|reference\s+electrode)\b/i.test(local)||
         /\bat\s+pH\b/i.test(local)&&!/\b(?:measured|recorded|effluent|influent|anolyte|catholyte)\b/i.test(local);
