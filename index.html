@@ -21,6 +21,7 @@ https://github.com/anilkdhanda18/manuscriptchecker/
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<meta name="application-version" content="95">
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="copyright" content="Copyright © 2026 Anil Dhanda" />
@@ -7898,7 +7899,12 @@ function unitPrecisionTableInfo(table){
     !/\b(?:our|this\s+(?:study|work)|present\s+(?:study|work)|current\s+(?:study|work)|measured\s+here|methods?|protocols?|procedures?)\b/i.test(introduction);
   const preparation=block?String(blocks[blocks.indexOf(block)-2]?.text||""):"";
   const tableLabel=caption.match(/^\s*(Table\s+[S\d][\d.]*)\b/i)?.[1];
-  const formulation=/\b(?:formulations?|recipes?|mixing\s+proportions?|starting\s+composition|feed\s+composition)\b/i.test(caption)||
+  // A component matrix can establish a formulation even when a caption was lost:
+  // material identifiers plus multiple explicitly mass-based fractions totaling 100.
+  const weights=headers.map((h,c)=>/%\s*(?:by\s+weight|w\/w)|\b(?:wt\.?|weight)\s*%/i.test(h)?c:-1).filter(c=>c>=0);
+  const recipeMatrix=/\b(?:membrane|mixture|formulation|blend)\s+(?:nomenclature|formulation|recipe|design|code)\b|\b(?:formulation|recipe)\s*(?:ID|code)?$/i.test(headers[0]||"")&&weights.length>=2&&rows.length-info.dataStart>=2&&
+    rows.slice(info.dataStart).every(row=>weights.every(c=>/^\s*\d+(?:\.\d+)?\s*$/.test(row[c]||""))&&Math.abs(weights.reduce((v,c)=>v+Number(row[c]),0)-100)<1e-7);
+  const formulation=recipeMatrix||/\b(?:formulations?|recipes?|mixing\s+proportions?|starting\s+composition|feed\s+composition)\b/i.test(caption)||
     /\bcomposition\b/i.test(caption)&&tableLabel&&preparation.includes(tableLabel)&&
     /\b(?:prepar(?:ed|ation)|fabricat(?:ed|ion)|modified)\b/i.test(preparation)&&
     /\b(?:add(?:ed|ing)|mix(?:ed|ing)|blend(?:ed|ing))\b[^.]{0,90}\b(?:proportions?|fractions?|ratios?)\b/i.test(preparation);
@@ -8071,7 +8077,7 @@ function unitPrecisionTableCell(table,info,r,c){
   if(!exclusion&&!current&&!ownCaption&&info.introductionSource)exclusion=unitPrecisionSource("literature");
   const specification=/^(?:quantity|quantities|dimensions?|specifications?|size|description|operating conditions?)(?:\s*\([^)]*\))?$/i.test(header.trim())&&
     /(?:\d\s*(?:[A-Za-zµμΩ°²³]+\s*)?[×*Xx]\s*\d|\b(?:plates?|high|width|height|length|thickness|diameter|size|per gram|pumps?)\b)/i.test(String(row[c]||""));
-  const formulation=info.formulation&&
+  const formulation=info.formulation&&!/\b(?:measured|observed|determined|actual|recorded)\b/i.test(header)&&
     !/\b(?:measured|determined|observed|analys[ei]s|characteri[sz]ation|elemental|spectroscop(?:y|ic)|XPS|EDS|EDX|XRF|ICP)\b/i.test(info.caption)&&
     /%|\b(?:weight|mass|fraction|ratio|proportion)\b/i.test(header);
   const explicitResult=/\b(?:measured|determined|observed|achieved|yielded|produced)\b/i.test(String(row[c]||"")+" "+String(info.caption||""));
@@ -8088,7 +8094,8 @@ function unitPrecisionTableCell(table,info,r,c){
   const describedSetting=operatingInput||feedInput||!inputResult&&info.operatingRatios?.includes(c)||!explicitResult&&(/^(?:experimental conditions?|electrolytes?)$/i.test(header.trim())||
     /\b(?:dosages?|photocatalysts?\s+(?:concentrations?|loading))\b/i.test(header)||
     /^preparation(?: and use)?$/i.test(header.trim())&&/\b(?:added|mixed|blended|wt\.?|weight|loading|composition)\b/i.test(String(row[c]||"")));
-  const setting=formulation||specification||describedSetting||/^operating conditions?$/i.test(header.trim())||/\b(?:initial|applied|setpoint|dose|loading|incubation|synthesis|reaction time)\b/i.test(header)||
+  const prescribed=/\b(?:target|specified|nominal|prescribed|setpoint|design)\s+(?:pH|temperatures?|pressures?|(?:mass\s+)?fractions?|(?:\w+\s+)?(?:contents?|concentrations?|dosages?|proportions?))\b/i.test(plainHeader)&&!/\b(?:measured|observed|actual|determined|recorded)\b/i.test(header);
+  const setting=prescribed||formulation||specification||describedSetting||/^operating conditions?$/i.test(header.trim())||/\b(?:initial|applied|setpoint|dose|loading|incubation|synthesis|reaction time)\b/i.test(header)||
     (/\bcapacit(?:y|ies)\b/i.test(header)&&/\b(?:design|installed|rated|nominal|operational)\b/i.test(header));
   if(!exclusion&&setting)
     exclusion={role:"setting",reason:"These values describe the experimental setup, so decimal places were not compared. No action needed for this comparison."};
@@ -9057,7 +9064,7 @@ function engHeadingContainsNarrative(text){
 function engLooksHeadingForScan(line){
   const s=String(line||"").replace(/\s+/g," ").trim();
   if(!s || s.length>180) return false;
-  if(/[.!?]["'’\)\]]?$/.test(s)) return false;
+  if(/[.!?]["'”’\)\]]?$/.test(s)) return false;
 
   // Dedicated journal components such as Novelty Statement, Significance
   // Statement, Key Points, and Plain Language Summary are structural headings
@@ -9318,12 +9325,14 @@ function engParseCaptionLead(text){
   const re=new RegExp(`^(${type})\\s*(${idAtom}${range})${panel}(?=\\s|[.:;,|\\-]|$)`,`i`);
   const m=s.match(re);
   if(!m) return null;
-  const raw=m[0];
+  const romanTable=/tables?$/i.test(m[1])&&/^[IVXLCDM]+$/.test(m[2]);
+  const raw=romanTable?m[0].replace(/(\s[IVXLCDM]+)\s+A$/,"$1"):m[0];
   let after=s.slice(raw.length);
   const sep=/^\s*-\d/.test(after)?"":(after.match(/^\s*([.:;,|\-])\s*/)||[])[1]||"";
   if(sep) after=after.replace(/^\s*[.:;,|\-]\s*/,"");
   else after=after.trimStart();
   const kind=engCaptionTypeKind(m[1]);
+  if(kind==="TABLE_CAPTION"&&/^[IVXLCDM]+$/i.test(m[2])&&(!fteRomanNumber(m[2])||!raw.endsWith(" "+m[2])))return null;
   return {raw,type:m[1],id:m[2].replace(/\s+/g,""),kind,rest:after.trim(),strongSeparator:!!sep,separator:sep,plural:/\b(?:figures|figs|tables|schemes|plates|charts|graphs|images|photographs|photos|illustrations|diagrams|flowcharts|algorithms|boxes|maps)\b/i.test(m[1]),range:/[-]/.test(m[2].replace(/^S-/i,""))};
 }
 
@@ -9408,11 +9417,20 @@ function mcAdministrativeParagraphInfo(blocks){
   const resume=/^(?:curriculum\s+vitae|c\.?\s*v\.?|biographical\s+sketch|author(?:'s|’s)?\s+biograph(?:y|ies))\s*:?$/i;
   const publications=/^(?:(?:list\s+of|author(?:'s|’s)?)\s+)?publications\s*:?$/i;
   const resumeSection=/^(?:research\s+interests?|education(?:\s+and\s+work\s+experi[ae]nce)?|work\s+experience|employment|responsibilities\s+served|awards?(?:\s+and\s+honou?rs?)?|honou?rs?|achievements?|professional\s+memberships?|journal\s+publications?.*|book\s+chapter\s+contributions?|publications|instrument\s+proficiency|software\s+skills|academic\s+contributions?|references|skills|contact(?:\s+(?:information|details))?|personal\s+(?:information|details))\s*:?$/i;
+  const investigatorPubs=/^(?:\d+(?:\.\d+)*\.?\s*)?(?:(?:key|selected|recent|list\s+of)\s+)?publications\s+(?:of|by)\s+(?:the\s+)?(?:principal\s+)?(?:investigator|applicant|author)s?(?:\s+(?:during|in|over)\s+the\s+(?:last|past)\s+(?:\d+|\w+)\s+years?)?\s*:?$/i;
   const scientificHeading=s=>/^(?:appendi(?:x|ces)|chapter)\b/i.test(s)||/^(?:(?:\d+(?:\.\d+)*\.?|[A-Z])\s+)?(?:appendi(?:x|ces)|chapter\b|abstract|introduction|materials?(?:\s+and\s+methods?)?|methods?|methodology|experimental(?:\s+.*)?|results?(?:\s+and\s+discussion)?|discussion|conclusions?|supporting\s+information|supplementary\s+(?:information|materials?))\s*(?::|$)/i.test(s);
   let active="",bibliographySeen=false;
   src.forEach((b,i)=>{
     const s=norm(b);
     if(isReferenceHeading(s)&&src.slice(i+1,i+10).filter(x=>refHasEntryEvidence(norm(x))).length>=2)bibliographySeen=true;
+    if(investigatorPubs.test(s)&&src.slice(i+1,i+10).some(x=>refHasEntryEvidence(norm(x))&&refHasPublicationEvidence(norm(x),true))){
+      active="investigator";mask.add(i);return;
+    }
+    if(active==="investigator"){
+      if(s&&(b.outlineLvl!=null||/^(?:heading|title)/i.test(b.style||"")||scientificHeading(s)||isReferenceHeading(s)))active="";
+      else if(!s||(refHasEntryEvidence(s)&&refHasPublicationEvidence(s,true))||/^(?:patent|doi)\s*:/i.test(s)){mask.add(i);return;}
+      else active="";
+    }
     if(resume.test(s)){
       const next=src.slice(i+1,i+30).map(norm).join("\n");
       const evidence=[/\b(?:email|e-mail|contact)\s*[:.]/i,/\b(?:education|work\s+experience|research\s+scholar|professor|researcher)\b/i,/\b(?:Ph\.?D\.?|bachelor|master|university|institute)\b/i].filter(re=>re.test(next)).length;
@@ -9537,10 +9555,16 @@ function engClassifyStructuralBlocks(blocks){
     const grammarKey=r.type==="HEADING" && r.reasons.includes("heading grammar") &&
       abbrTableNoteDefinitionAssignments(r.text).some(d=>abbrDefLooksLexicalFullForm(d.shortForm,d.longForm));
     if((r.type!=="BODY_PROSE"&&!grammarKey)||abbrScopeStartsWithAbstract(r.text)) continue;
-    const conventionalNote=ENG_CAPTION_NOTE_RE.test(r.text);
+    if(r.block?.hasMath && engFollowsEquationIntroduction(out[i-1]?.text,r)){
+      r.type="EQUATION";r.confidence=.98;r.reasons.push("Word math following equation introduction");continue;
+    }
+    const conventionalNote=ENG_CAPTION_NOTE_RE.test(r.text.replace(/^[*†‡§]+\s*(?=(?:notes?|source|legend|abbreviations?)\s*:)/i,""));
     const abbreviationDefinitionNote=abbrLooksTableNoteDefinitionLine(r.text);
     const abbreviationContinuationNote=abbrLooksTableNoteContinuationLine(r.text);
     if(!conventionalNote && !abbreviationDefinitionNote && !abbreviationContinuationNote) continue;
+    // A research-plan label followed by narrative is not a glossary assignment.
+    if(!conventionalNote && (/^(?:WP\s*\d+|work\s+package\s+\d+|(?:aim|objective|task|phase)\s+\d+)\s*:/i.test(r.text) ||
+       (/[.!?]\s+\p{Lu}/u.test(r.text) && abbrTableNoteDefinitionAssignments(r.text).length<2))) continue;
 
     let tableEvidence=false, figureEvidence=false;
     if(grammarKey){
@@ -9549,7 +9573,9 @@ function engClassifyStructuralBlocks(blocks){
       while(after<out.length&&out[after].type==="EMPTY") after++;
       tableEvidence=/^(?:TABLE|TABLE_CAPTION|TABLE_NOTE)$/.test(out[before]?.type||"") ||
         (/^(?:notes?|abbreviations?)\s*:/i.test(r.text) && /^(?:TABLE|TABLE_CAPTION)$/.test(out[after]?.type||""));
-      if(!tableEvidence) continue;
+      figureEvidence=/^(?:FIGURE_CAPTION|SCHEME_CAPTION|CAPTION_CONTINUATION|FIGURE_NOTE)$/.test(out[before]?.type||"") &&
+        !/[.!?]\s+\p{Lu}/u.test(r.text);
+      if(!tableEvidence&&!figureEvidence)continue;
     }
     for(let d=1;!grammarKey&&d<=8;d++){
       const j=i-d; if(j<0) break;
@@ -9560,10 +9586,13 @@ function engClassifyStructuralBlocks(blocks){
       // A previously classified TABLE_NOTE intentionally propagates association
       // through a compact run of table-note continuation paragraphs.
       if(t==="HEADING") break;
-      if(t==="BODY_PROSE" && engWordCount(out[j].text)>40 &&
-         !abbrLooksTableNoteContinuationLine(out[j].text)) break;
+      if(t==="BODY_PROSE") break;
     }
 
+    if(figureEvidence&&!tableEvidence&&!conventionalNote&&!/^(?:[*†‡§]|(?:notes?|legend|abbreviations?)\s*:)/i.test(r.text)){
+      const keys=abbrTableNoteDefinitionAssignments(r.text);
+      if(!keys.length || !keys.every(d=>abbrDefLooksLexicalFullForm(d.shortForm,d.longForm)))continue;
+    }
     if(tableEvidence||figureEvidence){
       const tableDefinitionEvidence=(abbreviationDefinitionNote||abbreviationContinuationNote)&&tableEvidence;
       r.type=tableDefinitionEvidence?"TABLE_NOTE":(tableEvidence&&!figureEvidence?"TABLE_NOTE":"FIGURE_NOTE");
@@ -9765,6 +9794,8 @@ function engIsCrystallographicIndex(text,index,length,strict=false){
   while(first>0&&connector.test(s.slice(spans[first-1].index+spans[first-1][0].length,spans[first].index)))first--;
   while(last+1<spans.length&&connector.test(s.slice(spans[last].index+spans[last][0].length,spans[last+1].index)))last++;
   const left=s.slice(Math.max(0,spans[first].index-180),spans[first].index);
+  if(/^\([−-]?\d{3,4}\)$/.test(spans[at][0])&&/\d(?:\.\d+)?\s*°\s*$/.test(left)&&
+     /\b(?:peaks?|reflections?|diffraction|XRD)\b[^;!?\n]{0,160}$/i.test(left.replace(/(\d)\.(?=\d)/g,"$1").split(/\.\s+/).at(-1)))return true;
   const end=spans[last].index+spans[last][0].length,right=s.slice(end,end+100);
   return /^\s*(?:(?:crystal|crystallographic|lattice|diffraction|interplanar)\s+)?(?:planes?|indices|orientations?|reflections?|facets?|diffraction\s+peaks?|lattice\s+spacing)\b/i.test(right)||
     /\b(?:Miller\s+indices|crystal(?:lographic)?\s+(?:planes?|indices|orientations?)|(?:indexed|assigned)\s+(?:as|to))\s*:?\s*$/i.test(left)||
@@ -9772,6 +9803,90 @@ function engIsCrystallographicIndex(text,index,length,strict=false){
     first<last&&/^\)/.test(right)&&/\b(?:XRD|diffraction)\b[^.!?\n]{0,100}\b(?:presence|existence)\s+of\s+[A-Za-z][A-Za-z0-9-]*\s*\($/i.test(left);
 }
 
+// An explicit reading predicate can introduce either plain or bracketed data.
+const MC_PH_READING_PREDICATE=String.raw`(?:(?:(?:was|were|is|are)\s+)?(?:measured|recorded|reported|observed|determined|found)\s+(?:as|at|to\s+be)|(?:measurements?|readings?)\s+(?:was|were|is|are|of|yield(?:s|ed)?|gave)|averag(?:e[sd]?|ing))`;
+const MC_PH_READING_LEAD=new RegExp(String.raw`\bpH\s+${MC_PH_READING_PREDICATE}\s*$`,"i");
+// Recognize ordered item labels, not a sequence of citations after separate clauses.
+function refIsEnumeratedItem(text,index,length){
+  if(!/^\(\d{1,2}\)$/.test(text.slice(index,index+length)))return false;
+  const start=Math.max(text.lastIndexOf("\n",index-1)+1,index-850,0);
+  const line=text.slice(start,index+length+620).split("\n",1)[0];
+  const labels=[...line.matchAll(/\((\d{1,2})\)(?=[ \t]+(?:[\p{L}\d]))/gu)];
+  const at=labels.findIndex(m=>start+m.index===index);
+  if(at<0)return false;
+  const joined=(a,b)=>Number(b[1])===Number(a[1])+1&&/[,;]\s*(?:(?:and|or)\s*)?$/i.test(line.slice(a.index+a[0].length,b.index));
+  let first=at,last=at;
+  while(first&&joined(labels[first-1],labels[first]))first--;
+  while(last+1<labels.length&&joined(labels[last],labels[last+1]))last++;
+  return last>first&&/(?:^|[:;]|(?:^|[.?!]\s+)|\bi\.e\.,?)\s*$/i.test(line.slice(0,labels[first].index));
+}
+function refIsMeasurementEndpoint(text,index,length){
+  // A local pH assignment is data; "reported in" and "determined using"
+  // remain attribution cues. Share this decision with style and readability.
+  const left=text.slice(Math.max(0,index-160),index),raw=text.slice(index,index+length);
+  const right=text.slice(index+length,index+length+90);
+  const numeric=/^(?:\(([^()[\]]+)\)|\[([^()[\]]+)\])$/.exec(raw);
+  if(numeric&&/^[+−-]?\d+(?:\.\d+)?(?:\s*(?:[,;–—-]|\band\b|\bor\b|\bto\b)\s*(?:and\s+)?[+−-]?\d+(?:\.\d+)?)*$/.test((numeric[1]||numeric[2]).trim())){
+    const lead=left.replace(/(?:[(\[]\s*[+−-]?\d+(?:\.\d+)?\s*[)\]][ \t]*(?:[,;][ \t]*(?:(?:and|or)[ \t]+)?|(?:and|or|to)[ \t]+|[-–—][ \t]*))+$/i,"");
+    if(/\bpH(?:\s+(?:values?|levels?|readings?|measurements?|meter))?\s+(?:(?:was|were|is|are|measured|recorded|observed|determined|found|averaged|yielded|indicated|from|ranged|rose|fell|as|at)\b[ \t]*)+$/i.test(lead)||
+      /\b(?:(?:samples?|reactors?|groups?|treatments?)\s+(?:(?:was|were|are|is)\s+)?(?:label(?:l)?ed|numbered|assigned\s+(?:identifiers|IDs|numbers))|(?:\w+[- ]point|rating|ordinal|score)\s+scale|(?:an?\s+)?score\s+of)\s*[:=]?\s*$/i.test(lead)||
+      /\b(?:interval|range)\s+(?:(?:was|is)\s+)?bounded\s+by\s*$/i.test(lead)||
+      /\bangle\s+(?:was|is|of|measured\s+at)\s*$/i.test(lead)&&/^\s*(?:degrees?\b|°)/i.test(right))return true;
+    if(refIsEnumeratedItem(text,index,length))return true;
+  }
+  // The quantity, assignment and trailing unit belong to this exact occurrence.
+  if(/^(?:\[\s*[+\d−-][\d.,;+\s−–—-]*\]|\(\s*[+\d−-][\d.,;+\s−–—-]*\))$/.test(raw)&&
+     /\b(?:fractions?|concentrations?|values?|measurements?|masses|volumes?|lengths?|temperatures?|percentages?)(?:\s+(?:were|was|are|is|defined|measured|reported|recorded|set|as|at|of|equal|to))*\s*[:=]?\s*$/i.test(left)&&
+     /^[ \t]*(?:%|percent\b|per[ \t]+cent\b|(?:mg|kg|g|mL|L|mM|mm|cm|km|Pa|kPa|MPa|Hz|ppm|ppb|°[CF]|K)\b)/.test(text.slice(index+length)))return true;
+  if(/^(?:\(\s*[+−-]?\d+(?:\.\d+)?\s*\)|\[\s*[+−-]?\d+(?:\.\d+)?\s*\])$/.test(text.slice(index,index+length))&&
+     (/\bpH(?:\s+(?:levels?|values?))?\s+(?:(?:was|were|is|are)\s+)?(?:(?:recorded|reported|measured)\s+as\s+|(?:adjusted|set|raised|lowered|increased|decreased|declined)\s+to\s+|(?:maintained|held|kept|observed|measured|recorded)\s+at\s+|(?:observed|determined|found)(?:\s+to\s+be|\s+(?:was|were|is|are))\s+)?$/i.test(left)||MC_PH_READING_LEAD.test(left)))return true;
+  // Both endpoints need one explicit measurement subject and a connected
+  // between/and or from/to construction; nearby measurement prose is insufficient.
+  const value=String.raw`(?:\(\s*[+−-]?\d+(?:\.\d+)?\s*\)|\[\s*[+−-]?\d+(?:\.\d+)?\s*\])`;
+  const subject=String.raw`(?:scores?|values?|measurements?|concentrations?|temperatures?|ratios?|pH|volumes?|mass|masses|lengths?|widths?|heights?|depths?)`;
+  const verb=String.raw`(?:(?:was|were|is|are|lay|lie|lies|ranged|varied|fell|rose|changed|increased|decreased|remained|drifted|jumped|shifted|dropped|declined|[a-z]+ly)\s+){0,4}`;
+  const pair=new RegExp(`\\b${subject}\\s+${verb}(?:between\\s*${value}\\s+and\\s*${value}|from\\s*${value}\\s+to\\s*${value})`,"gi");
+  const start=Math.max(0,index-250),window=text.slice(start,index+length+100);
+  for(const m of window.matchAll(pair))for(const endpoint of m[0].matchAll(new RegExp(value,"g")))
+    if(start+m.index+endpoint.index===index&&endpoint[0].length===length)return true;
+  return false;
+}
+
+// The field reader supplies offsets in normalized paragraph text. Transfer only
+// a unique match of the two adjacent contexts; duplicate or unmatched text stays unverified.
+function refWordCitationStarts(body){
+  if(typeof DOCX_STRUCTURED_REFERENCES!=="undefined"&&DOCX_STRUCTURED_REFERENCES?.body===body&&Array.isArray(DOCX_STRUCTURED_REFERENCES.citationStarts))
+    return new Set(DOCX_STRUCTURED_REFERENCES.citationStarts);
+  const starts=new Set(),blocks=typeof DOCX_FTE_BLOCKS==="undefined"?null:DOCX_FTE_BLOCKS;
+  if(!blocks?.length||!/[[(]\d/.test(body))return starts;
+  if(refWordCitationStarts.cache?.blocks!==blocks){
+    const patterns=[];
+    for(const b of blocks)for(const f of b.referenceFields||[]){
+      if(f.instruction!=="BIBLIOGRAPHIC_CITATION"||!refNumericFieldResult(f.text)||b.text.slice(f.start,f.end)!==f.text)continue;
+      const left=b.text.slice(Math.max(0,f.start-36),f.start),right=b.text.slice(f.end,f.end+28);
+      if(left.trim().length+right.trim().length>=12||blocks.length===1)
+        patterns.push({value:left+f.text+right,offset:left.length,short:left.trim().length+right.trim().length<12});
+    }
+    refWordCitationStarts.cache={blocks,patterns};
+  }
+  for(const {value,offset,short} of refWordCitationStarts.cache.patterns){
+    if(short&&body!==blocks[0].text)continue;
+    const pos=body.indexOf(value);
+    if(pos>=0&&body.indexOf(value,pos+1)<0)starts.add(pos+offset);
+  }
+  return starts;
+}
+function refNumericFieldResult(s){
+  return /^(?:\(\s*\d[\d,;\s–—−-]*\)|\[\s*\d[\d,;\s–—−-]*\])$/.test(s);
+}
+function refIsCrystalMarker(text,index,length){
+  const raw=text.slice(index+1,index+length-1).trim();
+  if(!/^(?:[−-]?\d{3,4}|[−-]?\d(?:(?:,\s*|\s+)[−-]?\d){2,3})$/.test(raw))return false;
+  const start=text.lastIndexOf("\n",index)+1,end=text.indexOf("\n",index);
+  const paragraph=text.slice(start,end<0?text.length:end);
+  return /\b(?:Miller|XRD|diffraction|crystal(?:s|line|lographic)?|lattice|planes?|indices|orientations?|reflections?|facets?|interplanar)\b/i.test(paragraph)&&
+    (/^[−-]?\d(?:\s+[−-]?\d){2,3}$/.test(raw)||engIsCrystallographicIndex(paragraph.replace(/\[([\d,\s−-]+)\]/g,"($1)"),index-start,length,true));
+}
 function engMaskCitations(text){
   const body=typeof window.mcProjectVerifiedCitationText==="function"?window.mcProjectVerifiedCitationText(text):String(text||"");
   const blank=m=>m.replace(/[^\n]/g," ");
@@ -9787,15 +9902,17 @@ function engMaskCitations(text){
     const match=raw.match(/^(.{2,180}?)\s*(?:\(\s*((?:19|20)\d{2}[a-z]?)\s*\)|,?\s+((?:19|20)\d{2}[a-z]?)\b)/i);
     if(match) bibliographicAuthors.add(authorKey(match[1])+"|"+(match[2]||match[3]).toLowerCase());
   }
+  const wordCitations=refWordCitationStarts(body);
   const numeric=/\[[0-9\s,;–—-]{1,80}\]|\([0-9\s,;–—-]{1,80}\)/g;
   return body.replace(/⟦(?:SUPCITE|refnum):[^⟧]+⟧/g,blank).replace(numeric,(m,index)=>{
     const raw=m.slice(1,-1).trim();
+    if(wordCitations.has(index))return blank(m);
     if(refIsClassificationRange(body,index,m.length)||refIsMeasurementEndpoint(body,index,m.length))return m;
     if(!/^\d{1,4}(?:\s*[,;–—-]\s*\d{1,4})*$/.test(raw))return m;
     const left=body.slice(Math.max(0,index-90),index),right=body.slice(index+m.length,index+m.length+60);
     if(/\b(?:eq(?:uation)?s?\.?|fig(?:ure)?s?\.?|tables?|coordinates?|interval|range|values?|temperatures?|concentrations?|measurements?|ratios?|dimensions?|pH|at|between|from|to|were|was|are|is|n\s*=)\s*$/i.test(left)||/[=±×÷]\s*$/.test(left))return m;
     if(/^\s*(?:%|°|(?:mg|kg|g|mL|L|mM|M|mm|cm|m|s|h|K|Pa|kPa|MPa|eV|V|A|Hz|ppm|ppb)\b)/.test(right))return m;
-    if(m[0]==='(' && engIsCrystallographicIndex(body,index,m.length))return m;
+    if(refIsCrystalMarker(body,index,m.length)||m[0]==='('&&engIsCrystallographicIndex(body,index,m.length))return m;
     const nums=raw.match(/\d+/g).map(Number);
     if(m[0]==='(' && (!refs.size||!nums.every(n=>refs.has(n))))return m;
     if(m[0]==='(' && raw.split(/[,;]/).some(part=>{
@@ -9806,7 +9923,8 @@ function engMaskCitations(text){
       for(let n=a;n<=b;n++)if(!refs.has(n))return true;
       return false;
     }))return m;
-    if(m[0]==='(' && !/[\p{L})\]]\s*$/u.test(left))return m;
+    const afterEquation=/\b(?:eq(?:uation)?s?|eqns?)\.?\s*\d+(?:\.\d+)*[a-z]?(?:\s*(?:,|and|to|[-–—])\s*\d+(?:\.\d+)*[a-z]?)*\s+$/i.test(left);
+    if(m[0]==='(' && !/[\p{L})\]]\s*$/u.test(left)&&!afterEquation)return m;
     return blank(m);
   }).replace(/\([^()\n]{1,180}\)/g,m=>{
     // Personal author citations may disambiguate surnames with initials. Keep
@@ -10537,6 +10655,11 @@ function engSentencePeriodProtected(text,index){
   if(/\d/.test(text[index-1]||'') && /\d/.test(text[index+1]||'')) return true;
   const left=text.slice(0,index),word=(left.match(/[A-Za-z]+$/)||[''])[0];
   const right=text.slice(index+1);
+  if(/^ver$/i.test(word)&&/^\s*\d+(?:\.\d+)+\b/.test(right))return true;
+  if(/^[A-Z]$/.test(word)&&/\b[A-Z][\p{L}'’-]+\s+[A-Z]$/u.test(left)&&
+     !/\b(?:sample|reactor|group|site|specimen|model|case|series|buffer|protocol|run|class|phase|section|batch|arm|appendix|table|figure|method|condition|treatment|standard|reference|instrument|type|point)\s+[A-Z]$/i.test(left)&&
+     /^\s+(?!(?:The|This|That|These|Those|We|Our|However)\b)[A-Z][\p{L}'’-]+(?=[,\s])/u.test(right))return true;
+  if(/\b(?:[A-Z]\.)+[A-Z]$/.test(left)&&/^\s+(?:The|This|That|These|Those|We|Our|However|Next|After|Subsequently)\b/.test(right))return false;
   // Latitude/longitude labels are abbreviations only with a following
   // coordinate, not when an ordinary word happens to end a sentence.
   if(/^(?:lat|long|lon)$/i.test(word)&&/^\s*[+-]?\d{1,3}(?:\.\d+)?\s*°(?:\s*\d+(?:\.\d+)?[′’'"″]?){0,2}\s*[NSEW]\b/i.test(right)) return true;
@@ -11259,7 +11382,7 @@ function abbrLooksExplicitMixedCaseAcronym(raw){
 }
 function abbrLooksConventionalShortToken(raw){
   const s=abbrNormalizeShortDash(raw).replace(/[‘’]/g,"'");
-  if(abbrAcronymFamily(s)) return true;
+  if(abbrAcronymFamily(s)||/^(?:LC|GC|HPLC|UPLC)-MS\/MS$/.test(s)) return true;
   if(/^[A-Z]{2,}(?:-[A-Z]{2,})*$/.test(s)) return true;
   if(abbrLooksMixedCaseScientificAcronym(s)) return true;
   return false;
@@ -11335,7 +11458,19 @@ function abbrFormulaAwareLongForm(sf,cand){
 }
 function validLongForm(sf,cand){
   if(!cand)return null;
+  if(/^(?:LC|GC|HPLC|UPLC)-MS\/MS$/.test(abbrNormalizeShortDash(sf))){
+    const same=cand.trim().match(/(?:(?:ultra|high)[-\s]+performance\s+)?(?:liquid|gas)\s+chromatography(?:\s*[-–—]\s*|\s+(?:(?:coupled\s+(?:to|with)|with)\s+)?)tandem\s+mass\s+spectrometry$/i);
+    return same && abbrMatchesWordInitials(sf.split('-')[0],same[0].split(/chromatography/i)[0]+'chromatography')?same[0]:null;
+  }
   let lf=bestLongForm(abbrNormalizeShortDash(sf),cand);
+  // A backward subsequence can wrongly use both letters of "of" for O/F.
+  if(lf && ABBR_DEF_STOP_WORDS.has(lf.split(/\s+/)[0].toLowerCase())){
+    const words=cand.trim().split(/\s+/);
+    for(let i=Math.max(0,words.length-letters(sf)-3);i<words.length;i++){
+      const phrase=words.slice(i).join(" ");
+      if(!ABBR_DEF_STOP_WORDS.has(words[i].toLowerCase()) && !/[;:,.()]/.test(phrase) && abbrMatchesWordInitials(sf,phrase)){lf=phrase;break;}
+    }
+  }
   if(!lf) lf=abbrFormulaAwareLongForm(sf,cand);
   if(!lf)return null;
   const w=lf.split(/\s+/).filter(Boolean);if(w.length<1||w.length>letters(sf)+5)return null;
@@ -11447,6 +11582,7 @@ function abbrExplicitSlashDefinition(d){
 }
 function abbrDefinedExactFormMatches(text,definitions){
   const re=/(?<![\p{L}\p{N}_+⁺⁻*∗⋆\-\u2010-\u2014\u2212])([A-Za-z]{2,14}(?:[-\u2010-\u2014\u2212][A-Za-z]{2,10}){0,3})(?![\p{L}\p{N}_+⁺⁻*∗⋆\-\u2010-\u2014\u2212])/gu;
+  const tandem=/(?<![\p{L}\p{N}_/–‐‑-])((?:LC|GC|HPLC|UPLC)[‐‑–-]MS\/MS)(?![\p{L}\p{N}_/–‐‑-])/gu;
   const matches=[...String(text||'').matchAll(re)].filter(m=>(abbrLooksMixedCaseCompound(m[1])||abbrLooksExplicitMixedCaseAcronym(m[1])) &&
     (definitions||[]).some(d=>norm(d.form)===norm(m[1]) && d.validatedDefinition!==false &&
       d.definitionConfidence!=='low' && abbrDefLooksLexicalFullForm(m[1],d.long)));
@@ -11458,6 +11594,7 @@ function abbrDefinedExactFormMatches(text,definitions){
     const exact=new RegExp(`(?<![\\p{L}\\p{N}_{}])(${escapeRegExp(form).replace(/\\-/g,'-')})(?![\\p{L}\\p{N}_{}])`,'gu');
     matches.push(...String(text||'').matchAll(exact));
   }
+  for(const m of String(text||'').matchAll(tandem))if(!matches.some(x=>x.index===m.index&&x[0]===m[0]))matches.push(m);
   return matches;
 }
 
@@ -11663,7 +11800,14 @@ function collectDefs(sent,si,add){
       const normalized=abbrNormalizeShortDash(candidate);
       const fam=abbrAcronymFamily(normalized);
       const base=fam?fam.base:normalized;
-      if((!abbrLooksConventionalShortToken(base)&&!abbrLooksMixedCaseCompound(base)&&!abbrLooksExplicitMixedCaseAcronym(base))||STOPWORDS.has(norm(base))) continue;
+      if((!abbrLooksConventionalShortToken(base)&&!abbrLooksMixedCaseCompound(base)&&!abbrLooksExplicitMixedCaseAcronym(base))||(STOPWORDS.has(norm(base))&&base!=="PM")) continue;
+      const titleParts=base.match(/^([A-Z]{2,8})-([A-Z]{3,12})$/);
+      const programmeTitle=titleParts && pre.trim().match(new RegExp('(?:^|\\s)('+escapeRegExp(titleParts[1])+' (?:Programme|Program|Scheme) (?:for|of) [\\p{L}\\s,–-]{5,150})$','u'));
+      if(programmeTitle && validLongForm(titleParts[2],programmeTitle[1].slice(titleParts[1].length+1)) &&
+         !/[.!?;]/.test(programmeTitle[1])){
+        add(base,programmeTitle[1],si,'programme-title',{definitionType:'conventional_acronym',validatedDefinition:true,programmeTitle:true,shortStart:p.index+1+innerRaw.indexOf(candidate),shortEnd:p.index+1+innerRaw.indexOf(candidate)+candidate.length});
+        forwardAdded=true;continue;
+      }
       let lf=validLongForm(base,tailWords(pre,letters(base)+7));
       if(/^\s*[A-Z][A-Z0-9-]{1,14}\s*=/.test(inner)){
         // Prefer an exact whole-word expansion in value annotations: CC names
@@ -11729,7 +11873,7 @@ function collectDefs(sent,si,add){
     // measurements, conditions, figure/table metadata, and explanatory prose.
     const preObserved=(pre.trim().split(/\s+/).pop()||'').replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9'’\-]+$/g,'');
     const preTok=abbrNormalizeShortDash(preObserved);
-    if((abbrLooksConventionalShortToken(preTok)||abbrLooksMixedCaseCompound(preTok)||abbrLooksExplicitMixedCaseAcronym(preTok))&&!STOPWORDS.has(norm(preTok))&&/\s/.test(inner)&&/[A-Za-z]/.test(inner[0])){
+    if((abbrLooksConventionalShortToken(preTok)||abbrLooksMixedCaseCompound(preTok)||abbrLooksExplicitMixedCaseAcronym(preTok))&&(!STOPWORDS.has(norm(preTok))||preTok==="PM")&&/\s/.test(inner)&&/[A-Za-z]/.test(inner[0])){
       const comparisonInner=abbrDefinitionFormulaText(inner);
       if(abbrParentheticalNotDefinition(comparisonInner)||ABBR_DEF_CONDITION_LEAD_RE.test(comparisonInner)||abbrDefContainsMeasurement(comparisonInner))continue;
       const lf=validLongForm(preTok,inner);
@@ -11823,12 +11967,17 @@ function abbrCaptureConvertedParagraphs(root,before){
 }
 function abbrConvertedStructuralRecords(records){
   const projection=DOCX_ABBR_SCRIPT_PROJECTION;
-  if(projection?.blocks!==DOCX_FTE_BLOCKS||!projection.cleanupByRecord)return records;
   return (records||[]).map(rec=>{
-    const converted=projection.cleanupByRecord.get(rec.index);
-    if(!converted)return rec;
-    const b=rec.block||{};
-    return {...rec,cleanupProjections:[...(rec.cleanupProjections||[rec.text,b.text,b.abbrSourceText,b.abbrSymbolText,b.abbrText]),converted]};
+    const block=rec.block||{};
+    const converted=projection?.blocks===DOCX_FTE_BLOCKS?projection.cleanupByRecord?.get(rec.index):null;
+    // Some converters put every nonempty table cell on a separate line.
+    // Mask only the entire known grid, never an isolated cell or ordinary paragraph.
+    const grid=block.type==="table"&&(
+      Array.isArray(block.cellMatrix)?block.cellMatrix.flat():
+      block.rows>=2&&block.cols>=2&&String(block.text||"").includes("\t")?block.text.split(/[\t\n]/):[]);
+    const cells=grid&&grid.map(x=>String(x||"").trim()).filter(Boolean);
+    if(!converted&&!(cells?.length>=4))return rec;
+    return {...rec,cleanupProjections:[...(rec.cleanupProjections||[rec.text,block.text,block.rawStructuralText,block.abbrSourceText,block.abbrSymbolText,block.abbrText]),converted,cells?.length>=4?cells.join("\n"):null]};
   });
 }
 function abbrCaptureWordScripts(root){
@@ -12060,7 +12209,7 @@ function abbrParentheticalNotDefinition(inner){
   if(ABBR_COUNTRY_HINT_RE && ABBR_COUNTRY_HINT_RE.test(s) && /,/.test(s)) return true;
   return false;
 }
-function abbrTrimScientificDescriptorContext(raw){
+function abbrTrimScientificDescriptorContext(raw,preserveDifference=false){
   let s=String(raw||"").replace(/\s+/g," ").trim();
   if(!s) return "";
 
@@ -12077,6 +12226,7 @@ function abbrTrimScientificDescriptorContext(raw){
     parameter head, so an unrelated preposition does not arbitrarily truncate
     the phrase.
   */
+  const reportedDifferences=/\b(?:show(?:s|ed|ing)?|reveal(?:s|ed|ing)?|indicat(?:e[sd]?|ing)|demonstrat(?:e[sd]?|ing)|report(?:s|ed|ing)?|observ(?:e[sd]?|ing)|found|find(?:s|ing)?|there\s+(?:are|were))\s+(?:no\s+)?(?:(?:(?:statistically\s+)?significant|marked|clear|substantial)\s+)?differences\s+in\s+/gi;
   const boundaryPatterns=[
     /\b(?:is|was|are|were)\s+(?:the|an?)\s+/gi,
     /\bdepends?\s+on\s+(?:the\s+|an?\s+)?/gi,
@@ -12086,6 +12236,7 @@ function abbrTrimScientificDescriptorContext(raw){
     /\b(?:reduction|increase|decrease|change|variation|difference|improvement|decline)\s+in\s+/gi,
     /\b(?:measurement|determination|calculation|estimation|evaluation|analysis|assessment|quantification|breakdown)\s+of\s+/gi,
     /\b(?:yields|yielded|underpins?|underpinned)\s+(?:the\s+|an?\s+)?/gi,
+    reportedDifferences,
     /\b(?:show(?:s|ed|ing)?|reveal(?:s|ed|ing)?|indicat(?:e[sd]?|ing)|demonstrat(?:e[sd]?|ing))\s+(?:the\s+|an?\s+)?/gi,
     /\b(?:evaluate|evaluated|measure|measured|determine|determined|calculate|calculated|estimate|estimated|quantify|quantified|assess|assessed|characteri[sz]e|characteri[sz]ed)\s+(?:the\s+)?/gi,
     /\b(?:(?:can|could|may|might|will|would|is|was|were|are)\s+be\s+)?(?:used\s+to\s+)?(?:find\s+out|determine|estimate|calculate|evaluate|measure|obtain|derive)\s+(?:the\s+)?/gi,
@@ -12100,7 +12251,8 @@ function abbrTrimScientificDescriptorContext(raw){
     const hits=[...s.matchAll(re)];
     if(!hits.length) continue;
     const h=hits[hits.length-1];
-    const cand=s.slice(h.index+h[0].length).trim();
+    const end=h.index+h[0].length;
+    const cand=s.slice(re===reportedDifferences&&preserveDifference?h.index+h[0].search(/differences\s+in\s+$/i):end).trim();
     if(cand && ABBR_SCI_PARAMETER_HEAD_RE.test(cand)) s=cand;
   }
 
@@ -12118,7 +12270,7 @@ function abbrTrimScientificDescriptorContext(raw){
   return s.replace(/^[,;\s]+|[,;\s]+$/g,"");
 }
 
-function abbrScientificDescriptorBefore(sent,parenIndex){
+function abbrScientificDescriptorBefore(sent,parenIndex,preserveDifference){
   const rawPre=String(sent||"").slice(0,parenIndex);
   // Table cells and Word text boxes frequently arrive as newline-delimited
   // fragments inside one sentence-like block. Preserve that structural boundary
@@ -12171,7 +12323,7 @@ function abbrScientificDescriptorBefore(sent,parenIndex){
   // Remove common finite/action lead-ins while preserving the terminal noun phrase.
   pre=pre.replace(/^(?:was|were|is|are|be|been|being|measured|determined|calculated|estimated|obtained|reported|defined|denoted|termed)\s+(?:as\s+)?/i,"").trim();
 
-  return abbrTrimScientificDescriptorContext(pre);
+  return abbrTrimScientificDescriptorContext(pre,preserveDifference??/^\(\s*(?:[δΔ∆]|[^() ]+_\{diff\})/u.test(String(sent).slice(parenIndex)));
 }
 function abbrScientificDefinitionType(sf,descriptor){
   const sk=abbrScientificSymbolKey(sf);
@@ -12301,7 +12453,15 @@ function collectScientificDefs(sent,si,add){
         if(!strictBalanced){
           const dtype=abbrScientificDefinitionType(innerPrimary,descriptor);
           const shortStart=p.index+1+p[1].indexOf(innerPrimary);
+          // A report of differences can name either a difference quantity or the
+          // underlying quantity. Keep both source spans for same-scope evidence.
+          let differenceForms=null;
+          if(/\bdifferences\s+in\b/i.test(sent.slice(0,p.index))){
+            const full=abbrScientificDescriptorBefore(sent,p.index,true),short=abbrScientificDescriptorBefore(sent,p.index,false);
+            if(full!==short)differenceForms={full,short};
+          }
           add(innerPrimary,descriptor,si,"scientific-parenthetical",{
+            differenceForms,
             definitionType:dtype,
             shortStart,
             shortEnd:shortStart+innerPrimary.length,
@@ -12354,6 +12514,9 @@ function abbrLooksFormulaLikeDefinitionRhs(raw){
   return false;
 }
 
+function abbrWithoutAssignedValue(value){
+  return value.replace(/\s*,?\s+(?:which|that)\s+(?:was|is|were|are)\s+(?:assumed|taken|set|fixed|assigned)\s+(?:(?:to\s+be|to|at|as|equal\s+to)\s+)?[-+−]?(?:\d+(?:\.\d+)?|\.\d+)(?:\s*\/\s*\d+(?:\.\d+)?)?(?:\s+(?:for|in|across|throughout)\s+[^.;]+)?\s*$/i,"").trim();
+}
 function collectScientificReverseDefs(sent,si,add){
   // Explicit separators are strong declaration syntax: SBET = BET surface area
   // or SBET: BET surface area. A local note marker may precede the short form
@@ -12363,7 +12526,7 @@ function collectScientificReverseDefs(sent,si,add){
   const sym=`(?:${ABBR_WORD_SYMBOL_SOURCE}|[α-ωΑ-Ω][A-Za-zα-ωΑ-Ω]{0,3}|[A-Za-z][A-Za-z0-9_]{0,14})`;
   const sepRe=new RegExp(`(?:^|[;,.]\\s*)${lead}\\(?\\s*(${sym})\\s*\\)?\\s*(=|:)\\s*([^;,.]{2,140})`,'gu'); let m;
   while((m=sepRe.exec(sent))!==null){
-    const sf=m[1], separator=m[2], descriptor=m[3].trim();
+    const sf=m[1], separator=m[2], descriptor=abbrWithoutAssignedValue(m[3]);
     if(separator==='=' && abbrLooksFormulaLikeDefinitionRhs(descriptor)) continue;
     // Ratio notation such as C:N ratio is not a declaration "C: N ratio".
     if(separator===':' && sf.length===1 && /^[A-Z]\b/i.test(descriptor) && /\bratio\b/i.test(descriptor)) continue;
@@ -12379,8 +12542,8 @@ function collectScientificReverseDefs(sent,si,add){
   while((m=verbRe.exec(sent))!==null){
     // The equation-list parser owns paired declarations (X and Y represent ...).
     // Do not also assign the unsplit descriptor to the second symbol alone.
-    if(new RegExp(`${sym}\\s+and\\s*$`,"u").test(sent.slice(0,m.index))) continue;
-    const sf=m[1], descriptor=m[2].trim();
+    if(new RegExp(`${sym}(?:\\s*,\\s*and|\\s+and)\\s*$`,"u").test(sent.slice(0,m.index))) continue;
+    const sf=m[1], descriptor=abbrWithoutAssignedValue(m[2]);
     const explicitScript=abbrWordSymbolKey(sf) && /[A-Za-z]{2,}/.test(descriptor) && !abbrLooksFormulaLikeDefinitionRhs(descriptor);
     if(!abbrLooksScientificShort(sf) || (!explicitScript && !abbrDescriptorLooksScientific(descriptor))) continue;
     const start=m.index+m[0].toLowerCase().indexOf(sf.toLowerCase());
@@ -12395,9 +12558,9 @@ function collectScientificReverseDefs(sent,si,add){
   // fabricated definitions.
   const copularRe=new RegExp(`(?<![\\p{L}\\p{N}_{}])(${sym})\\s+(?:is|was|are|were)\\s+(?:the\\s+|an?\\s+)?([^.;]{2,160}?)(?=,\\s+(?:and\\s+)?${sym}\\s+(?:(?:is|was|are|were)\\s+|(?:stands?\\s+for|denotes?|represents?|refers?\\s+to|corresponds?\\s+to)\\s+)|[.;]|$)`,"giu");
   while((m=copularRe.exec(sent))!==null){
-    if(new RegExp(`${sym}\\s+and\\s*$`,"u").test(sent.slice(0,m.index))) continue;
+    if(new RegExp(`${sym}(?:\\s*,\\s*and|\\s+and)\\s*$`,"u").test(sent.slice(0,m.index))) continue;
     const sf=m[1];
-    let descriptor=m[2].trim().replace(/[,;:\s]+$/g,"");
+    let descriptor=abbrWithoutAssignedValue(m[2].replace(/[,;:\s]+$/g,""));
     // Explanatory qualifiers after the lexical definition do not belong to the
     // parameter name: "WI was the weightage of the KPIs, equal to 1/7...".
     descriptor=descriptor.split(/,\s*(?=(?:equal\b|which\b|where\b|respectively\b|corresponding\b|with\b))/i)[0].trim();
@@ -12443,7 +12606,9 @@ function collectEquationNomenclatureDefs(sent,si,add){
   // cannot erase an earlier definition, and comparisons are never definitions.
   const s=String(sent||"");
   const lead=s.replace(/^\s*(?:\([^)]{0,30}\)|\d+[.)]|eq(?:uation)?\.?\s*\d*[.:)]?)\s*/i,"");
-  if(!/^where\b/i.test(lead))return;
+  const where=/^where\b/i.test(lead);
+  if(!where&&!/\brespectively\b/i.test(lead))return;
+  const intro=lead.match(/^(?:(?:where|here|in this (?:study|work|equation))\b\s*[,;:]?\s*)?/i)[0];
   const SYM=`(?<![\\p{L}\\p{N}_])(?!(?:respectively|however|therefore|thus|here|in|contrast|turn)\\b)(?:${ABBR_WORD_SYMBOL_SOURCE}|[α-ωΑ-Ω][A-Za-zα-ωΑ-Ω]{0,3}|[A-Za-z][A-Za-z0-9_]{0,14})`;
   const VERB="(?:is\\s+defined\\s+as|is\\s+the|is|are|was|were|represents?|denotes?|indicates?|designates?|signif(?:y|ies)|refers?\\s+to|corresponds?\\s+to|stands?\\s+for)";
   const connective="(?:however|therefore|thus|nevertheless|nonetheless|moreover|furthermore|consequently|hence|accordingly|otherwise|instead|also|here|in\\s+(?:addition|contrast|turn|particular))";
@@ -12490,7 +12655,7 @@ function collectEquationNomenclatureDefs(sent,si,add){
   const scan=projected.join("").replace(new RegExp(`([,;]\\s*)${connective}\\b\\s*,?\\s*(?=${SYMBOLS}\\s+${VERB}\\b)`,"giu"),(all,separator)=>separator+" ".repeat(all.length-separator.length));
   const validJoin=new RegExp(`^\\s*(?:[,;]\\s*(?:(?:and|but|whereas|while)\\s+|${connective}\\b\\s*,?\\s*)?|(?:and|whereas|while)\\s+)$`,"i");
   const clauses=[];let m;
-  clauseRe.lastIndex=s.length-lead.length+lead.match(/^where\b\s*[,;:]?\s*/i)[0].length;
+  clauseRe.lastIndex=s.length-lead.length+intro.length;
   while((m=clauseRe.exec(scan))!==null){
     const rawStart=m.index+m[0].length-m[2].length;
     let descEnd=m.index+m[0].length;
@@ -12509,7 +12674,7 @@ function collectEquationNomenclatureDefs(sent,si,add){
       .replace(/[,;:\s]+$/,"").trim();
     // Explicit equation/experiment context does not rename the physical quantity.
     // Other qualifiers (of the membrane, at constant pressure, etc.) stay intact.
-    desc=abbrStripDefinitionUnitNote(desc);
+    desc=abbrStripDefinitionUnitNote(abbrWithoutAssignedValue(desc));
     const lexical=desc.replace(/\s+(?:in\s+(?:this|the\s+(?:present|current))\s+equation|during\s+(?:this|the)\s+(?:experiment|measurement|test|analysis)|under\s+(?:dry|wet|ambient)\s+conditions)\s*$/i,"");
     if(lexical!==desc&&validDescriptor(lexical))desc=lexical;
     const respectively=/(?:,\s*|\s+)respectively$/i.test(desc)||/\brespectively\s*,?\s*$/i.test(s.slice(m.index,rawStart));
@@ -12518,9 +12683,10 @@ function collectEquationNomenclatureDefs(sent,si,add){
     const symbols=splitList(m[1]);
     clauses.push({sym1:symbols[0],sym2:symbols[1]||null,symbols,desc,respectively,unsupportedAnnotation:unsupportedAnnotations.some(b=>b.start>m.index&&b.end<rawStart),at:m.index,longStart,end:m.index+m[0].length,join:s.slice(clauses.at(-1)?.end||0,m.index)});
   }
-  if(!clauses.length||!/^where\s*[,;:]?\s*$/i.test(s.slice(s.length-lead.length,clauses[0].at)))return;
+  if(!clauses.length||s.slice(s.length-lead.length+intro.length,clauses[0].at).trim())return;
   const commaList=clauses.length>=2&&clauses.slice(1).some(c=>/^\s*,\s*(?:(?:and|but|while|whereas)\s+)?$/i.test(c.join));
   for(const c of clauses){
+    if(!where&&(!c.respectively||c.symbols.length<2))continue;
     const descriptorHead=c.desc.split(/\s+(?:which|that)\b/i)[0];
     if(/\b(?:no\s+longer|neither|different\s+from|equal\s+to|similar\s+to|equivalent\s+to)\b/i.test(descriptorHead)||/^(?:[a-z]+ly\s+)*(?:unlike\b|(?:in)?dependent\s+(?:on|upon|of)\b|(?:an?\s+)?(?:(?:(?:strictly|monotonically)\s+)?(?:increasing|decreasing)\s+)?function\s+of\b|(?:similar|comparable|equivalent|equal|different)\s+in\s+[a-z]+(?:\s+[a-z]+){0,2}\s+(?:to|from)\b|(?:[a-z]+(?:ed|able)|given|shown|read|taken|kept|held|set|drawn|left|put|made|brought|sent|built|found|bound|close|proportional|distinct)\s+(?:(?:(?:[a-z]+ly|constant|steady|unchanged)\s+){0,3}(?:to|from|with|by|using|in|as|against|alongside|on|off|during|through|throughout|under|at)\b|(?:[a-z]+ly\s+){0,3}(?:constant|steady|unchanged)\s*$))/i.test(descriptorHead))continue;
     if(c.unsupportedAnnotation||!c.desc||c.desc.length<2||/^[~≈+−-]?(?:\d|\.\d)/.test(c.desc)||/\b(?:than|is|are|was|were|has|have|had|be|been|being|can|could|may|might|must|will|would|should|if|when|where|which|that|not|never)\b/i.test(descriptorHead))continue;
@@ -12821,6 +12987,13 @@ function abbrLooksDisplayedEquationLine(line){
   // A true semantic declaration such as "Vp = micropore volume" should remain
   // available to the notation-definition logic. Formula-like right-hand sides
   // are structural equation content and belong to the equation checker instead.
+  // Strip only a terminal equation label. Word may insert U+2061, the
+  // function-application character, between a function and its arguments.
+  const core=rhs.replace(/\s*\(\s*eq(?:uation)?\.?\s*\d+(?:\.\d+)*\s*\)\s*\.?\s*$/i,"").trim().replace(/\.$/,"");
+  if(/^(?:max|min|sum|mean|median|log|ln|exp|sin|cos|tan|sqrt)\s*\u2061?\s*\([\p{L}\p{N}\p{M}\s.,_+−*/×·^(){}\u2061-]+\)$/iu.test(core)){
+    let depth=0;
+    if([...core.slice(core.indexOf("("))].every((ch,i,a)=>{depth+=(ch==="(")-(ch===")");return depth>0||depth===0&&i===a.length-1;})&&depth===0)return true;
+  }
   if(abbrLooksFormulaLikeDefinitionRhs(rhs)) return true;
 
   // Compact symbolic ratios/products such as "R = V/I" contain only one binary
@@ -13233,7 +13406,7 @@ function prepareAbbreviationBody(rawText){
         const r=records[i],s=abbrScopeText(r);
         if(abbrScopeMajorHeadingStrength(r)>=70 && !abbrScopeIsFrontMatterText(s)){
           let line=abbrScopeFindRecordLine(lines,r,0);
-          if(line<0 && abbrScopeIsKnownBodyHeading(s)){
+          if(line<0 && (abbrScopeIsKnownBodyHeading(s) || (abbrScopeHeadingLevel(r)===0 && abbrScopeIsTopLevelNumberedHeading(s)))){
             // Recover a removed body heading from its first retained paragraph.
             for(let j=i+1;j<Math.min(records.length,i+16);j++){
               if(abbrScopeIsHeading(records[j])) break;
@@ -13262,12 +13435,27 @@ function prepareAbbreviationBody(rawText){
     }
   }
 
+  // Consume an explicitly labelled disclosure and its administrative continuation
+  // before any headings disappear. A new heading or unrelated prose ends it.
+  let disclosure=false;
+  const disclosureLabel=/^(?:\d+(?:\.\d+)*\.?\s+)?(?:declaration(?:s)?\s+of\s+(?:(?:competing\s+)?interests?|(?:the\s+)?(?:use\s+of\s+)?generative\s+(?:AI|artificial\s+intelligence)(?:\s+and\s+AI[- ]assisted\s+technolog(?:y|ies))?(?:\s+in\s+(?:the\s+)?(?:writing|manuscript\s+preparation)(?:\s+process)?)?)|(?:generative\s+)?AI[- ]use\s+disclosure)(?=\s*(?:[.:–—]|$))/i;
+  const disclosureField=/^(?:funding|data\s+availability(?:\s+statement)?|competing\s+interests?|conflicts?\s+of\s+interest)\s*[.:]/i;
+  const disclosureProse=/^(?:during\s+(?:the\s+)?preparation\s+of\s+(?:this|the)\s+(?:work|article|manuscript)|(?:the\s+)?authors?\s+(?:declare|acknowledge|used|did\s+not\s+use|reviewed|take\s+responsibility)|after\s+using\s+these\s+(?:tools|services)|(?:no\s+(?:generative\s+)?AI(?:[- ]assisted)?\s+(?:tools?|technolog(?:y|ies))|(?:generative\s+)?AI[- ]assisted\s+tools?)\s+(?:was|were))\b/i;
+  lines=lines.map(line=>{
+    const value=line.trim();if(!value)return line;
+    if(disclosureLabel.test(value)){disclosure=true;return "";}
+    if(disclosure&&(disclosureField.test(value)||disclosureProse.test(value)||
+      /^(?:in\s+(?:preparing|editing|writing|drafting)\s+(?:this|the)\s+(?:manuscript|article|paper|work)\b|(?:generative\s+)?AI(?:[- ]assisted\s+tools?)?\s+(?:was|were)\s+used\b[^.!?]{0,100}\b(?:spelling|grammar|language|readability|writing|proofread\w*)\b)/i.test(value)))return "";
+    disclosure=false;return line;
+  });
+
   // Keep headings available for scope detection, then mask their own source
   // occurrences. Header/footer strings must never act as a body-text blacklist.
   lines=engMaskStructuralParagraphs(lines.join("\n"),DOCX_STRUCTURAL_PARAGRAPHS||[],r=>{
     const s=String(r.text||"");
     if(abbrScopeStartsWithAbstract(s)||isReferenceHeading(s)) return false;
-    return (engIsStructuralProseExcludedType(r.type)&&r.type!=="OTHER_STRUCTURAL")||engIsWordStructuralExclusion(r.block);
+    return (engIsStructuralProseExcludedType(r.type)&&r.type!=="OTHER_STRUCTURAL")||engIsWordStructuralExclusion(r.block)||
+      (r.block?.hasMath&&!r.block.equationSegments?.length&&engLooksLikeDisplayedEquationRecord(r)&&abbrLooksDisplayedEquationLine(s));
   }).split("\n");
 
   // Metadata/structural lines that may still occur later.
@@ -13849,7 +14037,34 @@ function abbrExplicitDefinitionEvidence(sent,index,raw){
   return false;
 }
 
+let abbrSourceNames={companies:new Set(),aliases:new Set()};
+function abbrDocumentNames(text){
+  const companies=new Set(),aliases=new Set(),places=new Set(),brands=new Set();
+  for(const m of text.matchAll(/\b([A-Z]{2,12})\s+(?:\([A-Z][\p{L} .-]{1,35}\)\s*)?(?:Limited|Ltd\.?|Inc\.?|Corporation)\b/gu))companies.add(m[1]);
+  for(const m of text.matchAll(/\b((?:[A-Z][\p{L}-]+(?:\s+(?:of|and|the))?\s+){1,8})([A-Z][\p{L}-]+)\s*\(([A-Z]{2,10})\s+\2\)/gu)){
+    const initials=m[1].trim().split(/\s+/).filter(x=>/^[A-Z]/.test(x)).map(x=>x[0]).join("");
+    if(initials.endsWith(m[3]))aliases.add(m[3]+" "+m[2]);
+  }
+  for(const m of text.matchAll(/\b([A-Z]{2,12})\s+([A-Z][a-z]+)\s+(?:Limited|Ltd\.?|Corporation)\b/g))brands.add(m[1]+" "+m[2]);
+  for(const m of text.matchAll(/\b([A-Z][a-z]+) ((?:[A-Z][a-z]+ ){1,4}[A-Z][a-z]+) \(\1[-‑–]([A-Z]{2,8})\)/g))
+    if(m[2].split(" ").map(x=>x[0]).join("")===m[3])places.add(m[1]+"-"+m[3]);
+  return {companies,aliases,places,brands};
+}
+function abbrSourceNameUse(sent,index,raw){
+  const before=sent.slice(Math.max(0,index-120),index),after=sent.slice(index+raw.length);
+  if(abbrSourceNames.companies.has(raw) && (
+    /^\s*(?:\([A-Z][a-z]+\)\s+Limited|Ltd\.?|Limited\b|Inc\.?|Corporation\b|['’]s\b|\(\s*n\.d\.\s*\)|,\s*n\.d\.)/.test(after)||
+    /^\s+(?:plants?|sites?|operations?|wastewaters?|facilities|Engineer-in-Charge|R&D|installs|lists|requires|states|wishes|is requested|has (?:commissioned|set|posed)|will receive|can (?:compress|apply|take)|may use)\b/i.test(after)||
+    /\b(?:submitted to|proposal to|issued by|requested by|consultation with|from|for|at|to|by|with|employees of|elsewhere in|ask)\s+$/i.test(before)))return true;
+  const next=after.match(/^\s+([A-Z][\p{L}-]+)/u)?.[1];
+  if(next&&(abbrSourceNames.brands?.has(raw+" "+next)||abbrSourceNames.aliases.has(raw+" "+next)||(next==="Campus"&&[...abbrSourceNames.aliases].some(x=>x.startsWith(raw+" ")))))return true;
+  if(/^[A-Z]{7,}$/.test(raw) && /^\s+(?:pilot|project|programme)\s*,\s*[A-Z]/.test(after))return true;
+  if(/\[$/.test(before)&&/^\]\s*,\s*(?:19|20)\d\d/.test(after)&&bestLongForm(raw,before.slice(0,-1).split("(").pop().trim()))return true;
+  const place=before.match(/\b([A-Z][a-z]+)[-‑–]$/)?.[1];
+  return !!place && !!abbrSourceNames.places?.has(place+"-"+raw);
+}
 function abbrIsNamedMissionOccurrence(sent,index,raw){
+  if(abbrSourceNameUse(sent,index,raw))return true;
   if(!/^(?:TERRA|AQUA)$/.test(raw))return false;
   const before=String(sent||'').slice(Math.max(0,index-180),index),after=String(sent||'').slice(index+raw.length,index+raw.length+100),near=before+raw+after;
   if(!/\bNASA\b/i.test(near)||!/\b(?:satellites?|missions?|spacecraft)\b/i.test(near))return false;
@@ -13890,6 +14105,12 @@ function abbrIsCorporateAuthorYearOccurrence(sent,index,raw){
 }
 
 const ABBR_CURRENCY_CODES=new Set(["USD","EUR","GBP","INR","JPY","CNY","AUD","CAD","CHF","SGD","HKD","NZD","AED","SAR","KRW","ZAR","BRL","MXN","RUB","TRY"]);
+function abbrTechnicalPmUse(sent,index,declared=false){
+  const left=sent.slice(0,index),right=sent.slice(index+2);
+  if(/(?:^|\s)(?:\d{1,2}(?:[:.]\d{2})?|[ap]\.?m\.?)\s*$/i.test(left)||/^\s+(?:programme|program|scheme)\b/i.test(right))return false;
+  return declared || /^\s+(?:concentrations?|levels?|measurements?|samples?|emissions?|particles?|fractions?|exposure|filters?)\b/i.test(right) ||
+    /\b(?:collect(?:ed|ing)|measur(?:ed|ing)|monitor(?:ed|ing)|quantif(?:ied|ying)|sampl(?:ed|ing))\s+(?:the\s+)?$/i.test(left);
+}
 function abbrIsCurrencyCodeOccurrence(sent,index,raw){
   const code=String(raw||"").toUpperCase();
   if(!ABBR_CURRENCY_CODES.has(code)) return false;
@@ -13902,6 +14123,8 @@ function abbrIsCurrencyCodeOccurrence(sent,index,raw){
 
 function abbrClassifyCandidateOccurrence(sent,index,raw,protectedSpans){
   const explicitAbbr=abbrExplicitDefinitionEvidence(sent,index,raw);
+  if(raw==="MATLAB" && !explicitAbbr && (/^\s+(?:model|software|code|script|toolbox|release|version|R20\d{2}[ab])\b/i.test(sent.slice(index+raw.length)) ||
+    /\b(?:using|in|with)\s*$/i.test(sent.slice(0,index))))return {kind:"software_name",instrumentScore:10};
   let instrumentScore=0, instrumentKind=null;
   for(const sp of protectedSpans||[]){
     if(abbrSpanContains(sp,index,raw.length)){
@@ -14169,7 +14392,7 @@ function abbrIsMeasurementUnitOccurrence(sent,index,raw,definition=null){
   const token=String(raw||"").trim();
   // Horsepower is a unit in a numeric pump/motor rating, not a globally exempt acronym.
   if(/^hp$/i.test(token) && !definition && /(?:^|[^A-Za-z])\d+(?:\.\d+)?\s*$/.test(String(sent||'').slice(0,index)) &&
-    /\b(?:pumps?|motors?|engines?|horsepower|power|ratings?)\b/i.test(String(sent||'').slice(Math.max(0,index-60),index+token.length+60)))return true;
+    /\b(?:pumps?|motors?|engines?|aerators?|compressors?|horsepower|power|ratings?)\b/i.test(String(sent||'').slice(Math.max(0,index-60),index+token.length+60)))return true;
   // A qualifier does not change a known unit into an abbreviation: for
   // example, 0.12 m³ MJ_{HC}−1. Require a complete numeric measurement and
   // compositional unit parse; a defined R_{ct} or an unmeasured V_{x} stays
@@ -14192,7 +14415,7 @@ function abbrIsMeasurementUnitOccurrence(sent,index,raw,definition=null){
   const before=String(sent||"").slice(0,index);
   const end=index+String(raw||"").length;
   if(/(?:^|[^A-Za-z])[-+]?\d+(?:\.\d+)?(?:\s*[×x]\s*10\s*\^?[-−]?\d+)?\s*$/.test(before)) return true;
-  if(/\b(?:in|expressed\s+in|reported\s+in|measured\s+in|units?\s+of)\s*$/i.test(before)) return true;
+  if((definition?/\b(?:(?:expressed|reported|measured|given)\s+in|units?\s+of)\s*$/i:/\b(?:in|units?\s+of)\s*$/i).test(before)) return true;
   const prev=abbrUnitTokenBefore(sent,index);
   if(prev){ try{if(isUnitExpr(`${prev.token}${prev.op}${token}`)) return true;}catch(_e){} }
   const next=abbrUnitTokenAfter(sent,end);
@@ -14427,7 +14650,7 @@ function abbrIsAtomicTechniqueComposite(raw){
   // These hyphenated forms denote one analytical/characterisation technique.
   // If undefined, the whole term should be checked once rather than requiring
   // artificial definitions of internal fragments such as FE + SEM or GC + MS.
-  return /^(?:FT-IR|FE-SEM|HR-TEM|HR-SEM|HR-STEM|AC-HAADF|HAADF-STEM|GC-MS|LC-MS|HPLC-MS|UPLC-MS|ICP-MS|ICP-OES|MALDI-TOF)$/.test(s);
+  return /^(?:FT-IR|FE-SEM|HR-TEM|HR-SEM|HR-STEM|AC-HAADF|HAADF-STEM|GC-MS|LC-MS|HPLC-MS|UPLC-MS|ICP-MS|ICP-OES|MALDI-TOF|SEM-EDS|(?:LC|GC|UPLC|HPLC)-MS\/MS)$/.test(s);
 }
 function abbrCompositeParts(raw){
   const s=String(raw||"").trim();
@@ -14645,6 +14868,9 @@ function abbrFindClearApostrophePlural(text,base){
 }
 
 /* ---------- Core analysis ---------- */
+function abbrFrequencySuggestion(abbr,count){
+  return {abbr,optionalFrequency:true,msg:`Used only ${count===1?"once":"twice"} in eligible prose. If the abbreviation does not help readers, consider spelling out the term.`,snip:null};
+}
 function analyze(rawText, title, standardSet, skipRefs, skipTables){
   // Establish the bibliography boundary from the ORIGINAL manuscript before any
   // abbreviation-specific preprocessing can remove or alter structural headings.
@@ -14743,7 +14969,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
     // Lexical scientific descriptors remain names regardless of capitalization.
     if(dtype!=="conventional_acronym"&&!abbrDescriptorLooksScientific(rhs)&&(symbolicAlias||abbrLooksFormulaLikeDefinitionRhs(rhs)))return;
     if(dtype==="conventional_acronym"){
-      if(meta.validatedDefinition!==true || !abbrDefLooksLexicalFullForm(sf,lf)) return;
+      if(meta.validatedDefinition!==true || (!meta.programmeTitle && !abbrDefLooksLexicalFullForm(sf,lf))) return;
     }else if(abbrDefUnitLikeToken(sf)){
       // A unit symbol can resemble a legitimate one-letter scientific variable.
       // Reject it as a scientific definition only when THIS exact occurrence is
@@ -14756,7 +14982,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
     }
     const canonicalForm=dtype==="conventional_acronym"?abbrCanonicalAbbreviationForm(sf):String(sf||"").trim();
     const key=dtype==="conventional_acronym"?abbrCanonicalAbbreviationKey(sf):(abbrScientificSymbolKey(sf)||norm(sf));
-    if(!key || STOPWORDS.has(key)) return;
+    if(!key || (STOPWORDS.has(key)&&!(key==="PM"&&dtype==="conventional_acronym"&&meta.validatedDefinition))) return;
     const g=G(key);
     const shortStart=Number.isFinite(meta.shortStart)?Number(meta.shortStart):null;
     const shortEnd=Number.isFinite(meta.shortEnd)?Number(meta.shortEnd):null;
@@ -14767,6 +14993,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
     const candidate={
       form:canonicalForm,long:lf,sent:s2,kind,definitionType:dtype,
       semanticDefinition:!!meta.semanticDefinition,
+      ...(meta.differenceForms?{differenceForms:meta.differenceForms}:{}),
       observedForm:meta.observedForm||String(sf||"").trim(),
       grammaticalPlural:!!meta.grammaticalPlural,
       validatedDefinition:dtype!=="conventional_acronym"?true:meta.validatedDefinition===true,
@@ -14911,6 +15138,16 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
     collectEquationNomenclatureDefs(sent,si,addDefinition);
   });
 
+  for(const group of groups.values())for(const d of group.defs){
+    if(!d.differenceForms)continue;
+    const {full,short}=d.differenceForms;
+    const explicit=group.defs.filter(other=>other!==d&&!other.differenceForms&&sentenceDefinitionScope[other.sent]===sentenceDefinitionScope[d.sent]);
+    const supports=name=>explicit.some(other=>other.long.toLowerCase()===name.toLowerCase());
+    if(supports(full))d.long=full;
+    else if(supports(short))d.long=short;
+    else if(!/\b(?:no|significant|marked|clear|substantial)\s+differences\s+in\b/i.test(sentences[d.sent].slice(0,d.shortStart)))d.long=full;
+    delete d.differenceForms;
+  }
   for(const rec of DECLARED_ABBR_MAP.values()){
     if(!abbrWordSymbolKey(rec.form)) continue;
     const key=abbrScientificSymbolKey(rec.form);
@@ -14965,7 +15202,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
       if(mixedCompounds.some(c=>m.index>=c.index && m.index+m[0].length<=c.index+c[0].length)) continue;
       if(sent[m.index-1]==="}" || /[_^]\{/.test(sent.slice(m.index+m[0].length,m.index+m[0].length+2)) || scriptedSymbols.some(x=>m.index>=x.index && m.index+m[0].length<=x.index+x[0].length)) continue;
       const raw=m[1], key=norm(raw);
-      if(STOPWORDS.has(key)) continue;
+      if(STOPWORDS.has(key) && !(raw==="PM"&&abbrTechnicalPmUse(sent,m.index,!!groups.get(key)?.defs?.length))) continue;
       if(raw==="CN" && /\bcoordination\b/i.test(sent.slice(Math.max(0,m.index-100),m.index)) && /^\s*=\s*\d/.test(sent.slice(m.index+raw.length)) && groups.get(key)?.defs?.some(d=>!/\bcoordination\s+number\b/i.test(d.long))){
         quantityMeaningFindings.push({raw,sent:si,index:m.index});continue;
       }
@@ -15020,7 +15257,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
       if(sciContainer && sciContainer.key!==key) continue;
 
       if(abbrIsCorporateAuthorYearOccurrence(sent,m.index,raw) || (!groups.get(key)?.defs?.length && abbrIsNamedMissionOccurrence(sent,m.index,raw))) continue;
-      if(abbrIsCurrencyCodeOccurrence(sent,m.index,raw) || abbrIsMeasurementUnitOccurrence(sent,m.index,raw) || abbrIsStrainIdentifierOccurrence(sent,m.index,raw) || abbrIsChemicalStereodescriptorOccurrence(sent,m.index,raw)) continue;
+      if(abbrIsCurrencyCodeOccurrence(sent,m.index,raw) || abbrIsMeasurementUnitOccurrence(sent,m.index,raw,groups.get(key)?.defs?.[0]) || abbrIsStrainIdentifierOccurrence(sent,m.index,raw) || abbrIsChemicalStereodescriptorOccurrence(sent,m.index,raw)) continue;
       const role=abbrClassifyCandidateOccurrence(sent,m.index,raw,protectedInstrumentSpans);
       if(role.kind!=="technical_abbreviation") continue;
       const after=sent.slice(m.index+raw.length);
@@ -15185,6 +15422,8 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
       const std=isStd(g.key) && !explicitDefinitionOverride && !(representativeOcc?.ratioNotation || [...g.forms.keys()].some(f=>String(f).includes(":")));
       const declared=DECLARED_ABBRS.has(g.key)||!!listDef;
       const count=g.occ.length;
+      const numberedLabels=g.key==="WP" && g.defs.some(d=>/^work[\s-]+packages?$/i.test(d.long))
+        ?sentences.flatMap((sent,si)=>[...sent.matchAll(/(?<![\p{L}\p{N}_])WP[1-9]\d{0,2}(?![\p{L}\p{N}_])/gu)].map(m=>({form:m[0],sent:si,index:m.index}))) : [];
       const defined=g.defs.length>0;
       if(!std && !defined && !declared && g.occ.every(o=>o.inParen)) return;
 
@@ -15251,10 +15490,14 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
       const scientificDefinition=!!firstDef && firstDef.definitionType && firstDef.definitionType!=="conventional_acronym";
       const earlierLong=(!listDef && reverseDefined) ? findEarlierLongForm(sentences,longForm,defSent) : null;
       const explicitSlashIdentity=conventionalDefinitions.some(d=>d.form===disp&&abbrExplicitSlashDefinition(d));
-      const compositeResolution=(!std && !listDef && !declared && !defined && !explicitSlashIdentity && !abbrIsAtomicTechniqueComposite(disp))
+      const programmeUse=!std && !defined && !declared && /^[A-Z]{2,8}[-‐‑–][A-Z]{3,12}$/.test(disp) && g.occ.some(o=>{
+        const sent=sentences[o.sent],lead=sent.slice(Math.max(0,o.index-180),o.index);
+        return /\b(?:programme|program|scheme)\s+for\s+[\p{L}\s,–-]{4,135},\s*$/iu.test(lead) || /^\s+(?:government\s+)?(?:programme|program|scheme)\b/i.test(sent.slice(o.index+o.raw.length));
+      });
+      const compositeResolution=(!programmeUse && !std && !listDef && !declared && !defined && !explicitSlashIdentity && !abbrIsAtomicTechniqueComposite(disp))
         ? abbrResolveCompositeCandidate(disp,groups,firstSent,sentences,standardSet)
         : null;
-      const nestedResolution=(!std && !listDef && !declared && !defined && !explicitSlashIdentity && !compositeResolution)
+      const nestedResolution=(!programmeUse && !std && !listDef && !declared && !defined && !explicitSlashIdentity && !compositeResolution)
         ? abbrResolveNestedCandidate(disp,groups,firstSent,sentenceDefinitionScope)
         : null;
 
@@ -15343,6 +15586,9 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
           // Consistency is assessed collectively after all listed terms have
           // been analysed.
           status="ok";
+        }else if(programmeUse){
+          status="warn";
+          warnings.push({abbr:disp,programmeName:true,msg:`Verify the complete programme name at first use and introduce it as one name (${disp}).`,snip:snippet});
         }else if(!defined){
           if(!abbrShouldReportUndefinedCandidate(g,disp,{std,listDef,declared})){
             return;
@@ -15445,9 +15691,9 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
       // Do not issue low-use warnings for an abbreviation intentionally included
       // in an explicit abbreviation list.
       const inferredPairedComponent=orderedDefs.some(d=>d.definitionRole==="paired_component_definition");
-      if(!std && !declared && defined && count<=2 && !reverseDefined && !scientificDefinition && !inferredPairedComponent){
+      if(!std && !declared && defined && count<=2 && !reverseDefined && !scientificDefinition && !inferredPairedComponent && !numberedLabels.length && !g.occ.some(o=>/^\s*\)?\s+(?:scheme|programme|program)\b/i.test(sentences[o.sent].slice(o.index+o.raw.length)))){
         if(status==="ok") status="warn";
-        warnings.push({abbr:disp, msg:`Used only ${count} time${count===1?"":"s"}. Abbreviate only terms that recur; otherwise spell it out each time.`, snip:null});
+        infos.push(abbrFrequencySuggestion(disp,count));
       }
 
       const apoHit=abbrFindClearApostrophePlural(text,disp);
@@ -15587,6 +15833,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
         rows.push({
           base:disp,
           longForm,
+          ...(numberedLabels.length?{numberedLabels}:{}),
           count,
           firstUseOK,
           status,
@@ -16141,7 +16388,7 @@ function renderReport(r){
   // review-state, and search logic can still use them. The visible abbreviation
   // report is now the unified table below.
   document.getElementById("errors-wrap").innerHTML=section("Critical errors",r.errors,"err",targets);
-  document.getElementById("warnings-wrap").innerHTML=section("Review items",r.warnings,"warn",targets);
+  document.getElementById("warnings-wrap").innerHTML=section("Review items",abbrGroupTableReminders(r.warnings),"warn",targets);
   document.getElementById("infos-wrap").innerHTML=section("Editorial notes",r.infos,"info",targets);
   document.getElementById("ledger-wrap").innerHTML=abbrReportingLedger(r,built);
   document.getElementById("std-wrap").innerHTML=`<details class="mc-report-details"><summary>Recognized terms and check details</summary><p>${escapeHtml(checkDetails)}</p>`+
@@ -16223,6 +16470,9 @@ function abbrIssueStatusLabel(msg,priority,it=null,row=null){
   let m;
   if(it?.scopeUncertain && !it?.semanticConflict)
     return it?.duplicateDefinition?"Repeated definitions need review":"Section boundaries need review";
+  if(it?.tableGroup)return "Local definition review";
+  if(it?.programmeName)return "Check programme name";
+  if(it?.optionalFrequency)return msg.split(" in eligible prose")[0];
   if(it?.abstractOnlyDefinition)return "Not defined at first use in the main text";
   if(/List of Abbreviations not detected/i.test(msg)) return "List of Abbreviations not detected";
   if(/used in (?:Table|Figure) .*without a local definition|local (?:table|figure) definition/i.test(msg)) return "Local definition review";
@@ -16340,7 +16590,7 @@ function abbrFindingDescriptor(it,row,label=""){
   if(/Defined\s+\d+\s+times|defined\s+\d+\s+times within/i.test(msg))
     return row?.longForm||it?.rowLongForm||"Definition locations";
 
-  if(/Used only\s+\d+\s+time/i.test(msg))
+  if(it?.optionalFrequency || /Used only\s+\d+\s+time/i.test(msg))
     return row?.longForm||it?.rowLongForm||"Main text";
 
   if(/Begins a sentence|sentence does not open with an abbreviation/i.test(msg))
@@ -16392,7 +16642,8 @@ function abbrRecommendationForIssue(it,priority,row=null){
   // Keep the qualified instruction when section boundaries are unresolved;
   // generic duplicate wording would incorrectly tell authors to delete a definition.
   if(it?.scopeUncertain && !it?.semanticConflict)return msg;
-  if(it?.abstractOnlyDefinition)return msg;
+  if(it?.abstractOnlyDefinition||it?.programmeName||it?.tableGroup)return msg;
+  if(it?.optionalFrequency)return msg;
   const expansion=abbrRecommendationExpansion(row,it,a);
   const thesisContext=abbrRecommendationUsesThesisContext();
   let m;
@@ -16497,6 +16748,21 @@ function abbrDefinitionStatusText(x){
 function abbrContextKey(ctx){
   return abbrPlainHtml(ctx?.html||ctx?.snip||"").toLowerCase();
 }
+function abbrGroupTableReminders(warnings){
+  const groups=new Map(),out=[];
+  for(const item of warnings||[]){
+    if(!item.structuralSelfContainment||item.structuralTableNotation||item.localScopeType!=="table"||!item.rowLongForm){out.push(item);continue;}
+    const key=item.abbr+"|"+item.rowLongForm;
+    if(!groups.has(key)){groups.set(key,[]);out.push(groups.get(key));}
+    groups.get(key).push(item);
+  }
+  return out.map(x=>{
+    if(!Array.isArray(x))return x;
+    if(x.length===1)return x[0];
+    const scope=[...new Set(x.map(i=>i.localScopeLabel))].join(", ");
+    return {...x[0],tableGroup:true,localScopeLabel:scope,msg:"If tables must be self-contained, define "+x[0].abbr+" locally in "+scope+". This is a local table check.",contexts:x.flatMap(i=>i.contexts||[])};
+  });
+}
 function abbrBuildReportingRows(r){
   const map=new Map(), generalNotes=[];
   (r?.rows||[]).forEach(x=>{
@@ -16543,7 +16809,7 @@ function abbrBuildReportingRows(r){
     }
   };
   (r?.errors||[]).forEach(it=>addIssue(it,"critical"));
-  (r?.warnings||[]).forEach(it=>addIssue(it,"review"));
+  abbrGroupTableReminders(r?.warnings).forEach(it=>addIssue(it,"review"));
   (r?.infos||[]).forEach(it=>addIssue(it,"style"));
 
   const rank={critical:0,review:1,style:2};
@@ -16804,7 +17070,7 @@ function abbrReportingLedger(r,built=abbrBuildReportingRows(r)){
     const priorities=["critical","review","style"].filter(p=>(x.priorityCounts?.[p]||0)>0).join(" ");
     const review=(x.priorityCounts?.critical||0)+(x.priorityCounts?.review||0)+(x.priorityCounts?.style||0)>0;
     const groupRows=pairs.length;
-    const useText=Number.isFinite(Number(x.count))&&Number(x.count)>0?Number(x.count):"—";
+    const useText=x.numberedLabels?.length?`${x.count} generic; ${x.numberedLabels.length} numbered`:Number.isFinite(Number(x.count))&&Number(x.count)>0?Number(x.count):"—";
 
     const commonAttrs=`data-abbr-review="${review?"1":"0"}" data-abbr-priority="${escapeHtml(x.priority)}" data-abbr-priorities="${escapeHtml(priorities)}" data-abbr-critical-count="${x.priorityCounts?.critical||0}" data-abbr-review-count="${x.priorityCounts?.review||0}" data-abbr-style-count="${x.priorityCounts?.style||0}"`;
 
@@ -16845,14 +17111,15 @@ function reportText(r){
   L.push(`Non-standard abbreviations: ${r.totalAbbr}`);
   L.push(`References excluded: ${r.refExcluded?"yes":(r.refRequested?"requested, none found":"no")}`);
   L.push(`Table lines removed: ${r.tableLinesRemoved||0}`);
-  L.push(`Errors: ${r.errors.length} | Warnings: ${r.warnings.length} | Suggestions: ${r.infos.length}`);
+  L.push(`Errors: ${r.errors.length} | Review items: ${abbrGroupTableReminders(r.warnings).length} | Suggestions: ${r.infos.length}`);
   L.push("");
-  const plainContext=x=>String(x||"").replace(/<[^>]+>/g," ").replace(/&nbsp;/gi," ").replace(/&amp;/gi,"&").replace(/&lt;/gi,"<").replace(/&gt;/gi,">").replace(/&#39;/g,"'").replace(/&quot;/g,'"').replace(/\s+/g," ").trim();
+  const plainContext=x=>String(x||"").replace(/<\/?mark>/gi,"").replace(/<[^>]+>/g," ").replace(/&nbsp;/gi," ").replace(/&amp;/gi,"&").replace(/&lt;/gi,"<").replace(/&gt;/gi,">").replace(/&#39;/g,"'").replace(/&quot;/g,'"').replace(/\s+/g," ").trim();
   const blk=(t,arr)=>{
     if(!arr.length) return;
     L.push(t.toUpperCase());
     arr.forEach(i=>{
-      L.push(`  - ${i.abbr&&i.abbr!=="units"?"["+i.abbr+"] ":""}${i.msg}`);
+      const message=/^Begins a sentence\./i.test(i.msg)?abbrRecommendationForIssue(i,"review"):i.msg;
+      L.push(`  - ${i.abbr&&i.abbr!=="units"?"["+i.abbr+"] ":""}${message}`);
       if(Array.isArray(i.contexts)&&i.contexts.length){
         i.contexts.forEach((ctx,idx)=>{
           const p=plainContext(ctx.html||"");
@@ -16865,10 +17132,11 @@ function reportText(r){
     });
     L.push("");
   };
-  blk("Critical errors",r.errors); blk("Review items",r.warnings); blk("Editorial notes",r.infos);
+  blk("Critical errors",r.errors); blk("Review items",abbrGroupTableReminders(r.warnings)); blk("Editorial notes",r.infos);
   L.push("ABBREVIATION LEDGER");
   L.push("  Abbrev | Full form | Uses | Definition status");
-  r.rows.forEach(x=>L.push(`  ${x.base} | ${x.longForm||"NOT DEFINED"} | ${x.count} | ${x.definitionSource==="list"?"Defined in list":(x.definitionSource==="scientific"?(x.firstUseOK?"Scientific definition":"Scientific definition later"):(x.definitionSource==="prose"?(x.firstUseOK?"Defined in main text":"Defined after first use"):(x.definitionSource==="nested"?`Inferred from ${x.nestedFrom||"earlier term"}`:(x.definitionSource==="declared"?"Accepted declaration":(x.longForm?(x.firstUseOK?"Defined":"Definition found later"):"-")))))}`));
+  const programmeReviews=new Set(r.warnings.filter(i=>i.programmeName).map(i=>i.abbr));
+  r.rows.forEach(x=>L.push(`  ${x.base} | ${x.longForm||(programmeReviews.has(x.base)?"Verify complete programme name":"NOT DEFINED")} | ${x.numberedLabels?.length?`${x.count} generic; ${x.numberedLabels.length} numbered`:x.count} | ${x.definitionSource==="list"?"Defined in list":(x.definitionSource==="scientific"?(x.firstUseOK?"Scientific definition":"Scientific definition later"):(x.definitionSource==="prose"?(x.firstUseOK?"Defined in main text":"Defined after first use"):(x.definitionSource==="nested"?`Inferred from ${x.nestedFrom||"earlier term"}`:(x.definitionSource==="declared"?"Accepted declaration":(x.longForm?(x.firstUseOK?"Defined":"Definition found later"):"-")))))}`));
   if(r.standardSeen.length){ L.push(""); L.push("Treated as standard: "+r.standardSeen.join(", ")); }
   if(r.scientificNotationSeen?.length){ L.push(""); L.push("Recognized scientific symbols and notation: "+r.scientificNotationSeen.join(", ")+" — Raman band intensities, peak areas, or their ratios. No abbreviation definition is required for these occurrences."); }
   return L.join("\n");
@@ -17767,7 +18035,7 @@ async function extractDocxStructuredReferences(buf){
     for(let j=mi+1;j<metas.length;j++){
       const p=metas[j];
       if(!p.text) continue;
-      if(!p.bibStyle && !p.bibContainer && refIsEndHeading(p.text)){end=p.i;break;}
+      if(!p.bibStyle && !p.bibContainer && (refIsEndHeading(p.text)||(refNumberedPeer(m.text,p.text)&&/heading/i.test(p.style)))){end=p.i;break;}
       if(isReferenceHeading(p.text)){
         if(!preview.some(q=>q.bibStyle||q.bibContainer||refHasEntryEvidence(q.text))){end=p.i;break;}
         continue; // repeated running heading after actual entries
@@ -17888,10 +18156,10 @@ async function extractDocxStructuredReferences(buf){
     }
     cur=null;
   };
-  const strongAuthorStart=txt=>refStartsAuthor(txt) && /\b(?:19|20)\d{2}[a-z]?\b/i.test(txt) && refScore(txt)>=4;
+  const strongAuthorStart=txt=>refDatedAuthorParagraph(txt) || refStartsAuthor(txt) && /\b(?:19|20)\d{2}[a-z]?\b/i.test(txt) && refScore(txt)>=4;
   const publisherMetaOnly=txt=>/^\s*(?:\[\s*)?(?:CrossRef|PubMed|PubMed\s+Central|PMC|Google\s+Scholar|Scopus|Web\s+of\s+Science|WoS|MEDLINE)(?:\s*\])?\s*$/i.test(txt);
 
-  for(let i=startIndex;i<children.length;i++){
+  for(let i=startIndex;i<(hi>=0?headingEnd:children.length);i++){
     const el=children[i],ln=(el.localName||"").toLowerCase();
     if(ln!=="p") continue;
     const txt=fteXmlText(el).replace(/\s+/g," ").trim();
@@ -17937,7 +18205,7 @@ async function extractDocxStructuredReferences(buf){
     if(n!=null){
       finish(); cur={num:n,raw:rest||txt,numSource:literal!=null?"literal":"word_auto",runs:paraRuns.slice()}; continue;
     }
-    if(cur && (publisherMetaOnly(txt) || refIsEntryContinuation(cur.raw,txt))){
+    if(cur && !refDatedAuthorParagraph(txt) && (publisherMetaOnly(txt) || refIsEntryContinuation(cur.raw,txt))){
       cur.raw=(cur.raw+" "+txt).replace(/\s+/g," ").trim(); cur.runs=(cur.runs||[]).concat(paraRuns); continue;
     }
     if(bibStyle || bibContainer){
@@ -17974,10 +18242,24 @@ async function extractDocxStructuredReferences(buf){
   }
 
   const refs=entries.map(e=>e.num!=null?`${e.num}. ${e.raw}`:e.raw).join("\n");
-  const bodyText=children.slice(0,bodyEndIndex).map(el=>fteXmlText(el).replace(/\s+/g," ").trim()).filter(Boolean).join("\n");
+  const bodyParts=[],citationStarts=[];
+  const clean=t=>String(t).replace(/\s+/g," ").replace(/\s+([,.;:!?])/g,"$1").trim();
+  let offset=0;
+  for(const el of children.slice(0,bodyEndIndex)){
+    const line=fteXmlText(el).replace(/\s+/g," ").trim();
+    if(!line)continue;
+    if(["fldChar","fldSimple"].some(k=>el.getElementsByTagNameNS(FTE_W_NS,k).length)){
+      for(const f of fteWordReferenceFields(el,null,clean)){
+        if(f.instruction==="BIBLIOGRAPHIC_CITATION"&&refNumericFieldResult(f.text)&&line.slice(f.start,f.end)===f.text)
+          citationStarts.push(offset+f.start);
+      }
+    }
+    bodyParts.push(line);offset+=line.length+1;
+  }
+  const bodyText=bodyParts.join("\n");
   return {
     found:true,heading:hi>=0?heading:null,entries,refs,count:entries.length,
-    body:bodyText,method:mode,styleName:styleName||null,
+    body:bodyText,citationStarts,method:mode,styleName:styleName||null,
     confidence:mode==="word_bibliography_style"?99:98,
     numberingNormalized,
     numberingSequence:numberedEntries.length===entries.length?entries.map(e=>e.num):null
@@ -18776,11 +19058,26 @@ function fteFigureCaption(text){
   }catch(e){}
   return null;
 }
+// Only an explicit table label or reference admits Roman numbering. Validate
+// the entire printed token; ordinary words and Roman-looking fragments stay prose.
+function fteRomanNumber(id){
+  if(typeof id!=="string"||!/^(?=[IVXLCDM]+$)M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})$/.test(id))return 0;
+  const value={I:1,V:5,X:10,L:50,C:100,D:500,M:1000};
+  return [...id].reduce((n,c,i)=>n+(value[c]<(value[id[i+1]]||0)?-value[c]:value[c]),0);
+}
+function fteRomanLabel(n){
+  let label="";
+  for(const [v,c] of [[1000,"M"],[900,"CM"],[500,"D"],[400,"CD"],[100,"C"],[90,"XC"],[50,"L"],[40,"XL"],[10,"X"],[9,"IX"],[5,"V"],[4,"IV"],[1,"I"]]){
+    while(n>=v){label+=c;n-=v;}
+  }
+  return label;
+}
 function fteTableCaption(text){
   try{
     const x=engParseCaptionLead(text);
     if(x && x.kind==="TABLE_CAPTION"){
-      const id=fteCanonId(String(x.id||"").replace(/^(?:SI|ESI)-?/i,"S"));
+      const id=fteCanonId(String(x.id||"").replace(/^(?:SI|ESI)-?/i,"S"))||
+        (fteRomanNumber(x.id)&&new RegExp("\\s"+x.id+"$").test(x.raw)?x.id:null);
       return id?{id,raw:x.raw}:null;
     }
   }catch(e){}
@@ -19266,7 +19563,7 @@ function fteGeneratedFigureTableListInfo(blocks){
   return {mask,kindByIndex};
 }
 function fteIsGeneratedFigureTableListParagraph(block,index,listInfo){
-  if(block?.wordContentRole||listInfo?.mask?.has(index)) return true;
+  if(block?.wordContentRole||listInfo?.mask?.has(index)||[block?.style,block?.styleName,block?.styleId,...(block?.styleChain||[])].some(mcIsTocEntryStyle)) return true;
   const b=block||{};
   if(fteIsGeneratedFigureTableListStyle(b.style||"")) return true;
   return false;
@@ -20187,10 +20484,13 @@ async function readFile(file){
         // multiple <ol> elements and omit `start`, which otherwise restarts each
         // fragment at 1. Word XML remains the primary source; this only hardens the
         // plain-text fallback.
+        const nextSection=[...box.querySelectorAll("h1,h2,h3,h4,h5,h6")].find(h=>(refHeadingEl.compareDocumentPosition(h)&Node.DOCUMENT_POSITION_FOLLOWING)&&
+          (refNumberedPeer(refHeadingEl.textContent,h.textContent)||refIsEndHeading(h.textContent)));
         let nextRefListNum=1;
         [...box.querySelectorAll("ol")].forEach(ol=>{
           if(!(refHeadingEl.compareDocumentPosition(ol)&Node.DOCUMENT_POSITION_FOLLOWING)) return;
 
+          if(nextSection&&(nextSection.compareDocumentPosition(ol)&Node.DOCUMENT_POSITION_FOLLOWING))return;
           const explicitStart=parseInt(ol.getAttribute("start")||"",10);
           let n=nextRefListNum;
           if(Number.isFinite(explicitStart) && explicitStart>0){
@@ -20468,6 +20768,10 @@ function refIsEntryContinuation(previous,line){
 }
 
 /* Author parser revision: supports surname+initials, initials+surname, complex surnames and corporate authors. */
+function refDatedAuthorParagraph(line){
+  const m=String(line||"").match(/^(.{2,360}?)\.\s*\((?:(?:19|20)\d{2}[a-z]?(?:,\s+[A-Z][a-z]+(?:\s+\d{1,2})?)?|n\.d\.)\)\.\s+\S/u);
+  return !!m && (refStartsAuthor(line) || /(?:\b(?:institute|commission|ministry|limited|university|organization|framework|society|association|agency|council|department|government|board|authority)\b)/i.test(m[1]));
+}
 function refSplitList(text){
   const t=text.replace(/\r/g,"").trim();
 
@@ -20585,7 +20889,7 @@ function refSplitList(text){
     const begins=refStartsAuthor(l)&&!institutionTail(l,rawLines[i+1]);
     if(!cur){ cur=l; continue; }
     if(refIsNumericDoiContinuation(cur,l)){cur=cur.trimEnd()+l;continue;}
-    if(begins && (independentlyStartsReference(l,cur) || complete(cur))){
+    if(refDatedAuthorParagraph(l) || (begins && (independentlyStartsReference(l,cur) || complete(cur)))){
       merged.push(cur.replace(/\s+/g," ").trim());
       cur=l;
     }else{
@@ -21551,7 +21855,7 @@ const REF_NJ_REPORT_RE=/\b(?:technical\s+(?:report|paper|note|publication|bullet
    Working Paper, Report, Bulletin, Circular, Technical Note, or Series. */
 const REF_NJ_NUMBERED_SERIES_RE=/\b(?:technical\s+(?:paper|report|note|publication|bulletin|memorandum)|research\s+(?:paper|report|publication)|working\s+paper|discussion\s+paper|occasional\s+paper|staff\s+paper|policy\s+paper|white\s+paper|briefing\s+paper|report|bulletin|circular|monograph|publication|paper\s+series|report\s+series|technical\s+series)\s*[,;:]?\s*(?:series\s*)?(?:no\.?|number|#)\s*[:#-]?\s*[A-Z0-9][A-Z0-9./-]{0,40}\b/iu;
 const REF_NJ_GUIDE_RE=/\b(?:guideline(?:s)?|guidance|protocol|code\s+of\s+practice|recommendations?|action\s+plan|roadmap|strategy|policy\s+document|national\s+policy|framework)\b/iu;
-const REF_NJ_STANDARD_RE=/\b(?:ISO|IEC|ASTM|ANSI|DIN|BS(?:\s*EN)?|EN|BIS|IS)\s*[-:]?\s*[A-Z]?\d{2,}(?:[-:.][A-Z0-9]+)*\b/iu;
+const REF_NJ_STANDARD_RE=/\bASCE\/EWRI\s+\d{1,3}-\d{2,4}\b|\b(?:ISO|IEC|ASTM|ANSI|DIN|BS(?:\s*EN)?|EN|BIS|IS)\s*[-:]?\s*[A-Z]?\d{2,}(?:[-:.][A-Z0-9]+)*\b/iu;
 const REF_NJ_THESIS_RE=/\b(?:Ph\.?D\.?|doctoral|doctorate|master'?s|M\.?Tech\.?|M\.?Sc\.?)\s+(?:thesis|dissertation)|\b(?:thesis|dissertation)\b/iu;
 const REF_NJ_PREPRINT_RE=/\b(?:arXiv|bioRxiv|medRxiv|ChemRxiv|SSRN|Research\s+Square|preprints?\.org|preprint)\b/iu;
 const REF_NJ_DATA_RE=/\b(?:\[?data\s*set\]?|dataset|Zenodo|Figshare|Dryad|Mendeley\s+Data|data\s+repository)\b/iu;
@@ -22143,8 +22447,10 @@ function refParseNonJournalEntry(raw, detection, baseAuthorInfo){
     standardNumber=refNJStandardNumber(rawTrim);
     let t=rawTrim;
     if(standardNumber) t=t.replace(standardNumber,'').replace(/^[.\s:;-]+/,'');
-    title=refNJFirstSentenceTitle(standardNumber?t:rest);
-    issuingOrganisation=refNJInstitutionFromTail(rawTrim,corporateAuthor,title)||(/\bISO\b/.test(standardNumber||'')?'International Organization for Standardization':null);
+    const authorDate=rawTrim.match(/^([^().]{3,150})\.\s*\((?:19|20)\d{2}[a-z]?\)\.\s+(.+)$/u);
+    const namedIssuer=authorDate&&/^(?:American Society of Civil Engineers|International Organization for Standardization)$/i.test(authorDate[1])?authorDate[1]:null;
+    title=refNJFirstSentenceTitle(namedIssuer?authorDate[2].replace(/\s*\([^()]+\)\.?\s*$/,""):standardNumber?t:rest);
+    issuingOrganisation=namedIssuer||refNJInstitutionFromTail(rawTrim,corporateAuthor,title)||(/\bISO\b/.test(standardNumber||'')?'International Organization for Standardization':null);
     sourceRegion=issuingOrganisation;
   } else if(type==='dataset'){
     title=refNJFirstSentenceTitle(rest)?.replace(/\s*\[\s*Data\s*set\s*\]\s*$/iu,'')||null;
@@ -24674,6 +24980,8 @@ function refFERecoverMissingJournalDelimiter(meta,expectedYear=null){
 
   // DOI/URL content is external to the core year-volume-locator tail.
   try{s=refStripDoiUrl(s).replace(/[\s,;:]+$/,"").trim();}catch(_e){}
+  // A separate trailing note is still reviewed against the original reference.
+  s=s.replace(/(\d)\.\s+\p{Lu}[\s\S]*$/u,"$1");
 
   const yearSrc=String.raw`((?:19|20)\d{2}[a-z]?)`;
   const volumeSrc=String.raw`(\d{1,6})`;
@@ -24940,6 +25248,8 @@ function refFEJournalMetadata(reg,legacy){
   // Record the reconciled metadata fields and their spans.
   const recordMeta=(fieldType,value,confidence,rule,avoid=[])=>{
     if(value==null) return null;
+    // A digit inside the publication year is not a volume, issue or locator.
+    avoid=[...avoid,refFEField(reg,"year")];
     let local=refFEFindLocalValueSpan(region,value);
     let conflict;
     while(local && (conflict=avoid.find(f=>f && region.start+local.start<f.end && f.start<region.start+local.end)))
@@ -25852,6 +26162,7 @@ function refCAApplyAncillaryReview(parsed,issues,idx,label){
   const items=parsed?.ancillaryBibliographicText||[];
   if(!items.length) return;
   const text=items.map(x=>`“${x.value}”`).join(", ");
+  const barePair=items.length===1&&/^\d{1,6}\s+\d{1,4}$/u.test(items[0].value);
 
   // This is intentionally a review finding, not a critical error. Without a
   // target journal/style example, unusual repository/database/platform text
@@ -25861,7 +26172,9 @@ function refCAApplyAncillaryReview(parsed,issues,idx,label){
     idx,
     label,
     ancillaryBibliographicText:true,
-    msg:`Unexpected bibliographic element detected: ${text}. Review whether this repository, database, platform, or other trailing element is required by the target reference style.`
+    msg:barePair
+      ?`Unresolved numeric reference metadata: ${text}. Check which bibliographic fields these numbers represent and whether a separator is missing.`
+      :`Unexpected bibliographic element detected: ${text}. Review whether this repository, database, platform, or other trailing element is required by the target reference style.`
   });
 }
 
@@ -25987,17 +26300,12 @@ function refSBFinalReconcile(parsed,reg){
   if((reg.final.volume||reg.final.pages||reg.final.articleNumber) && parsed.hasSource)
     reg.authoritativeJournalMetadata=true;
 
-  // After the core and type-specific fields are final, preserve any remaining
-  // tail text as ancillary rather than letting it distort field boundaries.
-  refCAExtractAncillary(parsed,reg);
-
   reg.diagnostics={
     ...(reg.diagnostics||{}),
     semanticReferenceType:parsed.semanticReferenceType||parsed.type,
     semanticBlocks:(reg.semanticBlocks||[]).length,
     semanticLocator:reg.semanticLocator||null,
     coreBibliographicCluster:reg.coreBibliographicCluster||null,
-    ancillaryBibliographicText:reg.ancillaryBibliographicText||[],
     articleNumberWithoutVolume:
       !!(reg.final.articleNumber && !reg.final.volume),
     orderedJournalTail:
@@ -26216,6 +26524,8 @@ function refFEFinalReconcile(parsed){
   if(out){
     if(out.structured&&isPubYearIssue(out.structured.issue)) out.structured.issue=null;
     if(reg&&reg.final&&reg.final.issue==null&&!(out.structured&&out.structured.issue)) out.hasIssue=false;
+    // Determine leftover text only after the final volume, issue and locator spans exist.
+    reg.diagnostics.ancillaryBibliographicText=refCAExtractAncillary(out,reg);
   }
   return out;
 }
@@ -26556,25 +26866,10 @@ function refIsClassificationRange(text,index,length){
   return refIsClassificationRange.cache.spans.has(`${index}:${length}`);
 }
 
-function refIsMeasurementEndpoint(text,index,length){
-  // A local pH assignment is data; "reported in" and "determined using"
-  // remain attribution cues. Share this decision with style and readability.
-  if(/^(?:\(\s*[+−-]?\d+(?:\.\d+)?\s*\)|\[\s*[+−-]?\d+(?:\.\d+)?\s*\])$/.test(text.slice(index,index+length))&&
-     /\bpH(?:\s+(?:levels?|values?))?\s+(?:(?:was|were|is|are)\s+)?(?:(?:recorded|reported|measured)\s+as\s+|(?:adjusted|set|raised|lowered|increased|decreased|declined)\s+to\s+|(?:maintained|held|kept|observed|measured|recorded)\s+at\s+|(?:observed|determined|found)(?:\s+to\s+be|\s+(?:was|were|is|are))\s+)?$/i.test(text.slice(Math.max(0,index-160),index)))return true;
-  // Both endpoints need one explicit measurement subject and a connected
-  // between/and or from/to construction; nearby measurement prose is insufficient.
-  const value=String.raw`(?:\(\s*[+−-]?\d+(?:\.\d+)?\s*\)|\[\s*[+−-]?\d+(?:\.\d+)?\s*\])`;
-  const subject=String.raw`(?:values?|measurements?|concentrations?|temperatures?|ratios?|pH|volumes?|mass|masses|lengths?|widths?|heights?|depths?)`;
-  const verb=String.raw`(?:(?:was|were|is|are|lay|lie|lies|ranged|varied|fell|rose|changed|increased|decreased|remained|[a-z]+ly)\s+){0,4}`;
-  const pair=new RegExp(`\\b${subject}\\s+${verb}(?:between\\s*${value}\\s+and\\s*${value}|from\\s*${value}\\s+to\\s*${value})`,"gi");
-  const start=Math.max(0,index-250),window=text.slice(start,index+length+100);
-  for(const m of window.matchAll(pair))for(const endpoint of m[0].matchAll(new RegExp(value,"g")))
-    if(start+m.index+endpoint.index===index&&endpoint[0].length===length)return true;
-  return false;
-}
-
 function detectCiteStyle(body){
-  const count=re=>[...body.matchAll(re)].filter(m=>!refIsClassificationRange(body,m.index,m[0].length)&&!refIsMeasurementEndpoint(body,m.index,m[0].length)).length;
+  const verified=refWordCitationStarts(body);
+  const count=re=>[...body.matchAll(re)].filter(m=>verified.has(m.index)||
+    !refIsClassificationRange(body,m.index,m[0].length)&&!refIsMeasurementEndpoint(body,m.index,m[0].length)&&!refIsCrystalMarker(body,m.index,m[0].length)).length;
   const br=count(/\[\d{1,3}(?:[–,\-]\s*\d{1,3})*\]/g);
   const par=count(/\(\d{1,3}(?:[,–\-]\s*\d{1,3})*\)/g);
   const ay=(body.match(/\([A-Z][A-Za-z'’-]+(?:\s+(?:et al\.?|and|&)\s+[A-Z][A-Za-z'’-]+)?,?\s*(?:19|20)\d{2}[a-z]?\)/g)||[]).length
@@ -26587,6 +26882,10 @@ function detectCiteStyle(body){
 
 const AFTER_REF=/^\s*(\d+\.?\s*)?(appendix|appendices|supplementary(\s+(information|materials?|data))?|supporting\s+information|author\s+contributions?|author\s+statements?|credit\s+author|conflicts?\s+of\s+interest|competing\s+interests?|declarations?(\s+of\s+interest)?|data\s+availability|funding|acknowledge?ments?|notes?)\s*:?\s*$/i;
 
+function refNumberedPeer(heading,next){
+  const a=String(heading||"").match(/^\s*(\d+)\.\s+\S/),b=String(next||"").match(/^\s*(\d+)\.\s+([^\n]{2,120})$/);
+  return !!a && !!b && +b[1]===+a[1]+1 && !/[.!?;]$/.test(b[2]) && !refHasEntryEvidence(b[2]);
+}
 function refIsEndHeading(text){
   const t=String(text||"").replace(/\s+/g," ").trim().replace(/^\d+(?:\.\d+)*\.?\s+/,"");
   if(AFTER_REF.test(t)) return true;
@@ -26666,8 +26965,13 @@ function refSplitManuscript(text){
   const linePositions=new Map();
   lines.forEach((line,i)=>{const key=lineKey(line);if(key){if(!linePositions.has(key))linePositions.set(key,[]);linePositions.get(key).push(i);}});
   const sourcePositions=b=>[...new Set([b?.text,b?.rawStructuralText,b?.abbrSourceText,b?.abbrSymbolText].flatMap(t=>linePositions.get(lineKey(t))||[]))];
+  let referenceHeading="";
   sourceBlocks.forEach((heading,i)=>{
-    if(!refIsEndHeading(heading?.text)||sourcePositions(heading).length) return;
+    if(isReferenceHeading(heading?.text||""))referenceHeading=heading.text;
+    const peer=refNumberedPeer(referenceHeading,heading?.text) && (heading.outlineLvl!=null||/heading/i.test(heading.style||""));
+    if(!refIsEndHeading(heading?.text)&&!peer)return;
+    const positions=sourcePositions(heading);
+    if(positions.length){if(peer&&positions.length===1)sourceEndLines.add(positions[0]);return;}
     let before=i-1,after=i+1;
     while(before>=Math.max(0,i-8)&&!lineKey(sourceBlocks[before]?.text)) before--;
     while(after<Math.min(sourceBlocks.length,i+9)&&!lineKey(sourceBlocks[after]?.text)) after++;
@@ -26688,7 +26992,7 @@ function refSplitManuscript(text){
     for(let j=fromLine;j<lines.length;j++){
       const l=lines[j].trim();
       if(!l) continue;
-      if(refIsEndHeading(l)||fteFigureSectionBoundary(l)||sourceEndLines.has(j)){ endLine=j; break; }
+      if(refIsEndHeading(l)||(refNumberedPeer(lines[fromLine-1],l)&&/\b(?:checklist|internal|appendix|acknowledg[e]?ments|supplementary)\b/i.test(l))||fteFigureSectionBoundary(l)||sourceEndLines.has(j)){ endLine=j; break; }
       if(isReferenceHeading(l)){
         if(!preview.some(refHasEntryEvidence) && !refHasEntryEvidence(preview.join(" "))){endLine=j;break;}
         continue;
@@ -27183,10 +27487,15 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
     const atom='(?:\\(\\s*'+ids+'\\s*\\)|\\[\\s*'+ids+'\\s*\\]|'+id+')';
     const structural=new RegExp('\\b(?:Equations?|Eqs?|Eqns?|Figures?|Figs?|Tables?|Tabs?|Sections?|Secs?|Chapters?|Chaps?|Appendix|Appendices)\\b\\.?\\s*(?:(?:Nos?|Numbers?)\\.?\\s*|#\\s*)?'+atom+'(?:'+sep+atom+')*(?![a-z0-9])','gi');
     // Normalize one-codepoint range marks without changing source offsets.
-    const citationText=bodyText.replace(/[−‐‑‒－―﹣]/g,'-').replace(structural,m=>' '.repeat(m.length));
+    const wordCitations=refWordCitationStarts(bodyText);
+    const citationText=bodyText.replace(/[−‐‑‒－―﹣]/g,'-').replace(structural,(match,index)=>{
+      if(!wordCitations.size)return " ".repeat(match.length);
+      return match.replace(/\[[^\]]*\]|\([^)]*\)|[^[(]+/g,(part,at)=>wordCitations.has(index+at)?part:" ".repeat(part.length));
+    });
     const listNums=new Set(parsed.map(p=>p.num).filter(n=>Number.isSafeInteger(n)&&n>0));
     const candidates=[...citationText.matchAll(/\[([^()[\]]*)\]|\(([^()[\]]*)\)|\[([^()[\]]*\d[^()[\]]*)(?=\[|$)/g)].filter(m=>{
       const raw=(m[1]??m[2]??m[3]).trim();
+      if(wordCitations.has(m.index))return true;
       if(refIsClassificationRange(citationText,m.index,m[0].length)||refIsMeasurementEndpoint(citationText,m.index,m[0].length))return false;
       if(/^[-+]?\d+\.\d+$/.test(raw))return false;
       // Capture numeric lists with attached suffixes too: unsupported labels
@@ -27194,8 +27503,7 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
       if(!/\d/.test(raw)||!(/^[\d.,;&…\s–—-]+$/.test(raw)||/^(?:refs?\.?\s*)?\d+(?:[\d.,;–—&\s-]|\b(?:to|and)\b)*$/i.test(raw)||/^\d+[a-z]*(?:\s*[,;–—-]\s*\d+[a-z]*)+$/i.test(raw)&&/(?:^|[,;–—-])\s*\d+\s*(?=$|[,;–—-])/.test(raw)))return false;
       const start=citationText.lastIndexOf("\n",m.index)+1,end=citationText.indexOf("\n",m.index);
       const paragraph=citationText.slice(start,end<0?citationText.length:end);
-      if(/\b(?:Miller|XRD|diffraction|crystal(?:s|line|lographic)?|lattice|planes?|indices|orientations?|reflections?|facets?|interplanar)\b/i.test(paragraph)&&
-        (/^[−-]?\d(?:\s+[−-]?\d){2,3}$/.test(raw)||engIsCrystallographicIndex(paragraph.replace(/\[([\d,\s−-]+)\]/g,'($1)'),m.index-start,m[0].length,true)))return false;
+      if(refIsCrystalMarker(citationText,m.index,m[0].length))return false;
       const equationCore=paragraph.slice(0,m.index-start).trim();
       if(!paragraph.slice(m.index-start+m[0].length).trim()&&ftePlainEquationLike(equationCore||citationText.slice(0,start).trimEnd().split('\n').at(-1)||''))return false;
       const left=citationText.slice(Math.max(0,m.index-160),m.index),right=citationText.slice(m.index+m[0].length,m.index+m[0].length+60);
@@ -28075,6 +28383,7 @@ function numberCheck(text,tables=[]){
       if(/\b[nN](?:[₀-₉ₐ-ₜᵢᵣᵤᵥ]+|_(?:\{[\p{L}\p{N},+-]{1,20}\}|[A-Za-z0-9]+))?\s*(?:[=<>≤≥≈≠]|[<>]=)\s*$/u.test(s.slice(0,m.index+m[1].length)))continue;
       const densityTail=s.slice(m.index+m[0].length);
       if(word.toLowerCase()==="times"){
+        if(/(?:\b\d+(?:\.\d+)?\s*(?:to|[–—−-])|\bbetween\s+\d+(?:\.\d+)?\s+and)\s*$/i.test(s.slice(0,m.index+m[1].length)))continue;
         const comparative=densityTail.match(/^\s+((?!(?:after|thereafter|earlier|later|together|whenever|however|either|neither|other|another|whether|rather|under|over|water|buffer|paper|copper|filter|chamber)\b)[a-z]{3,}er)\b/i);
         const compared=comparative&&!/^\s+(?:[a-z]{3,}ed|is|are|was|were|has|have|had|does|did|will|would|can|could)\b/i.test(densityTail.slice(comparative[0].length))&&(/^(?:\s*[,.!?;:)]|\s*$|\s+(?:under|at|in|with|during|after|before|for|on|over|across|throughout|when|and|or)\b)/i.test(densityTail.slice(comparative[0].length))||/^\s+(?:[a-z]+ly\s+){0,2}than\b/i.test(densityTail.slice(comparative[0].length))||/^\s+(?!(?:than|then|because|although|until|since|if|as|so|to|not|we|they|it)\b)[a-z][a-z-]*(?:\s|[,.!?;:]|$)/i.test(densityTail.slice(comparative[0].length))||/\b(?:is|are|was|were|be|been|became)\s*(?:(?:about|approximately|nearly|roughly|almost)\s*)?$/i.test(s.slice(0,m.index+m[1].length)));
         if(compared||/^\s+(?:higher|lower|greater|less|more|larger|smaller|longer|shorter|faster|slower|wider|narrower|thicker|thinner|stronger|weaker|heavier|lighter|brighter|darker|deeper|shallower|rougher|smoother|steeper|sharper|clearer|quicker|better|worse|as|the|that|those|[a-z]\b|[+−-]?\d)\b/i.test(densityTail))continue;
@@ -29066,6 +29375,8 @@ fteCanonId=function(x){
 };
 
 fteIdParts=function(id){
+  const n=fteRomanNumber(id);
+  if(n)return {supp:false,prefix:"Roman",parts:[n],child:"",number:String(n),canonical:id};
   const p=fteStructuralIdParse(id);
   return p?{supp:p.supp,prefix:p.prefix,parts:p.parts,child:p.child,number:p.number,canonical:p.canonical}:null;
 };
@@ -29188,6 +29499,9 @@ fteEquationNumberOnly=function(text){
 function fteCitationIdPattern(child=true){
   return '(?:(?:ESI|SI|[A-Z])[.-]?)?\\d+(?:\\.\\d+)*'+(child?'(?:\\s*\\([a-z]\\)|-?[a-z])?':'');
 }
+function fteTableCitationToken(){
+  return "(?:"+fteCitationIdPattern(false)+"|[IVXLCDM]+)(?![a-z0-9])";
+}
 function fteCitationBeforeClosingWrapper(text){
   let depth=0;
   for(let i=0;i<text.length;i++){
@@ -29213,7 +29527,7 @@ function fteEquationListPattern(head=fteEquationHeadPattern()){
 fteExpandIds=function(expr,options={}){
   const ids=[],keepChild=!!options.keepChild;
   const add=(raw,offset)=>{
-    let id=fteCanonId(raw); if(!id) return;
+    let id=options.table&&fteRomanNumber(raw)?raw:fteCanonId(raw); if(!id) return;
     if(!keepChild && fteEquationHasChild(id)) id=fteEquationParentId(id);
     if(options.keepOccurrences||!ids.some(x=>x.id===id)) ids.push({id,offset});
   };
@@ -29222,7 +29536,7 @@ fteExpandIds=function(expr,options={}){
   const range=String.raw`(?:[-‐‑‒−–—]|\bto\b|\bthrough\b)`;
   const separator=String.raw`(?:\s*,\s*(?:(?:and|or)\s+|&\s*)?|\s+(?:and|or)\s+|\s*&\s*|\s*${range}\s*)`;
   const group=String.raw`[a-z](?:${separator}[a-z])*`;
-  const token=new RegExp(String.raw`(?<![a-z0-9.])\(?(${fteCitationIdPattern(false)})(?:\s*\(\s*(${group})\s*\)|-?([a-z]))?\)?(?![a-z0-9]|(?<![a-z])\.\d)|(?<![a-z0-9.])(?:\(\s*(${group})\s*\)|([a-z]))(?![a-z0-9])`,'gi');
+  const token=options.table?new RegExp("(?<![a-z0-9.])("+fteTableCitationToken()+")","gi"):new RegExp(String.raw`(?<![a-z0-9.])\(?(${fteCitationIdPattern(false)})(?:\s*\(\s*(${group})\s*\)|-?([a-z]))?\)?(?![a-z0-9]|(?<![a-z])\.\d)|(?<![a-z0-9.])(?:\(\s*(${group})\s*\)|([a-z]))(?![a-z0-9])`,'gi');
   const rangeOnly=new RegExp('^\\s*'+range+'\\s*$','i'),separatorOnly=new RegExp('^'+separator+'$','i');
   const expandBetween=(from,to,offset)=>{
     const a=fteIdParts(from),b=fteIdParts(to); if(!a||!b||a.prefix!==b.prefix) return;
@@ -29233,7 +29547,7 @@ fteExpandIds=function(expr,options={}){
       if(ap.length!==bp.length||ap.slice(0,-1).join('.')!==bp.slice(0,-1).join('.')) return;
       const lo=BigInt(ap.at(-1)),hi=BigInt(bp.at(-1)),prefix=a.prefix+(ap.length>1?ap.slice(0,-1).join('.')+'.':'');
       // Exact, bounded expansion: never use floating-point identifier arithmetic.
-      if(hi>=lo&&hi-lo<=100n) for(let n=lo+1n;n<hi;n++) add(prefix+n,offset);
+      if(hi>=lo&&hi-lo<=100n) for(let n=lo+1n;n<hi;n++) add(a.prefix==="Roman"?fteRomanLabel(Number(n)):prefix+n,offset);
     }
   };
   let m,parent='',previous='',lastEnd=0;
@@ -29241,10 +29555,11 @@ fteExpandIds=function(expr,options={}){
     const explicit=!!m[1],body=m[2]||m[3]||m[4]||m[5]||'',between=e.slice(lastEnd,m.index);
     if(!explicit&&(!parent||!separatorOnly.test(between)||m[5]&&!fteEquationHasChild(previous))) continue;
     if(explicit){
-      parent=fteCanonId(m[1]);
+      parent=options.table&&fteRomanNumber(m[1])?m[1]:fteCanonId(m[1]);
+      if(!parent){previous="";lastEnd=token.lastIndex;continue;}
       const prior=fteIdParts(previous),current=fteIdParts(parent);
       const repeatedLabel=/\b(?:Figures?|Figs?|Tables?|Equations?|Eqs?|Eqns?)\b/i.test(String(expr||'').slice(lastEnd,m.index));
-      if(prior?.prefix&&current&&!current.prefix&&rangeOnly.test(between)&&!repeatedLabel) parent=prior.prefix+current.number;
+      if(prior?.prefix&&prior.prefix!=="Roman"&&current&&!current.prefix&&rangeOnly.test(between)&&!repeatedLabel) parent=prior.prefix+current.number;
     }
     const values=[];
     if(body){
@@ -29274,22 +29589,23 @@ function fteEquationSpecialCitations(text){
 }
 
 
-function fteWordReferenceFields(el){
+function fteWordReferenceFields(el,captionBookmarks=null,normalize=fteNormalizeStructuralWhitespace){
   if(!el) return [];
-  const stack=[],fields=[];
+  const stack=[],fields=[],starts=new Map(),ranges=[];
   let raw="";
   const attr=(n,key)=>n.getAttributeNS(FTE_W_NS,key)||n.getAttribute("w:"+key)||n.getAttribute(key)||"";
   const finish=f=>{
     f.closed=true;
-    if(!f.invalid && f.result && /^\s*(?:REF|SEQ)\s+\S/i.test(f.instruction))
-      fields.push({...f,instruction:f.instruction.replace(/\s+/g," ").trim(),end:raw.length});
+    const citation=/^\s*(?:ADDIN\s+(?:EN\.CITE(?:\.DATA)?|ZOTERO_ITEM\s+CSL_CITATION|CSL_CITATION)|CITATION)\b/i.test(f.instruction);
+    if(!f.invalid&&f.result&&(citation||/^\s*(?:REF|SEQ)\s+\S/i.test(f.instruction)))
+      fields.push({...f,instruction:citation?"BIBLIOGRAPHIC_CITATION":f.instruction.replace(/\s+/g," ").trim(),end:raw.length});
   };
   const walk=n=>{
     if(!n || n.nodeType!==1) return;
     const word=n.namespaceURI===FTE_W_NS,name=(n.localName||"").toLowerCase();
     const props=word&&name==="r"?[...n.children].find(x=>x.namespaceURI===FTE_W_NS&&x.localName==="rPr"):null;
     const hidden=props&&[...props.children].some(x=>x.namespaceURI===FTE_W_NS&&/^(?:vanish|webHidden|specVanish)$/.test(x.localName)&&!/^(?:0|false|off|no)$/i.test(attr(x,"val")));
-    if(word&&/^(?:del|movefrom|drawing|pict|object|txbxcontent)$/.test(name)||hidden){
+    if(word&&(/^(?:del|movefrom|drawing|pict|object|txbxcontent)$/.test(name)||fteWordDeletedTablePart(n))||hidden){
       if(["instrText","fldChar","fldSimple"].some(k=>n.getElementsByTagNameNS(FTE_W_NS,k).length)) stack.forEach(f=>f.invalid=true);
       return;
     }
@@ -29297,6 +29613,12 @@ function fteWordReferenceFields(el){
       const children=[...n.children];
       walk(children.find(x=>x.localName==="Choice")||children.find(x=>x.localName==="Fallback"));
       return;
+    }
+    if(captionBookmarks&&word&&name==="bookmarkstart"){starts.set(attr(n,"id"),{name:attr(n,"name"),start:raw.length});return;}
+    if(captionBookmarks&&word&&name==="bookmarkend"){
+      const id=attr(n,"id"),start=starts.get(id);
+      if(start?.name&&start.start<raw.length)ranges.push({...start,end:raw.length});
+      starts.delete(id);return;
     }
     if(word&&name==="fldsimple"){
       const f={instruction:attr(n,"instr"),result:true,start:raw.length,invalid:stack.some(x=>!x.result||/^\s*(?:TOC|PAGEREF)\b/i.test(x.instruction)),simple:true,parents:[...stack]};
@@ -29333,17 +29655,28 @@ function fteWordReferenceFields(el){
     [...n.children].forEach(walk);
   };
   walk(el);
-  const normalized=fteNormalizeStructuralWhitespace(fteXmlText(el,{preserveSeparators:true}));
+  const normalized=normalize(fteXmlText(el,{preserveSeparators:true}));
   // Never guess offsets when this reader and the authoritative visible text differ.
-  if(fteNormalizeStructuralWhitespace(raw)!==normalized) return [];
+  if(normalize(raw)!==normalized) return [];
+  if(ranges.length){
+    const label=fteTableCaption(normalized);
+    if(label){
+      const end=label.raw.length,start=end-label.id.length;
+      for(const r of ranges){
+        if(!label.raw.endsWith(label.id))continue;
+        const a=normalize(raw.slice(0,r.start)).length,b=normalize(raw.slice(0,r.end)).length;
+        if(a<=start&&b>=end&&raw.slice(r.start,r.end).includes(label.id))captionBookmarks.push(r.name);
+      }
+    }
+  }
   return fields.flatMap(f=>{
     if(f.parents.some(x=>x.invalid||!x.closed)) return [];
     const value=raw.slice(f.start,f.end),left=value.length-value.trimStart().length,right=value.trimEnd().length;
     if(right<=left) return [];
     const a=f.start+left,b=f.start+right,first=String.fromCodePoint(raw.codePointAt(a));
-    const start=fteNormalizeStructuralWhitespace(raw.slice(0,a)+first).length-fteNormalizeStructuralWhitespace(first).length;
-    const end=fteNormalizeStructuralWhitespace(raw.slice(0,b)).length;
-    const text=fteNormalizeStructuralWhitespace(raw.slice(a,b));
+    const start=normalize(raw.slice(0,a)+first).length-normalize(first).length;
+    const end=normalize(raw.slice(0,b)).length;
+    const text=normalize(raw.slice(a,b));
     if(normalized.slice(start,end)!==text) return [];
     return [{instruction:f.instruction,text,start,end}];
   }).sort((a,b)=>a.start-b.start||a.end-b.end);
@@ -29441,7 +29774,7 @@ fteCitations=function(text,kind,fields=[],options={}){
     head='(?:Fig(?:ure)?s?\\s*\\.?)';
     expr=fteEquationListPattern(head);
   }else if(kind==="table"){
-    token=fteCitationIdPattern(false);
+    token=fteTableCitationToken();
     head='(?:Tables?)';
     expr=token+'(?:'+sep+token+')*';
   }else{
@@ -29454,9 +29787,19 @@ fteCitations=function(text,kind,fields=[],options={}){
     const value=kind!=="table"?fteCitationBeforeClosingWrapper(m[1]):m[1];
     let supplementaryPrefix=false,previousOffset=0;
     const repeatedHead=new RegExp('\\b'+head,'i');
-    fteExpandIds(value,{keepChild,withOffsets:true,keepOccurrences:true}).forEach(({id,offset})=>{
+    fteExpandIds(value,{keepChild,table:kind==="table",withOffsets:true,keepOccurrences:true}).forEach(({id,offset})=>{
       if(repeatedHead.test(value.slice(previousOffset,offset))) supplementaryPrefix=false;
       previousOffset=offset;
+      if(kind==="table"&&fteRomanNumber(id)&&!offset&&!/\s$/.test(m[0].slice(0,m[0].length-m[1].length)))return;
+      const printedAt=m.index+m[0].length-m[1].length+offset;
+      const ref=kind==="table"&&fields.find(f=>/^REF\s+/i.test(f.instruction)&&
+        text.slice(printedAt,printedAt+id.length)===id&&f.start<=printedAt&&f.end===printedAt+id.length&&
+        (f.text===id||new RegExp("^Tables?\\s+"+escapeRegExp(id)+"$","i").test(f.text)));
+      // A first-person relative clause can follow an ordinary noun: "the table I constructed".
+      if(kind==="table"&&id==="I"&&!ref&&!offset&&
+        /\b(?:the|this|that|a|an|each|my|our)\s+(?:(?!(?:in|on|from|by|to|for|of|as|at|with|than|above|below|was|were|are|is)\b)[\p{L}-]+\s+){0,3}$/iu.test(text.slice(Math.max(0,m.index-55),m.index))&&
+        /^\s+(?:[a-z]+(?:ed|ied)|use|made|built|drew|read|chose|saw|have|had|am|was|will|would|can|could)\b/.test(text.slice(printedAt+1)))return;
+      const fieldTarget=ref?.instruction?.match(/^REF\s+(?:"([^"]+)"|([^\s\\]+))/i);
       const parts=fteIdParts(id);
       // Comma/conjunction lists can omit S, but can also mix main and
       // supplementary objects. Keep both interpretations until labels resolve
@@ -29465,7 +29808,7 @@ fteCitations=function(text,kind,fields=[],options={}){
         ?{base:id,id:"S"+id}:null;
       if(parts?.supp) supplementaryPrefix=true;
       else if(parts?.prefix) supplementaryPrefix=false;
-      out.push({id,index:m.index,match:m[0].slice(0,m[0].length-m[1].length+value.length),...(offset?{orderIndex:m.index+m[0].length-m[1].length+offset}:{}),...(supplementaryCandidate?{supplementaryCandidate}:{})});
+      out.push({id,...(fieldTarget?{fieldTarget:fieldTarget[1]||fieldTarget[2]}:{}),index:m.index,match:m[0].slice(0,m[0].length-m[1].length+value.length),...(offset?{orderIndex:m.index+m[0].length-m[1].length+offset}:{}),...(supplementaryCandidate?{supplementaryCandidate}:{})});
     });
   }
   if(kind==="equation"){
@@ -29580,7 +29923,8 @@ extractDocxStructure=async function(buf){
     const equationNumberOnlyId=fteWordNodeNumberOnlyEquationId(el);
     const equationLabelBare=eqBinding?.id?!!eqBinding.bare:!fteTerminalOmmlParenNumber(el)&&fteEquationLabelIsBare(text);
     const equationLabelSeq=eqBinding?.id?!!eqBinding.seq:fteWordEquationLabelSeq(el,text);
-    return {type:"p",pos:pos++,text,rawStructuralText,...(wordContentRole?{wordContentRole}:{}),equationPreview:fteXmlText(el,{equationPreview:true}),separatorMeta,...symbolMeta,...(relationSymbols.length?{hasRelationSymbol:true}:{}),...(relationDrawings.length?{hasRelationDrawing:true}:{}),style,styleName:sm?.name||"",styleBasedOn:sm?.basedOn||"",styleChain:sm?.chain||[],seqCaptionType,referenceFields:fteWordReferenceFields(el),hasDrawing,hasImage,imageCount,hasMath,hasMathPara,mathCount,outlineLvl,directOutlineLvl,hasNumbering:!!numPr,ilvl,tabCount,tabStopCount,textAlign,rightTabStop,pageBreakBefore,hasPageBreak,sectionBreakAfter,attachedEquationId:eqBinding?.id||null,equationNumberOnlyId:eqBinding?.numberOnlyId||equationNumberOnlyId||null,equationNumberOnlyChecked:true,equationLabelBare,equationLabelSeq,equationLabelRejected:!!eqBinding?.rejected,equationCoreText:eqBinding?.coreText||"",equationLabelSource:eqBinding?.source||"",...(equationSegments.length?{equationSegments}:{}),...extra};
+    const captionBookmarks=[],referenceFields=fteWordReferenceFields(el,/^\s*(?:supplementary\s+)?tables?\b/i.test(text)?captionBookmarks:null);
+    return {type:"p",pos:pos++,text,rawStructuralText,...(wordContentRole?{wordContentRole}:{}),equationPreview:fteXmlText(el,{equationPreview:true}),separatorMeta,...symbolMeta,...(relationSymbols.length?{hasRelationSymbol:true}:{}),...(relationDrawings.length?{hasRelationDrawing:true}:{}),style,styleName:sm?.name||"",styleBasedOn:sm?.basedOn||"",styleChain:sm?.chain||[],seqCaptionType,referenceFields,...(captionBookmarks.length?{captionBookmarks}:{}),hasDrawing,hasImage,imageCount,hasMath,hasMathPara,mathCount,outlineLvl,directOutlineLvl,hasNumbering:!!numPr,ilvl,tabCount,tabStopCount,textAlign,rightTabStop,pageBreakBefore,hasPageBreak,sectionBreakAfter,attachedEquationId:eqBinding?.id||null,equationNumberOnlyId:eqBinding?.numberOnlyId||equationNumberOnlyId||null,equationNumberOnlyChecked:true,equationLabelBare,equationLabelSeq,equationLabelRejected:!!eqBinding?.rejected,equationCoreText:eqBinding?.coreText||"",equationLabelSource:eqBinding?.source||"",...(equationSegments.length?{equationSegments}:{}),...extra};
   };
 
   const addEmbeddedCaptionBlocks=(p,containerAnchor)=>{
@@ -29720,10 +30064,11 @@ fteSequenceCheck=function(kind,items,issues,pending=[]){
 
   const unique=[];
   items.slice().sort((a,b)=>a.pos-b.pos).forEach(it=>{if(!unique.some(x=>x.id===it.id))unique.push(it);});
-  for(let i=1;i<unique.length;i++){
-    if(fteCmpId(unique[i-1].id,unique[i].id)>0){
-      if(kind!=="equation"||(unique[i-1].placementReliable&&unique[i].placementReliable)){
-        fteIssue(issues,kind,unique[i].id,`${prefix}_OUT_OF_ORDER`,`${fteDisplay(kind,unique[i].id)} appears after ${fteDisplay(kind,unique[i-1].id)} even though its identifier is lower.`,`Check the item numbering and order.`,unique[i].caption||unique[i].context,"err");
+  for(const series of kind==="table"?[unique.filter(x=>fteRomanNumber(x.id)),unique.filter(x=>!fteRomanNumber(x.id))]:[unique])for(let i=1;i<series.length;i++){
+    const previous=series[i-1],current=series[i];
+    if(fteCmpId(previous.id,current.id)>0){
+      if(kind!=="equation"||(previous.placementReliable&&current.placementReliable)){
+        fteIssue(issues,kind,current.id,`${prefix}_OUT_OF_ORDER`,`${fteDisplay(kind,current.id)} appears after ${fteDisplay(kind,previous.id)} even though its identifier is lower.`,`Check the item numbering and order.`,current.caption||current.context,"err");
       }
     }
   }
@@ -29745,7 +30090,7 @@ fteSequenceCheck=function(kind,items,issues,pending=[]){
     // incrementing a large value cannot stall through floating-point rounding.
     const nums=[...new Set(arr.map(x=>x.p.number.split('.').at(-1)))].map(BigInt).sort((a,b)=>a<b?-1:a>b?1:0);
     const sample=arr[0].p,parts=sample.number.split('.').slice(0,-1).map(x=>kind==="equation"?x:String(BigInt(x)));
-    const idFor=n=>`${sample.prefix||''}${[...parts,String(n)].join('.')}`;
+    const idFor=n=>sample.prefix==="Roman"?fteRomanLabel(Number(n)):`${sample.prefix||''}${[...parts,String(n)].join('.')}`;
     for(let i=1;i<nums.length;i++){
       const first=nums[i-1]+1n,last=nums[i]-1n;
       if(last<first) continue;
@@ -29932,7 +30277,7 @@ function fteTableContinuation(text){
   const source=String(text||"").normalize("NFC").replace(/\s+/g," ").trim();
   const marker=String.raw`(?:continued|cont(?:['’]d|d)?\.?)`;
   // Some publishers omit the space before a parenthesized continuation marker.
-  const leadText=source.replace(new RegExp(`(\\d)(?=[(\\[]\\s*${marker}\\s*[)\\]])`,"i"),"$1 ");
+  const leadText=source.replace(new RegExp(`([\\dIVXLCDM])(?=[(\\[]\\s*${marker}\\s*[)\\]])`,"i"),"$1 ");
   const label=fteTableCaption(leadText);
   if(!label) return null;
   const head=String(label.raw||"").trim(),title=s=>s.replace(/^\s*[.:;]\s*/,"").replace(/\s*[.]\s*$/,"").trim();
@@ -30208,12 +30553,25 @@ fteAnalyze=function(blocks){
           }
         }
       }
-      const found=fteCitations(scanText,kind,b.referenceFields);
+      const found=fteCitations(scanText,kind,b.referenceFields,{keepOccurrences:kind==="table"&&b.referenceFields?.some(f=>/^REF\s+/i.test(f.instruction))});
       if(kind==="equation") fteEquationCitationsLoose(scanText,b.referenceFields).forEach(c=>{if(!found.some(x=>x.id===c.id&&x.index===c.index))found.push(c);});
       found.forEach(c=>citations[kind].push({...c,pos:b.pos,context:b.text,blockIndex:i,role:"PROSE_REFERENCE"}));
     }
   });
 
+  // A unique Word REF target is stronger evidence of the intended physical
+  // table than a stale field result. Keep its printed form and report the mismatch.
+  for(const c of citations.table){
+    if(!c.fieldTarget)continue;
+    const matches=tables.filter(t=>t.objectResolved&&!t.identifierUncertain&&blocks[t.captionIndex]?.captionBookmarks?.includes(c.fieldTarget));
+    const id=matches.length===1?matches[0].id:null;
+    if(!id||id===c.id)continue;
+    const roman=fteRomanNumber(id)||fteRomanNumber(c.id);
+    if(!roman||!(String(roman)===id||String(roman)===c.id))continue;
+    fteIssue(issues,"table",c.id,"TABLE_FIELD_LABEL_MISMATCH",`The cross-reference displays Table ${c.id}, but its Word bookmark points to Table ${id}.`,
+      "Check the intended table, then update the Word cross-reference field.",fteCitationContext(c.context,c),"warn");
+    c.printedId=c.id;c.id=id;
+  }
   const itemMap={figure:figures,table:tables,equation:equations};
   const supplementaryReviews=[];
   for(const kind of ["figure","table"]){
@@ -30354,8 +30712,8 @@ fteAnalyze=function(blocks){
 
     // First-citation order. For child equations, a parent citation may introduce
     // the whole group and therefore serves as the first citation for every child.
-    for(const supp of [false,true]){
-      const ordered=[...new Set(items.filter(x=>!x.identifierUncertain&&!x.continuationUncertain&&fteIdParts(x.id)?.supp===supp).map(x=>x.id))].sort(fteCmpId);
+    for(const family of (kind==="table"?["main","supp","roman"]:["main","supp"])){
+      const ordered=[...new Set(items.filter(x=>!x.identifierUncertain&&!x.continuationUncertain&&(fteRomanNumber(x.id)?"roman":fteIdParts(x.id)?.supp?"supp":"main")===family).map(x=>x.id))].sort(fteCmpId);
       for(let j=1;j<ordered.length;j++){
         const a=matchingCitations(kind,ordered[j-1]).sort((x,y)=>x.pos-y.pos || (x.orderIndex??x.index??0)-(y.orderIndex??y.index??0))[0];
         const b=matchingCitations(kind,ordered[j]).sort((x,y)=>x.pos-y.pos || (x.orderIndex??x.index??0)-(y.orderIndex??y.index??0))[0];
@@ -30504,7 +30862,7 @@ fteAnalyze=function(blocks){
       if(engLooksHeadingForScan(x) || engIsParagraphMetadata(x)) continue;
       if(engIsStandaloneCaptionParagraph(x) || engLooksLikeCaptionContinuation(x)) continue;
       if(/^(?:figure|fig\.?|table|scheme|plate|chart|graph)\s+[A-Z]?[S]?[0-9IVXLCDM]+\b/i.test(x)) continue;
-      kept.push(x);
+      kept.push(lines[i]);
     }
     return kept.join("\n\n");
   }
@@ -30538,9 +30896,9 @@ fteAnalyze=function(blocks){
             // Additional conservative guard for administrative cover-like lines
             // in documents where no standard body heading could be located.
             if(start===0 && MC_TERM_FRONT_STRUCT_RE.test(t) && engWordCount(t)<=35) continue;
-            if(!engIsParagraphMetadata(t) && !engLooksLikeDisplayedEquationRecord(r) && !mcTermCalculationLine(t) && !engIsCaptionLegendRecord(classified,i)) prose.push(t);
-          }else if(r.type==="FIGURE_CAPTION") zones.figureCaptions.push(t);
-          else if(r.type==="TABLE_CAPTION") zones.tableCaptions.push(t);
+            if(!engIsParagraphMetadata(t) && !engLooksLikeDisplayedEquationRecord(r) && !mcTermCalculationLine(t) && !engIsCaptionLegendRecord(classified,i)) prose.push(r.block?.rawStructuralText??r.block?.text??r.text);
+          }else if(r.type==="FIGURE_CAPTION") zones.figureCaptions.push(r.block?.rawStructuralText??r.block?.text??r.text);
+          else if(r.type==="TABLE_CAPTION") zones.tableCaptions.push(r.block?.rawStructuralText??r.block?.text??r.text);
         }
         if(prose.length){
           zones.body=prose.join("\n\n");
@@ -30651,10 +31009,21 @@ fteAnalyze=function(blocks){
   }
 
   function mcFocusedTerminology(body,displayBody,sentences){
-    const zones=mcBuildTerminologyZones(body);
+    const zones=mcBuildTerminologyZones(displayBody||body);
     const projected=typeof window.mcProjectVerifiedCitationText==="function"?window.mcProjectVerifiedCitationText(zones.body||""):zones.body||"";
-    const scopedBody=engGrammarBody(projected);
+    const sourceBody=engGrammarBody(projected);
     const scopedDisplay=engPrepareText(zones.body||"",false);
+    // Normalize for matching only. Keep a map back to original UTF-16 positions
+    // when a ligature, superscript or other compatibility character expands.
+    const positions=[];let scopedBody="";
+    for(let i=0;i<sourceBody.length;){
+      const glyph=String.fromCodePoint(sourceBody.codePointAt(i));
+      const normalized=glyph.charCodeAt(0)<128?glyph:glyph.normalize("NFKC").replace(/[‐‑‒–—―−]/g,"-");
+      for(let j=0;j<normalized.length;j++)positions.push(i);
+      scopedBody+=normalized;i+=glyph.length;
+    }
+    positions.push(sourceBody.length);
+    const excerpt=(at,length)=>engContext(scopedDisplay,positions[at],Math.max(1,positions[at+length]-positions[at]));
     const scopedSentences=engReadableSentences(scopedBody);
     const consistency=[], seen=new Set();
     const push=(code,index,length,msg,suggestion,token="",snippetOverride="")=>{
@@ -30662,8 +31031,8 @@ fteAnalyze=function(blocks){
       if(seen.has(key)) return;
       seen.add(key);
       const issue={
-        category:"Terminology consistency",severity:"info",code,index,token,msg,suggestion,
-        snippet:snippetOverride||engContext(scopedDisplay,index,Math.max(1,length||String(token||"").length))
+        category:"Terminology consistency",severity:"info",code,index:positions[index],token,msg,suggestion,
+        snippet:snippetOverride||excerpt(index,Math.max(1,length||String(token||"").length))
       };
       consistency.push(issue);
       return issue;
@@ -30686,7 +31055,7 @@ fteAnalyze=function(blocks){
           issue.variantGroups=uses.map(x=>({
             label:x.form,
             count:x.count,
-            instances:x.found.map(f=>engContext(scopedDisplay,f.index,f.length))
+            instances:x.found.map(f=>excerpt(f.index,f.length))
           }));
         }
       }
@@ -30714,12 +31083,12 @@ fteAnalyze=function(blocks){
             {
               label:firstHyphen.raw,
               count:hyphenUses.length,
-              instances:hyphenUses.map(f=>engContext(scopedDisplay,f.index,f.length))
+              instances:hyphenUses.map(f=>excerpt(f.index,f.length))
             },
             {
               label:closedUses[0].raw,
               count:closedUses.length,
-              instances:closedUses.map(f=>engContext(scopedDisplay,f.index,f.length))
+              instances:closedUses.map(f=>excerpt(f.index,f.length))
             }
           ];
         }
@@ -30778,12 +31147,12 @@ fteAnalyze=function(blocks){
             {
               label:x.raw,
               count:r.cap.length,
-              instances:r.cap.map(f=>engContext(scopedDisplay,f.index,f.raw.length))
+              instances:r.cap.map(f=>excerpt(f.index,f.raw.length))
             },
             {
               label:y.raw,
               count:r.lower.length,
-              instances:r.lower.map(f=>engContext(scopedDisplay,f.index,f.raw.length))
+              instances:r.lower.map(f=>excerpt(f.index,f.raw.length))
             }
           ];
         }
@@ -30993,7 +31362,10 @@ fteAnalyze=function(blocks){
         const lo=String(sent||"").toLowerCase(),r=String(raw||"").toLowerCase();
         const entity=cache.entities.find(e=>{
           const v=e.value.toLowerCase();
-          if(!v||v===r||!v.includes(r)||!lo.includes(v)) return false;
+          if(!v||v===r||!v.includes(r)) return false;
+          let start=lo.indexOf(v);
+          while(start>=0 && !(start<=index && index+r.length<=start+v.length))start=lo.indexOf(v,start+1);
+          if(start<0)return false;
           const type=e.type.toUpperCase();
           return /ORG|ORGANIZATION|PERSON|LOCATION|PLACE|PRODUCT|FACILITY|EVENT|WORK/.test(type)||e.value.split(/\s+/).length>=2;
         });
@@ -32118,7 +32490,7 @@ fteAnalyze=function(blocks){
     const localRate=eligiblePairs?localPairs/eligiblePairs:null;
 
     const errors=[],warnings=[],infos=[];
-    const seenErr=new Set(),seenWarn=new Set(),seenInfo=new Set();
+    const seenErr=new Set(),seenWarn=new Set(),seenInfo=new Set(),frequencyTerms=new Set();
     const rowBuckets=new Map();
     const standardSeen=new Set(),declaredSeen=new Set(),scientificNotationSeen=new Set();
     let sentenceCount=0,referenceExcluded=false;
@@ -32188,6 +32560,7 @@ fteAnalyze=function(blocks){
         addUnique(warnings,{...it,_scope:a.scope},seenWarn);
       });
       (a.r.infos||[]).forEach(it=>{
+        if(it.optionalFrequency){frequencyTerms.add(norm(it.abbr));return;}
         const m=String(it.msg||"");
         if(/^Detected an abbreviation\/nomenclature list/i.test(m) || /non-standard abbreviations but no/i.test(m)) return;
         if(/^Defined \d+ times\./i.test(m)){
@@ -32309,7 +32682,7 @@ fteAnalyze=function(blocks){
         scopeLabel:r.scope?.label||"",
         label:`${r.scope?.label?`${r.scope.label} · `:""}${it.label||`Definition ${idx+1}`}`
       })));
-      rows.push({base,longForm,count,firstUseOK:allFirstOk&&!anyErr,status,definitionSource,definitionType:localScopeRows[0]?.localDefs?.[0]?.definitionType||all[0]?.definitionType||null,nestedFrom:all.find(r=>r.nestedFrom)?.nestedFrom||null,scopeAware:true,scopeSummary,conflictForms:conflict?uniqueMeanings.map(m=>m.long):null,localScopeCount:localScopes.length,scopeCount:all.length,instances:scopedInstances,definitionInstances:scopedDefinitionInstances});
+      rows.push({base,longForm,count,firstUseOK:allFirstOk&&!anyErr,status,definitionSource,definitionType:localScopeRows[0]?.localDefs?.[0]?.definitionType||all[0]?.definitionType||null,nestedFrom:all.find(r=>r.nestedFrom)?.nestedFrom||null,...(all.some(r=>r.numberedLabels?.length)?{numberedLabels:all.flatMap(r=>r.numberedLabels||[])}:{}),scopeAware:true,scopeSummary,conflictForms:conflict?uniqueMeanings.map(m=>m.long):null,localScopeCount:localScopes.length,scopeCount:all.length,instances:scopedInstances,definitionInstances:scopedDefinitionInstances});
 
       if(conflict){
         const detail=uniqueMeanings.map(m=>`"${m.long}" (${m.scope.label})`).join("; ");
@@ -32364,8 +32737,8 @@ fteAnalyze=function(blocks){
     // incorrectly applying it once per chapter.
     rows.forEach(row=>{
       const key=norm(row.base);
-      if(row.count<=2 && row.longForm && row.definitionType!=="scientific_symbol" && !DECLARED_ABBRS.has(key) && !["scientific","list","nested","conflict"].includes(row.definitionSource)){
-        addUnique(warnings,{abbr:row.base,msg:`Used only ${row.count} time${row.count===1?"":"s"} across the analysed thesis scopes. Abbreviate only terms that recur; otherwise spell it out each time.`,snip:null},seenWarn);
+      if(row.count<=2 && frequencyTerms.has(key) && !row.numberedLabels?.length && row.longForm && row.definitionType!=="scientific_symbol" && !DECLARED_ABBRS.has(key) && !["scientific","list","nested","conflict"].includes(row.definitionSource)){
+        addUnique(infos,abbrFrequencySuggestion(row.base,row.count),seenInfo);
         if(row.status==="ok") row.status="warn";
       }
     });
@@ -33079,6 +33452,21 @@ fteAnalyze=function(blocks){
     return true;
   }
 
+  function equipmentCells(part){
+    const rows=part.cellMatrix,display=part.display||part.text;
+    if(!Array.isArray(rows)||!rows[0]?.some(c=>/\b(?:equipment|instrument|apparatus|model|manufacturer|make)\b/i.test(c)))return [];
+    const model=rows[0].map(c=>/^(?:instrument\s+|equipment\s+)?(?:model|make|manufacturer)(?:\s*[,/&()]|\s+(?:and|of|name|number|details)|$)/i.test(String(c).trim()));
+    const cells=[];let cursor=0;
+    for(let r=0;r<rows.length;r++)for(let c=0;c<rows[r].length;c++){
+      const text=ntext(rows[r][c]);if(!text)continue;
+      const start=display.indexOf(text,cursor);if(start<0)return []; // no guessing across incompatible Word projections
+      cursor=start+text.length;
+      cells.push({start,end:cursor,text,row:r+1,col:c+1,model:r>0&&model[c]&&
+        !/[=;]|\b(?:used|measured|determined|detected|analysis|spectroscopy|spectrometer|analy[sz]er)\b/i.test(text) &&
+        (/\b(?=[A-Za-z0-9-]*\d)[A-Z][A-Za-z0-9-]{2,}\b/.test(text)||/\+[, ]|,\s*[A-Z][a-z]/.test(text)||/^(?:manufacturer|make)$/i.test(rows[0][c].trim()))});
+    }
+    return cells;
+  }
   function continuedTableDefinitions(part,display){
     const rows=part.cellMatrix;
     if(!Array.isArray(rows)||rows.length<4)return [];
@@ -33160,10 +33548,12 @@ fteAnalyze=function(blocks){
       // whose entries should be reported as ordinary local uses.
       if(scope.isAbbreviationGlossary && part.role==="table_content") continue;
       const scanText=part.display||part.text;
+      const cells=part.role==="table_content"?equipmentCells(part):[];
       const scriptedSymbols=abbrWordSymbolMatches(scanText);
       const mixedCompounds=abbrDefinedExactFormMatches(scanText,[...defsByKey.values()].flat().concat(compoundDefinitions));
       let protectedDesignationSuffixSpans=[];
       try{protectedDesignationSuffixSpans=abbrFindSpacedDashDesignationSuffixSpans(scanText)||[];}catch(_e){}
+      protectedDesignationSuffixSpans.push(...cells.filter(c=>c.model));
       const re=/\b((?:[omp][-\u2010-\u2014\u2212])?[A-Z]{2,}(?:-[A-Z]{2,})*)(?:s)?\b/g;let m;
       for(const [dk,darr] of defsByKey){
         for(const d of darr){
@@ -33259,7 +33649,8 @@ fteAnalyze=function(blocks){
           return false;
         });
         if(!occByKey.has(k))occByKey.set(k,[]);
-        occByKey.get(k).push({key:k,raw,index:m.index,partRole:part.role,partIndex:part.index,text:scanText,display:part.display||scanText,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label,definitionOccurrence});
+        const cell=cells.find(c=>m.index>=c.start&&m.index+raw.length<=c.end);
+        occByKey.get(k).push({key:k,raw,index:m.index,partRole:part.role,partIndex:part.index,text:scanText,display:part.display||scanText,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label,definitionOccurrence,...(cell?{cell}: {})});
       }
     }
     const ramanContext=scope.parts.map(p=>p.display||p.text||'').join(' '),ramanByPart=new Map(),scientificNotationSeen=new Set();
@@ -33407,7 +33798,9 @@ fteAnalyze=function(blocks){
               ?`${display} is used in ${e.scopeLabel} without a local definition. Its meaning can be inferred from ${compoundMeaning.form}; review whether the caption or legend should define it separately.`
               :`${display} is used in ${e.scopeLabel} but is not defined anywhere in the manuscript or abbreviation list. Define the term or notation before relying on the abbreviated form.`);
         const ik=k+'|'+e.scopeId;if(issueKeys.has(ik))continue;const use=e.ordinaryUses[0];
-        const payload={abbr:display,msg,rowLongForm:row?.longForm||bestDef?.long||listDef?.long||compoundMeaning?.inferredLong||null,snip:snippet(use?.display||use?.text||'',use?.raw||display),contexts:[{label:`${e.scopeLabel} use`,html:snippet(use?.display||use?.text||'',use?.raw||display),structuralScope:e.scopeId}],structuralSelfContainment:localReview,structuralUndefined:!localReview,structuralTableNotation:tablePlaceholder,localScopeType:e.scopeType,localScopeLabel:e.scopeLabel};
+        const location=use?.cell?`${e.scopeLabel}, row ${use.cell.row}, column ${use.cell.col}`:e.scopeLabel;
+        const evidence=snippet(use?.cell?.text||use?.display||use?.text||'',use?.raw||display,use?.cell?use.index-use.cell.start:use?.index);
+        const payload={abbr:display,msg,rowLongForm:row?.longForm||bestDef?.long||listDef?.long||compoundMeaning?.inferredLong||null,snip:evidence,contexts:[{label:`${location} use`,html:evidence,structuralScope:e.scopeId}],structuralSelfContainment:localReview,structuralUndefined:!localReview,structuralTableNotation:tablePlaceholder,localScopeType:e.scopeType,localScopeLabel:e.scopeLabel};
         (localReview?result.warnings:result.errors).push(payload);
         issueKeys.add(ik);if(row)row.status=localReview?(row.status==='ok'?'warn':row.status):'err';
       }
@@ -33420,6 +33813,10 @@ fteAnalyze=function(blocks){
         html:snippet(d.display||d.text,d.form||display,d.shortStart)
       })).filter(x=>x.html);
       if(row){
+        if(allUses.length){
+          result.infos=result.infos.filter(w=>!(keyOf(w.abbr||"")===k&&w.optionalFrequency));
+          if(row.status==="warn"&&![...result.warnings,...result.infos].some(w=>w.abbr&&keyOf(w.abbr)===k))row.status="ok";
+        }
         if(!row.longForm && bestDef?.long) row.longForm=bestDef.long;
         if(bestDef?.long){
           const localScopeNames=[...new Set(allDefs.map(d=>d.scopeLabel).filter(Boolean))];
@@ -33468,6 +33865,7 @@ fteAnalyze=function(blocks){
   if(typeof analyze==='function'){
     const priorAnalyze=analyze;
     analyze=function(rawText,title,standardSet,skipRefs,skipTables){
+      abbrSourceNames=abbrDocumentNames(rawText);
       const registry=buildRegistry();
       // Share exact token recognition only. The original local definition
       // remains owned by its table/caption, so body and other-scope uses still
@@ -35026,7 +35424,7 @@ fteAnalyze=function(blocks){
     const percentBasis=q?.parsed?.components?.length===1&&q.parsed.components[0].exp===1?q.parsed.components[0].percentBasis:null;
     if(percentBasis==="mass_volume")return "concentration";
     if(MC_PERCENT_UNIT.test(raw)||percentBasis==="mass"||percentBasis==="volume") return "percentage";
-    if(MC_CONC_UNIT.test(raw)||MC_CONC_UNIT.test(norm)) return "concentration";
+    if(dim==="L:-3|N:1"||MC_CONC_UNIT.test(raw)||MC_CONC_UNIT.test(norm)) return "concentration";
     if(MC_LENGTH_UNIT.test(raw)||MC_LENGTH_UNIT.test(norm)) return "length";
     if(/(?:L|m3|m³).*(?:m-?2|m\^?-?2|m²).*(?:h-?1|h\^?-?1|h⁻¹)/i.test(norm.replace(/\s+/g,""))) return "flux";
     if(dim==="L:-2|M:1|T:-1")return "flux";
@@ -35167,7 +35565,7 @@ fteAnalyze=function(blocks){
     }
     for(const re of [/\b([A-Za-z][A-Za-z0-9+−⁺⁻-]{1,24})\s+concentrations?\b/gi,/\bconcentrations?\s+of\s+([A-Za-z][A-Za-z0-9+−⁺⁻-]{1,24})\b/gi]) for(const m of text.matchAll(re)){
       const name=m[1];
-      if(!STOPWORDS.has(name.toUpperCase()) && !/^(?:a|initial|final|residual|total|measured|observed|reported|recommended|maximum|minimum|higher|lower|high|low|mean|average|outlier|target|nominal|working|stock|solution|influent|effluent|metal|reactants?|products?|species|ions?)$/i.test(name))
+      if(!/^(?:electrochemical|chemical|dissolved|particulate|suspended|ionic|charged|organic|inorganic|unknown|unspecified)$/i.test(name)&&!STOPWORDS.has(name.toUpperCase()) && !/^(?:a|initial|final|residual|total|measured|observed|reported|recommended|maximum|minimum|higher|lower|high|low|mean|average|outlier|target|nominal|working|stock|solution|influent|effluent|metal|reactants?|products?|species|ions?)$/i.test(name))
         add(name,name,m.index+m[0].indexOf(name),true,true);
     }
     return out.filter(a=>!namedCompounds.some(c=>a.index>=c.index&&a.end<=c.end&&a.identity!==c.identity)).sort((a,b)=>a.index-b.index || b.end-a.end);
@@ -35369,7 +35767,16 @@ fteAnalyze=function(blocks){
     if(family==="time") return mcClassifyTime(clause,before,after);
     if(family==="length") return mcClassifyLength(clause,before,after);
     if(family==="concentration") return mcClassifyConcentration(q,clause,before,after);
-    if(family==="percentage") return mcClassifyPercentage(clause,before,after);
+    if(family==="percentage"){
+      // Measured mass fractions have a named constituent and a defined basis.
+      // Recipe proportions and unrelated percentages remain under their existing rules.
+      if(q.parsed?.components?.[0]?.percentBasis==="mass"&&
+        /\b(?:measured|observed|determined|recorded)\b/i.test(before)&&/\b(?:mass fraction|concentration|content)\b/i.test(before)){
+        const c=mcClassifyConcentration(q,clause,before.replace(/\bmass fractions?\b/i,"concentration"),after);
+        if(c.precisionComparable)return {...c,parameter:c.parameter.replace(/ concentration$/," mass fraction")};
+      }
+      return mcClassifyPercentage(clause,before,after);
+    }
     if(family==="temperature"){
       const thermal=mcAttachedCue(before,after,[
         ["ignition_temperature","Ignition temperature",/\b(?:ignition\s+temperature|T_?i)\b/g,"Ignition temperature"],
@@ -35796,21 +36203,30 @@ fteAnalyze=function(blocks){
   }
   function mcPHCheck(text){
     const out=[],groups=new Map();
-    const re=/\bpH\b\s*(?:values?\s*)?(?:=|:|of\s+)?\s*(?:(?:was|were|is|are|of|to|at|reached|became|remained|measured|recorded|found|near|around|about|approximately|adjusted\s+to|set\s+to|maintained\s+at|kept\s+at|held\s+at|fixed\s+at|controlled\s+at|equal\s+to|close\s+to|(?:ranged|increased|decreased|rose|fell|declined|changed|varied|shifted|dropped|reduced|raised|lowered)\s+from)\s+)*([~≈<>≤≥]=?\s*)?(\d{1,2}(?:\.\d+)?(?:\s*(?:[,–—-]|\band\b|\bor\b|\bto\b)\s*(?:and\s+)?(?:(?:about|approximately|around|near)\s+)?\d{1,2}(?:\.\d+)?)*)(?!\d|\.\d)/gi;
-    for(const m of text.matchAll(re)){
+    const projected=text.replace(/\([^()[\]\n]{1,90}\)|\[[^()[\]\n]{1,90}\]/g,(m,index)=>
+      /\d/.test(m)&&/\bpH\b/i.test(text.slice(Math.max(0,index-160),index))&&refIsMeasurementEndpoint(text,index,m.length)
+        ?" "+m.slice(1,-1)+" ":m);
+    const re=new RegExp(String.raw`\bpH\b\s*(?:values?\s*)?(?:=|:|of\s+)?\s*(?:(?:${MC_PH_READING_PREDICATE}|was|were|is|are|of|to|at|reached|became|remained|measured|recorded|found|near|around|about|approximately|adjusted\s+to|set\s+to|maintained\s+at|kept\s+at|held\s+at|fixed\s+at|controlled\s+at|equal\s+to|close\s+to|(?:ranged|increased|decreased|rose|fell|declined|changed|varied|shifted|dropped|reduced|raised|lowered)\s+from)\s+)*(?:[(\[]\s*)?([~≈<>≤≥]=?\s*)?(\d{1,2}(?:\.\d+)?(?:\s*(?:[,–—-]|\band\b|\bor\b|\bto\b)\s*(?:and\s+)?(?:(?:about|approximately|around|near)\s+)?\d{1,2}(?:\.\d+)?)*)(?!\d|\.\d)`,"gi");
+    for(const m of projected.matchAll(re)){
       const end=m.index+m[0].length,clause=mcClauseWindow(text,m.index,end);
       const before=mcCleanContextText(text.slice(clause.start,m.index)),after=mcCleanContextText(text.slice(end,clause.end));
       const lead=before+" "+m[0].slice(0,m[0].indexOf(m[2]));
+      const opener=m[0].slice(0,m[0].indexOf(m[2])).match(/([(\[])\s*$/);
+      if(opener){
+        const close=text.slice(end).match(/^[ \t]*([)\]])/),at=end-m[2].length-opener[0].length;
+        if(!close||close[1]!==({"(":")","[":"]"})[opener[1]]||!refIsMeasurementEndpoint(text,at,end+close[0].length-at))continue;
+      }
       const local=lead.split(/[,;]|\b(?:whereas|while|but|however|and)\b/i).at(-1);
       const setting=/\b(?:target|nominal|specified|required|prescribed|desired)(?:\s+(?!(?:is|are|was|were|has|have|had|be|been|being|and|or|but|whereas|while|of|for|to|from|at|in|with|without|the|an?|this|these|that|those|we|they)\b)[a-z][a-z-]*){0,6}\s*$/i.test(before)||/\b(?:adjust(?:ed|ing)?|set|maintain(?:ed)?|kept|held|fixed|controlled|buffer(?:ed)?|synthesi[sz](?:ed|ing)|prepared|preparation)\b[^;]{0,90}$/i.test(local)||
         /^\s*(?:phosphate\s+|bicarbonate\s+)?buffer\b/i.test(after)||
         /\b(?:standard\s+hydrogen\s+electrode|SHE|reference\s+electrode)\b/i.test(local)||
         /\bat\s+pH\b/i.test(local)&&!/\b(?:measured|recorded|effluent|influent|anolyte|catholyte)\b/i.test(local);
-      const source=mcValueSource(before,after,"");
+      const attributedReading=/\b(?:in|from)\s+(?:that|their|the\s+previous|the\s+earlier)\s+(?:study|work|report|investigation)\b\s*,?\s*(?:the\b\s*)?(?:(?:measured|reported|final|initial)\b\s*)?$/i.test(before);
+      const source=attributedReading||mcValueSource(before,after,"");
       if(setting||source||m[1]||/\b(?:around|about|near|approximately|close\s+to)\b/i.test(m[0]))continue;
       const range=/\d\s*(?:[-–—]|\bto\b)\s*\d/.test(m[2]);
       const measured=/\b(?:measured|recorded|observed|determined|found|effluent|influent|anolyte|catholyte)\b/i.test(before)||/\bpH\s+(?:(?:value|values)\s+)?(?:was|were|is|are|reached|became|remained)\b/i.test(m[0]);
-      if(!measured)continue;
+      if(!measured&&!MC_PH_READING_LEAD.test(lead.replace(/[(\[]\s*$/,"")))continue;
       const entity=[...before.matchAll(/\b(?:effluent|influent|anolyte|catholyte|anodic\s+chamber|cathodic\s+chamber|(?:sample|reactor)\s+[A-Za-z][A-Za-z0-9-]*)\b/gi)].at(-1)?.[0]?.toLowerCase()||"measured";
       const role=[...before.matchAll(/\b(?:initial|final|inlet|outlet)\b/gi)].at(-1)?.[0]?.toLowerCase()||"";
       const paragraph=text.lastIndexOf("\n",Math.max(0,m.index-1))+1,key=`${paragraph}|${entity}|${role}`;
@@ -36264,7 +36680,9 @@ fteAnalyze=function(blocks){
       return "specific_capacitance";
     if(/^(?:ohm|ω|Ω|kohm|kω|kΩ|mohm|mω|mΩ)$/i.test(String(q?.rawUnit||"").replace(/\s+/g,"")))
       return "resistance";
-    if(/^(?:m3\/m3\/(?:d|day)|m3m-3(?:d|day)-1)$/i.test(compact))
+    const parts=q?.parsed?.components||[];
+    if(q?.parsed?.dimKey==="T:-1"&&parts.length===3&&parts.some(p=>p.dimKey==="T:1"&&p.exp===-1)&&
+      [1,-1].every(sign=>parts.some(p=>p.dimKey==="L:1"&&p.exp===3*sign||p.dimKey==="L:3"&&p.exp===sign)))
       return "volumetric_rate";
 
     // Generalized equivalents with separators/superscripts retained.
@@ -39550,6 +39968,9 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
     if(before.length<3 || before.length>340 || /[!?]/.test(before)) return null;
     const pieces=before.split(/\s*,\s*/).map(x=>x.trim()).filter(Boolean);
     if(pieces.length<2 || pieces.length>80) return null;
+    // A title followed by a known journal before the year is not an author-date prefix.
+    const journal=pieces.at(-1).match(/\p{Ll}{2,}\.\s+(\p{Lu}[^;]*)$/u);
+    if(journal && journalDbMatch(journal[1],true).matched)return null;
     let like=0, initials=0;
     for(const piece of pieces){
       if(rwNameLikeSegment(piece)) like++;
@@ -41221,6 +41642,9 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
   function v7SemicolonAuthorBoundary(raw){
     raw=v7StripNum(raw);if(!raw.includes(';'))return null;
     const m=raw.match(V7_SEMICOLON_AUTHORS);if(!m)return null;
+    // A space within dotted initials cannot end the final author of a list.
+    const last=refParsePersonalAuthorAt(raw.slice(m[1].length));
+    if(last&&last.length>m[2].trimEnd().length)return null;
     const author=v7Clean((m[1]+m[2]).replace(/;\s*/g,'; ')).replace(/[;\s]+$/,'');
     return {author,rest:v7Clean(m[3]),finalAuthor:v7Clean(m[2])};
   }
@@ -41478,6 +41902,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       v7RepairNoDateIndianStandard(p);
       v7RepairBareWebHost(p);
       v7ReconcileMetadataSource(p);
+      if(p.type==="standard" && p.standardNumber && p.issuingOrganisation && p.issuingOrganisation===p.authorRegion && !p.hasSource)v7SetSource(p,p.issuingOrganisation);
       // Late type repairs must update field requirements for every consumer.
       const url=p.url||(!p.doi?refNJUrl(refNJClean(p.raw)):null);
       if(url)p.url=/^(?:https?:\/\/|www\.)(?:dx\.)?doi(?:\.org)?(?:\/|$)/i.test(url)&&!refExtractDoi(url)?null:url;
@@ -41708,7 +42133,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       });
       add("low-use policy retained",()=>{
         const r=runText("Chemical oxygen demand (COD) was measured once in the manuscript.");
-        return hasIssue(r,"warnings","COD","used only");
+        return hasIssue(r,"infos","COD","used only") && !hasIssue(r,"warnings","COD","used only");
       });
       add("sentence-start policy retained",()=>{
         const r=runText("Chemical oxygen demand (COD) was measured. COD increased after treatment.");
