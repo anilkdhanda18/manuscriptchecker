@@ -27493,6 +27493,7 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
       return match.replace(/\[[^\]]*\]|\([^)]*\)|[^[(]+/g,(part,at)=>wordCitations.has(index+at)?part:" ".repeat(part.length));
     });
     const listNums=new Set(parsed.map(p=>p.num).filter(n=>Number.isSafeInteger(n)&&n>0));
+    const parStyle=detectCiteStyle(bodyText)==="numeric_parentheses";
     const candidates=[...citationText.matchAll(/\[([^()[\]]*)\]|\(([^()[\]]*)\)|\[([^()[\]]*\d[^()[\]]*)(?=\[|$)/g)].filter(m=>{
       const raw=(m[1]??m[2]??m[3]).trim();
       if(wordCitations.has(m.index))return true;
@@ -27519,10 +27520,13 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
       if(m[0][0]==='('&&/\b(?:Sample|Compound)\s*$/.test(left)&&/^\s+(?:was|were|is|are)\b/i.test(right))return false;
       if(m[0][0]==='('&&(/\b(?:[fFgGhHxyz]|sin|cos|tan|log|ln|exp)$/.test(left)||/\b(?:[Ftrzχ]|chi[- ]square)\s*$/i.test(left)&&/^\s*[=<>≤≥]/.test(right)))return false;
       if(/\b(?:values?|measurements?|concentrations?|temperatures?|volumes?|mass|masses|lengths?|widths?|heights?|depths?|pressure|dosage|conductivity)[ \t]*$/i.test(left)&&/^[ \t]*(?:%|°|(?:mg|kg|g|mL|L|mM|M|mm|cm|m|s|h|K|Pa|kPa|MPa|eV|V|A|Hz|ppm|ppb)(?![\p{L}\p{N}_-]))/u.test(right))return false;
-      const years=raw.split(/\s*[,;–—-]\s*/);
+      const listMax=Math.max(0,...listNums),nums=(raw.match(/\d+/g)||[]).map(Number);
+      if(listMax&&m[0][0]==='('&&/^\d{1,3}(?:,\d{3})+$/.test(raw)&&nums.slice(1).some(n=>n>listMax))return false;
+      if(listMax&&!parStyle&&m[0][0]==='('&&nums.every(n=>n>Math.max(2*listMax,listMax+50)))return false;
+      const years=raw.split(/\s*(?:[,;–—-]|\band\b|&)\s*/i);
       return m[0][0]!=='('||!years.every(n=>/^(?:19|20)\d{2}$/.test(n))||years.some(n=>listNums.has(Number(n)));
     });
-    const cited=new Set(),unverified=[],styles=new Set(),contexts=new Map();
+    const parenNums=new Set(),cited=new Set(),unverified=[],styles=new Set(),contexts=new Map();
     const rangeLimit=Math.min(10000,Math.max(200,listNums.size));
     const context=m=>{
       const start=Math.max(0,m.index-100),end=Math.min(bodyText.length,m.index+m[0].length+100);
@@ -27536,21 +27540,22 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
         if(!/^\d+$/.test(token)&&!range||!Number.isSafeInteger(first)||!Number.isSafeInteger(last)||first<=0||last<first||last-first>=rangeLimit){complete=false;continue;}
         for(let n=first;n<=last;n++)values.add(n);
       }
-      if(!complete)unverified.push(m);
+      if(!complete){unverified.push(m);continue;}
       if(values.size)styles.add(m[0][0]);
-      for(const n of values){cited.add(n);if(!contexts.has(n))contexts.set(n,context(m));}
+      for(const n of values){cited.add(n);if(m[0][0]==='(')parenNums.add(n);if(!contexts.has(n))contexts.set(n,context(m));}
     }
-    const authorDateOnly=!candidates.length&&detectCiteStyle(bodyText)==="author_year";
+    const authorDateOnly=detectCiteStyle(bodyText)==="author_year"&&!candidates.some(m=>m[0][0]==='['||wordCitations.has(m.index));
     citationCoverage={status:authorDateOnly?'not_applicable':unverified.length?'partial':cited.size?'complete':'unavailable',styles:authorDateOnly?['author_year']:[...styles],unverified:unverified.length,checked:candidates.length-unverified.length};
     if(styles.size>1)issues.push({level:"warn",idx:-1,label:"Citation style",code:"REFERENCE_CITATION_STYLE_MIXED",msg:"Numeric citations use both square brackets and parentheses. Both formats were checked; use the format required by your target style consistently."});
     if(!authorDateOnly&&(unverified.length||!cited.size))issues.push({level:"warn",idx:-1,label:"Citation cross-check",code:"REFERENCE_CITATION_COVERAGE",context:unverified.slice(0,3).map(context).join(" | "),msg:unverified.length
       ?`${unverified.length} numeric citation expression${unverified.length===1?' could':'s could'} not be fully checked because a number, suffix, or range uses unsupported syntax, is invalid, or is too large to expand safely. Check those expressions; no sources have been flagged as uncited from this incomplete scan.`
       :"No supported in-text numeric citations were identified. Check whether citations are missing or use another format; the numeric citation cross-check is unavailable."});
-    if(cited.size){
+    if(cited.size&&!authorDateOnly){
       const citedNotListed=[...cited].filter(n=>!listNums.has(n)).sort((a,b)=>a-b);
       const listedNotCited=unverified.length?[]:[...listNums].filter(n=>!cited.has(n)).sort((a,b)=>a-b);
       cross={citedNotListed,listedNotCited};
-      citedNotListed.forEach(n=>issues.push({level:"err",idx:-1,label:`Citation [${n}]`,code:"REFERENCE_CITATION_NOT_LISTED",context:contexts.get(n)||'',msg:`Citation ${n} appears in the text but has no entry in the reference list. Check the citation number and add the source if it is missing.`}));
+      const listMax=Math.max(0,...listNums),farOut=n=>parenNums.has(n)&&n>Math.max(2*listMax,listMax+50);
+      citedNotListed.forEach(n=>issues.push({level:farOut(n)?"warn":"err",idx:-1,label:`Citation [${n}]`,code:"REFERENCE_CITATION_NOT_LISTED",context:contexts.get(n)||'',msg:farOut(n)?`Citation ${n} is far beyond the last reference (${listMax}) and may be a quantity rather than a citation. If it is a citation, add the missing source.`:`Citation ${n} appears in the text but has no entry in the reference list. Check the citation number and add the source if it is missing.`}));
       listedNotCited.forEach(n=>issues.push({level:"warn",idx:parsed.findIndex(p=>p.num===n),label:`[${n}]`,code:"REFERENCE_NOT_CITED",msg:"No matching numeric citation was detected in the manuscript body. Check whether this source should be cited or removed; verify citations in images or unsupported formats manually."}));
     }
   }
