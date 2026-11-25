@@ -21,7 +21,7 @@ https://github.com/anilkdhanda18/manuscriptchecker/
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta name="application-version" content="95">
+<meta name="application-version" content="101">
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="copyright" content="Copyright © 2026 Anil Dhanda" />
@@ -7027,7 +7027,7 @@ table.ledger tbody>tr:last-child>td{
 const DEFAULT_STANDARD = [
   "DNA","RNA","mRNA","PCR","ATP","ADP","NAD","NADH","pH","UV","NMR",
   "USA","US","UK","EU","UN","WHO","PDF","HTML","URL","DOI","ID","GPS",
-  "LED","LCD","USB","AI","2D","3D","ISO","IUPAC","ASTM","SI",
+  "LED","LCD","USB","AI","2D","3D","COVID","COVID-19","SARS-CoV-2","ISO","IUPAC","ASTM","SI",
   "# FTIR functional groups (lines starting with # are ignored)",
   "–OH","–NH₂","–NH–","–CH₃","–CH₂–","–CH–","C=C","C≡C","C–C","C=O",
   "–CHO","–COOH","–COO⁻","–COOR","C–O–C","C–O","C=N","C≡N","–NO₂","–SO₃H",
@@ -9478,6 +9478,11 @@ function engClassifyStructuralBlocks(blocks){
       r.confidence=Math.min(.999,.55+cap.score/220); r.reasons.push(...cap.reasons); return;
     }
     if(b.hasDrawing && engWordCount(s)<=8){ r.type="MEDIA"; r.confidence=.98; r.reasons.push("drawing container"); return; }
+    // Plain-text reactions or labelled equations are not headings:
+    // "Catalyst* + *O + HO⁻ → *OOH + e⁻ (Eq.10)".
+    if(engWordCount(s)<=30 && !/[.!?]\s*$/.test(s) && (/[→⇌⟶⇄]/.test(s) || /[=+]/.test(s) && /\((?:Eq(?:n|uation)?\.?\s*)?\d+(?:\.\d+)?[a-z]?\)\s*$/i.test(s))){
+      r.type="EQUATION"; r.confidence=.9; r.reasons.push("plain-text equation"); return;
+    }
 
     const st=String(b.style||"");
     if((b.outlineLvl!=null || /(?:^|\b)(?:heading\s*[1-9]?|heading[1-9]|title|subtitle)(?:\b|$)/i.test(st)) && !engStyledHeadingContainsProse(s)){
@@ -11363,6 +11368,10 @@ function abbrCanonicalAbbreviationForm(raw){
   const fam=abbrAcronymFamily(raw);
   return fam?fam.base:String(raw||"").trim();
 }
+function mcGuideSubject(){
+  // Theses follow institutional guidelines rather than a target journal.
+  return window.MC_ABBR_SCOPE_CACHE?.lastResult?.documentType==="thesis"?"your thesis guidelines require":"the target journal requires";
+}
 function abbrNormalizeShortDash(raw){
   return String(raw||"").replace(/[\u2010\u2011\u2012\u2013\u2014\u2212]/g,"-").trim();
 }
@@ -11608,7 +11617,8 @@ function abbrDefForwardShortCandidates(inner){
   // (CB; 0.5 mg/cm2). Only the leading segment can establish the definition.
   const value=src.match(/^([A-Z][A-Z0-9-]{1,14})\s*=\s*(.+)$/);
   if(value && abbrScalarValueAnnotation(value[2])) return [value[1]];
-  const lead=src.split(/[;,]/,1)[0].trim();
+  // A trailing software/model version qualifies the short form: (ECOSAR v2.2).
+  const lead=src.split(/[;,]/,1)[0].trim().replace(/^([A-Z][A-Za-z0-9-]{1,14})\s+(?:v|ver\.?|version)\s*\d+(?:\.\d+)*[a-z]?$/i,"$1");
   if(!lead) return [];
   // Alias syntax such as (g-C3N4 or GCN) may contain one formula alias and one
   // lexical abbreviation. Validate each candidate independently against the
@@ -12340,7 +12350,7 @@ function abbrScientificDefinitionType(sf,descriptor){
 function abbrDescriptorLooksScientific(descriptor){
   const d=String(descriptor||"").trim();
   if(!d || d.length<2 || d.length>180) return false;
-  if(ABBR_SCI_SAMPLE_HEAD_RE.test(d) || ABBR_DEF_CONDITION_LEAD_RE.test(d) || /^(?:[~≈<>≤≥+−-]?\s*\d+(?:\.\d+)?(?:\s|%|°|$)|chosen\b|selected\b|used\b|assumed\b|required\b|expected\b|observed\b|found\b)/i.test(d)) return false;
+  if(ABBR_SCI_SAMPLE_HEAD_RE.test(d) || ABBR_DEF_CONDITION_LEAD_RE.test(d) || /^(?:[~≈<>≤≥+−-]?\s*\d+(?:\.\d+)?(?:\s|%|°|$)|chosen\b|selected\b|used\b|assumed\b|required\b|expected\b|observed\b|found\b|(?:typically|usually|generally|often|normally|commonly|always|kept|maintained)\b)/i.test(d)) return false;
   return ABBR_SCI_PARAMETER_HEAD_RE.test(d) ||
     /^(?:energy|power)\s+(?:added|contributed|supplied|consumed|recovered|produced|delivered|stored)\s+(?:by|to|from|in|as)\s+\S/i.test(d);
 }
@@ -14871,6 +14881,16 @@ function abbrFindClearApostrophePlural(text,base){
 function abbrFrequencySuggestion(abbr,count){
   return {abbr,optionalFrequency:true,msg:`Used only ${count===1?"once":"twice"} in eligible prose. If the abbreviation does not help readers, consider spelling out the term.`,snip:null};
 }
+// Acknowledgement and funding sections (styled or plain stand-alone headings) are outside abbreviation checks.
+function abbrMaskAcknowledgements(text){
+  let on=false;
+  return String(text).split("\n").map(line=>{
+    const t=line.trim();
+    if(/^(?:\d+(?:\.\d+)*\.?\s*)?(?:acknowledg(?:e)?ments?|funding(?:\s+(?:information|sources?|statement))?)\s*:?$/i.test(t)){on=true;return line.replace(/\S/g," ");}
+    if(on&&t&&(ENG_PARAGRAPH_BACK_HEAD_RE.test(t)||(t.length<=80&&!/[.:;,]$/.test(t)&&t.split(/\s+/).length<=10)))on=false;
+    return on?line.replace(/\S/g," "):line;
+  }).join("\n");
+}
 function analyze(rawText, title, standardSet, skipRefs, skipTables){
   // Establish the bibliography boundary from the ORIGINAL manuscript before any
   // abbreviation-specific preprocessing can remove or alter structural headings.
@@ -14885,7 +14905,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
   // Establish the source scope before masking addresses; removing a numbered
   // affiliation must not shift a heading-less document's inferred body start.
   const sourceScope=mcFrontMatterScope(prepared,true);
-  const scoped=sourceScope.lines.map((line,i)=>sourceScope.affiliations.has(i)?line.replace(/[^\n]/g," "):line).join("\n");
+  const scoped=abbrMaskAcknowledgements(sourceScope.lines.map((line,i)=>sourceScope.affiliations.has(i)?line.replace(/[^\n]/g," "):line).join("\n"));
   const tab = excludeTables(scoped, skipTables);
   const head = stripHeadings(tab.text);
   // Local table/figure keys were masked by their structural owners. Unowned
@@ -16657,8 +16677,8 @@ function abbrRecommendationForIssue(it,priority,row=null){
       return `${a} is used in a table without a local definition. If the institutional thesis/dissertation guidelines require tables to be self-contained, define ${expansion} in the associated table caption or note.`;
     }
     if(scope)
-      return `${a} is used in ${scope} without a local definition. If the target journal requires tables to be self-contained, define ${expansion} in the caption or note for ${scope}.`;
-    return `${a} is used in a table without a local definition. If the target journal requires tables to be self-contained, define ${expansion} in the associated table caption or note.`;
+      return `${a} is used in ${scope} without a local definition. If ${mcGuideSubject()} tables to be self-contained, define ${expansion} in the caption or note for ${scope}.`;
+    return `${a} is used in a table without a local definition. If ${mcGuideSubject()} tables to be self-contained, define ${expansion} in the associated table caption or note.`;
   }
   if(/used in Figure .*without a local definition|local figure definition/i.test(msg)){
     const scope=abbrLocalStructuralScope(it,msg,"figure");
@@ -16668,8 +16688,8 @@ function abbrRecommendationForIssue(it,priority,row=null){
       return `${a} is used in a figure caption or legend without a local definition. If the institutional thesis/dissertation guidelines require figures to be self-contained, define ${expansion} in the associated figure caption or legend.`;
     }
     if(scope)
-      return `${a} is used in ${scope} without a local definition. If the target journal requires figures to be self-contained, define ${expansion} in the caption or legend for ${scope}.`;
-    return `${a} is used in a figure caption or legend without a local definition. If the target journal requires figures to be self-contained, define ${expansion} in the associated figure caption or legend.`;
+      return `${a} is used in ${scope} without a local definition. If ${mcGuideSubject()} figures to be self-contained, define ${expansion} in the caption or legend for ${scope}.`;
+    return `${a} is used in a figure caption or legend without a local definition. If ${mcGuideSubject()} figures to be self-contained, define ${expansion} in the associated figure caption or legend.`;
   }
 
   // Local structural definitions and main-text definitions are independent.
@@ -17248,7 +17268,9 @@ function abbrNormalizeDefinitionFullForm(value,abbr=""){
     .replace(/\bup flow\b/g,"upflow")
     .replace(/\bnano (tubes?|fibers?|fibres?|particles?)\b/g,"nano$1")
     .replace(/\bpoly vinyl\b/g,"polyvinyl")
-    .replace(/\b(super|sub) critical\b/g,"$1critical");
+    .replace(/\b(super|sub) critical\b/g,"$1critical")
+    // "land use and land cover" = "land-use/land-cover": a joining "and" does not change the meaning.
+    .replace(/\s+and\s+/g," ");
   if(!s) return "";
 
   const parts=s.split(" ").filter(Boolean);
@@ -19047,6 +19069,8 @@ function fteDisplay(kind,id){
   return `${kind==="figure"?"Figure":"Table"} ${id}`;
 }
 function fteFigureCaption(text){
+  // "Figs. 3 and 5, respectively …" (a sentence carried onto a new line) refers to figures; it is not a caption.
+  if(/^\s*(?:Figs\.?|Figures)\s*S?\d+[a-z]?\s*(?:,|and|&|[-–—])/i.test(String(text||"")))return null;
   try{
     const x=engParseCaptionLead(text);
     if(x && x.kind==="FIGURE_CAPTION"){
@@ -19760,6 +19784,17 @@ function fteCitationContext(text,c,maxLen=220){
 function fteIssue(issues,kind,id,code,msg,suggestion,context,severity="warn"){
   issues.push({kind,id,code,msg,suggestion,context:fteSnippet(context),severity});
 }
+// Two-column layouts put two captions on one line: "Fig. 3 …<tab>Fig. 5 …". Give each caption its own block.
+function fteSplitSideBySideCaptions(blocks){
+  const cap=/^\s*(?:Fig(?:ure)?\.?|FIGURE)\s*S?\d+\b/;
+  return (blocks||[]).flatMap(b=>{
+    const raw=String(b?.rawStructuralText||"");
+    if(b?.type!=="p"||!cap.test(raw)||!raw.includes("\t"))return [b];
+    const parts=raw.split(/\t+(?=\s*(?:Fig(?:ure)?\.?|FIGURE)\s*S?\d+\b)/);
+    if(parts.length<2)return [b];
+    return parts.map(t=>({...b,text:t.trim(),rawStructuralText:t.trim(),equationPreview:t.trim(),tabCount:0,separatorMeta:{...(b.separatorMeta||{}),contentTabs:0}}));
+  });
+}
 function ftePanelCheck(figures,issues,inventories=null){
   // Use the same bounded, letter-only grammar for assignments and references.
   // Each list item is one label or an ascending range; items may be combined.
@@ -19890,6 +19925,8 @@ function ftePanelCheck(figures,issues,inventories=null){
     let m;
     while((m=re.exec(String(text||"")))){
       if(m[2]&&!bareInventory.has(m.index)&&!sentenceStart(text,m.index)&&!/[,:;]\s*(?:(?:and|or)\s+)?$/i.test(String(text).slice(0,m.index))) continue;
+      // A bracket glued to a symbol, e.g. "y2(t)" or "f(x)", is a function argument, not a panel label.
+      {const pre=String(text).slice(0,m.index);if(m[1]&&/\p{L}[\p{N}\u2080-\u2089]*$/u.test(pre)&&!/(?:fig(?:ure)?s?\.?|tables?)\s*S?\d*$/i.test(pre)) continue;}
       const letters=expandGroup(m[1]||m[2]);
       if(!letters.length) continue;
       out.push({
@@ -20107,8 +20144,21 @@ function ftePanelCheck(figures,issues,inventories=null){
     }
   };
 
+  // Roman-numeral sub-panels such as (b-i), (b-ii) belong to panel b; they are
+  // not letter ranges. Blank them (offsets preserved) and keep one parent label.
+  const maskSubpanels=text=>{
+    const sub=/\(\s*([a-z])\s*[-‐‑‒–—−]\s*(?:i{1,3}|iv|vi{0,3}|ix|x)\s*\)/gi,parents=new Set();
+    for(const m of text.matchAll(/\(\s*([a-z])\s*[-‐‑‒–—−]\s*(?:ii|iii|iv|vi{1,3}|ix)\s*\)/gi))parents.add(m[1]);
+    if(!parents.size)return text;
+    const kept=new Set([...parents].filter(l=>new RegExp(`\\(\\s*${l}\\s*\\)`).test(text)));
+    return text.replace(sub,(m,l)=>{
+      if(!parents.has(l))return m;
+      if(kept.has(l))return " ".repeat(m.length);
+      kept.add(l);return `(${l})`.padEnd(m.length," ");
+    });
+  };
   figures.forEach(it=>{
-    const caption=it.caption||"",all=occurrences(caption);
+    const caption=maskSubpanels(it.caption||""),all=occurrences(caption);
     // An uppercase inventory beginning with A is affirmative label evidence,
     // including postfixed assignments such as "energy model (A) results".
     const uppercaseInventory=all.length>=2 && all.every(o=>o.letters.every(x=>/[A-Z]/.test(x))) && all.some(o=>o.letters.includes("A"));
@@ -20281,6 +20331,12 @@ function mcAssignNumericTableLabels(tables,blocks){
         dataRows.slice(info.dataStart).some((row,i)=>row.some((cell,c)=>cell&&table.dataCells?.[i+info.dataStart]?.[c]!==false))&&dataRows.slice(info.dataStart).every((row,i)=>row.every((cell,c)=>
           table.dataCells?.[i+info.dataStart]?.[c]===false||!cell||cellText(cell)===cellText(b.cellMatrix[i+info.dataStart]?.[c]))));
     }
+    if(!sources.length){
+      // Merged cells (vMerge/gridSpan) can defeat the cell-content match. Fall
+      // back to document order only when both readers list the same tables.
+      const ordered=(blocks||[]).filter(b=>b.type==="table"&&Array.isArray(b.cellMatrix));
+      if(ordered.length===(tables||[]).length&&Number.isInteger(table.index)&&ordered[table.index-1])sources=[ordered[table.index-1]];
+    }
     const source=sources.length===1?sources[0]:null;
     if(!source?.physicalAnchor)return;
     const matches=registered.filter(item=>!item.identifierUncertain&&(item.tableSegments||[item]).some(segment=>segment.physicalAnchor===source.physicalAnchor&&segment.objectResolved!==false));
@@ -20445,7 +20501,7 @@ async function readFile(file){
       DOCX_ENGLISH_EXCLUDE_TEXTS=htmlEnglishExclusions;
     }
 
-    try{ DOCX_FTE_BLOCKS=await extractDocxStructure(buf); }
+    try{ DOCX_FTE_BLOCKS=fteSplitSideBySideCaptions(await extractDocxStructure(buf)); }
     catch(e){
       console.error("Required Word structure extraction failed.",e);
       throw new Error("The Word document structure could not be read reliably. No manuscript checks were completed. Reload the page and try again; if the problem continues, save a new .docx copy in Word and select that copy.");
@@ -20610,6 +20666,7 @@ function issueHelpText(code,msg=""){
   const englishHelp={
     LONG_SENTENCE:`The sentence exceeds the selected ${ENG_CURRENT_SENTENCE_LIMIT}-word readability threshold. This does not mean it is grammatically wrong; review whether splitting improves clarity.`,
     TERMINOLOGY_VARIANT:"The same technical concept appears in more than one open/closed/hyphenated form. Review whether the variation is intentional.",
+    HYPHEN_LINE_BREAK:"These words contain a hyphen in the middle of a word where the same word also appears without it. This usually comes from line-end hyphenation in text copied from a PDF.",
     HYPHENATION_INCONSISTENT:"Both a hyphenated and closed form of what appears to be the same technical term occur in the manuscript.",
     CAPITALIZATION_INCONSISTENT:"The same repeated term appears with different capitalization in comparable running-prose contexts. Cover letters, subject lines, title pages, document titles, headings, captions, tables, equations, References, sentence-initial capitalization, and likely proper/formal names are excluded.",
     CAPTION_CAPITALIZATION_INCONSISTENT:"Figure and table captions are evaluated separately from body prose. This note appears only when multiple captions provide clear evidence that sentence-case and title-case caption conventions are being mixed within the same caption family.",
@@ -21805,7 +21862,7 @@ function refType(s){
       || /\bin:\s*[^.]{0,60}\b(?:proceedings|conference|symposium|congress|workshop)\b/i.test(s))) return "conference paper";
   if(/\b(ISO|ASTM|IEC|BS\s?EN|EN)\s?\d{2,}/.test(s)) return "standard";
   if(/\b(u\.?s\.?\s?patent|patent\s+no|pat\.\s?no)\b/i.test(s)) return "patent";
-  if(/\b(technical\s+report|tech\.?\s?rep|working\s+paper|white\s+paper|guidance|bulletin|report\s+no|US\s?EPA|USEPA|\bEPA\b|\bWHO\b|\bOECD\b|\bIPCC\b|\bITRC\b|\bUNEP\b|\bFAO\b|\bIEA\b|\bNIST\b)\b/.test(s) && !/10\.\d{4,9}\//.test(s) && !/\b\d{1,4}\s*\(\d{4}[a-z]?\)\s*\d/.test(s) && !_refJTail) return "report";
+  if(/\b(technical\s+report|tech\.?\s?rep|working\s+paper|white\s+paper|[Gg]uidance(?=\s+(?:on|for|document|documents|note|notes|manual)\b)|(?:technical|national|statutory|interim|regulatory|practice|planning)\s+guidance|bulletin|report\s+no|US\s?EPA|USEPA|\bEPA\b|\bWHO\b|\bOECD\b|\bIPCC\b|\bITRC\b|\bUNEP\b|\bFAO\b|\bIEA\b|\bNIST\b)\b/.test(s) && !/10\.\d{4,9}\//.test(s) && !/\b\d{1,4}\s*\(\d{4}[a-z]?\)\s*\d/.test(s) && !_refJTail) return "report";
   const hasUrl=/\bhttps?:\/\/|\bwww\./i.test(s);
   const placeholder=/\bVolume\s+Pages\b|,\s*Journal\s*[.,]?\s*(\[|https?:|www\.|$)/i.test(s);
   if((hasUrl||placeholder) && !_refJTail && !/\b\d{1,4}\s*\(\d{4}[a-z]?\)/.test(s) && !/10\.\d{4,9}\//.test(s)) return "web page";
@@ -21854,7 +21911,8 @@ const REF_NJ_REPORT_RE=/\b(?:technical\s+(?:report|paper|note|publication|bullet
    only when it is attached to a document-series label such as Technical Paper,
    Working Paper, Report, Bulletin, Circular, Technical Note, or Series. */
 const REF_NJ_NUMBERED_SERIES_RE=/\b(?:technical\s+(?:paper|report|note|publication|bulletin|memorandum)|research\s+(?:paper|report|publication)|working\s+paper|discussion\s+paper|occasional\s+paper|staff\s+paper|policy\s+paper|white\s+paper|briefing\s+paper|report|bulletin|circular|monograph|publication|paper\s+series|report\s+series|technical\s+series)\s*[,;:]?\s*(?:series\s*)?(?:no\.?|number|#)\s*[:#-]?\s*[A-Z0-9][A-Z0-9./-]{0,40}\b/iu;
-const REF_NJ_GUIDE_RE=/\b(?:guideline(?:s)?|guidance|protocol|code\s+of\s+practice|recommendations?|action\s+plan|roadmap|strategy|policy\s+document|national\s+policy|framework)\b/iu;
+// "guidance" counts only as a document word ("Guidance on…", "technical guidance"), not as in "space guidance problems".
+const REF_NJ_GUIDE_RE=/\b(?:guideline(?:s)?|guidance(?=\s+(?:on|for|document|documents|note|notes|manual)\b)|(?:technical|national|statutory|interim|regulatory|practice|planning)\s+guidance|protocol|code\s+of\s+practice|recommendations?|action\s+plan|roadmap|strategy|policy\s+document|national\s+policy|framework)\b/iu;
 const REF_NJ_STANDARD_RE=/\bASCE\/EWRI\s+\d{1,3}-\d{2,4}\b|\b(?:ISO|IEC|ASTM|ANSI|DIN|BS(?:\s*EN)?|EN|BIS|IS)\s*[-:]?\s*[A-Z]?\d{2,}(?:[-:.][A-Z0-9]+)*\b/iu;
 const REF_NJ_THESIS_RE=/\b(?:Ph\.?D\.?|doctoral|doctorate|master'?s|M\.?Tech\.?|M\.?Sc\.?)\s+(?:thesis|dissertation)|\b(?:thesis|dissertation)\b/iu;
 const REF_NJ_PREPRINT_RE=/\b(?:arXiv|bioRxiv|medRxiv|ChemRxiv|SSRN|Research\s+Square|preprints?\.org|preprint)\b/iu;
@@ -22218,7 +22276,7 @@ function refDetectNonJournalType(raw, authorInfo){
   }
 
   if(REF_NJ_GUIDE_RE.test(s) && !_njJTail){
-    if(/\b(?:guideline|guidelines|guidance|protocol|code\s+of\s+practice|recommendations?)\b/iu.test(s)) add('guideline',8,'guideline/guidance terminology');
+    if(/\b(?:guideline|guidelines|guidance(?=\s+(?:on|for|document|documents|note|notes|manual)\b)|(?:technical|national|statutory|interim|regulatory|practice|planning)\s+guidance|protocol|code\s+of\s+practice|recommendations?)\b/iu.test(s)) add('guideline',8,'guideline/guidance terminology');
     else add('policy document',7,'policy/strategy/framework terminology');
     if(corp?.hasAuthors) add(/guideline/iu.test(s)?'guideline':'policy document',2,'institutional author');
   }
@@ -22531,6 +22589,10 @@ function refApplyNonJournalStates(p,doiConvention,issues,i,label){
   p._yearState=refNJState(!!p.year,req.year);
   if(p.type==='web page' && !refQuotedTitleSpans(p.raw).some(m=>refCleanField(m[0].slice(1,-1))===p.title) && /^(?:\[\s*web\s*page\s*\])?[\s.,;:]*$/iu.test(refStripDoiUrl(p.title||''))){p.title=null;p.hasTitle=false;if(p.structured)p.structured.title=null;}
   p._titleState=refNJState(p.hasTitle,req.title);
+  // An organisation author with a place of publication is also the publisher:
+  // APHA. Standard Methods ...; Washington, DC, USA, 2017.
+  if(!p.hasSource&&p.authorType==='corporate'&&/^(?:book|edited book|manual|report|government report|institutional publication|standard|guideline)$/.test(p.type)&&
+    /\b[A-Z][\p{L}.]+,\s*(?:[A-Z]{2}\b|USA\b|UK\b|India\b)/u.test(refStripDoiUrl(p.raw||''))){p.hasSource=true;p.sourceRegion=p.sourceRegion||p.authorRegion;}
   p._sourceState=refNJState(p.hasSource,req.source);
   p._pagesState=refNJState(p.hasPages,req.pages);
   p._volState=refNJState(p.hasVolume,req.vol);
@@ -27046,7 +27108,7 @@ function refSplitManuscript(text){
   // Headingless lists must start at paragraph boundaries. Inline citation density
   // never establishes a bibliography, and a following appendix remains body text.
   const paras=lines.map((line,i)=>({text:line.trim(),start:off[i],line:i})).filter(p=>p.text),cut=N*0.45;
-  const numbered=p=>p.text.match(/^\s*\[(\d{1,4})\](?:\s+|$)/);
+  const numbered=p=>p.text.match(/^\s*\[(\d{1,4})\](?:\s+|$)/)||p.text.match(/^\s*(\d{1,4})[.)]\s+(?=\S)/);
   const entryEnd=(i,explicit=false)=>{
     const p=paras[i];
     if(!(numbered(p)||refStartsAuthor(p.text))) return i;
@@ -27078,12 +27140,15 @@ function refSplitManuscript(text){
   let bestRun=null;
   for(let i=0;i<paras.length;i++){
     const marker=numbered(paras[i]);
-    if((i>0 && paras[i].start<cut) || entryEnd(i,!!marker)===i) continue;
+    // An early start is allowed only for a list that runs to the end of the
+    // file and fills most of it (a references-only document).
+    const early=i>0 && paras[i].start<cut;
+    if(entryEnd(i,!!marker)===i) continue;
     let j=i,strong=0,incomplete=0,previous=0;
     while(j<paras.length){
       const p=paras[j],next=numbered(p);
       if(refIsEndHeading(p.text)||fteFigureSectionBoundary(p.text)||sourceEndLines.has(p.line)) break;
-      const supportedEnd=entryEnd(j),endEntry=supportedEnd>j?supportedEnd:(marker?entryEnd(j,true):j);
+      const supportedEnd=entryEnd(j),endEntry=supportedEnd>j?supportedEnd:(marker?Math.max(entryEnd(j,true),next&&+next[1]===previous+1?j+1:j):j);
       if((!!marker===!!next) && (!next||+next[1]>previous) && endEntry>j){
         if(next) previous=+next[1];
         if(supportedEnd>j) strong++;else incomplete++;
@@ -27094,6 +27159,7 @@ function refSplitManuscript(text){
     }
     if(strong<3 || (strong+incomplete<4 && !(j===paras.length||refIsEndHeading(paras[j].text)||fteFigureSectionBoundary(paras[j].text)||sourceEndLines.has(paras[j].line)))) continue;
     const end=j<paras.length?paras[j].start:N;
+    if(early && !(j===paras.length && end-paras[i].start>=0.6*N)) continue;
     const cand={strong,start:paras[i].start,end,numeric:!!marker};
     if(!bestRun || cand.strong>bestRun.strong || (cand.strong===bestRun.strong && cand.start<bestRun.start)) bestRun=cand;
   }
@@ -27102,6 +27168,49 @@ function refSplitManuscript(text){
   }
 
   return {found:false, refs:"", body:text, heading:null, method:null, citeStyle, confidence:0};
+}
+function refAuthorYearCheck(parsed,bodyText,issues,lab){
+  // Author–year cross-check: first author + year. Near misses (spelling,
+  // year ±1) are review items; entries never cited are listed separately.
+  const fold=x=>String(x||"").normalize("NFKD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]/g,"");
+  const yr=/((?:19|20)\d{2})([a-z]?)/;
+  const skip=/^(?:Fig|Figs|Figure|Figures|Table|Tables|Eq|Eqs|Equation|Section|Chapter|January|February|March|April|May|June|July|August|September|October|November|December|Since|In|From|During|Between|Until)$/;
+  const cites=[],missing=[],used=new Set(),seen=new Set();
+  const addCite=(name,year,at,text)=>{
+    // Table cells can run together without a space: "NRHolmes et al.".
+    name=String(name).replace(/^\p{Lu}{2,}(?=\p{Lu}\p{Ll})/u,"").replace(/^(?:\p{Lu}\.\s*(?:-\s*\p{Lu}\.\s*)?)+(?=\p{Lu}\p{Ll})/u,"");
+    const first=(String(name).trim().match(/^(?:(?:van|von|de|der|den|da|di|le|la|du)\s+)*\p{Lu}[\p{L}'’-]*/u)||[])[0],y=String(year).match(yr);
+    if(first&&y&&!skip.test(first))cites.push({first,disp:String(name).trim().replace(/[,\s]+$/,""),key:fold(first),year:y[1],suffix:y[2],at});
+  };
+  // Flatten one level of nesting, keeping offsets: (WWAP (United Nations …), 2017).
+  const flat=bodyText.replace(/\(([^()]*)\([^()]*\)([^()]*)\)/g,(all,a,b)=>`(${a}${b})`.padEnd(all.length," "));
+  for(const m of flat.matchAll(/\(([^()]{3,400})\)/g))
+    for(const part of m[1].split(";")){
+      const c=part.trim().match(/^(?:(?:e\.g\.|see|cf\.)\s*,?\s*)?(\p{Lu}[^,()]{0,80}?),?\s+((?:(?:19|20)\d{2}[a-z]?(?:\s*,\s*)?)+)$/u);
+      if(c)for(const y of c[2].split(/\s*,\s*/).filter(Boolean))addCite(c[1],y,m.index,part);
+    }
+  for(const m of bodyText.matchAll(/(\p{Lu}[\p{L}'’-]+(?:\s+(?:et\s+al\.?|(?:and|&)\s+\p{Lu}[\p{L}'’-]+))?)\s+\(((?:19|20)\d{2}[a-z]?)\)/gu))addCite(m[1],m[2],m.index,m[0]);
+  const refs=parsed.map((p,i)=>{const y=String(p.year||"").match(yr),who=(String(p.firstAuthor||p.authorRegion||String(p.raw||"").replace(/^\s*(?:\[\d+\]|\d+[.)])\s*/,"")).match(/[\p{L}'’-]+/u)||[])[0];const sur=String(p.firstAuthor||p.authorRegion||"").split(/,|\s\(/)[0].trim(),
+      // Every word of a multi-word surname can stand for it in the text: "Kannankeril Khalid" ↔ "Khalid et al." or "Kannankeril et al.".
+      words=sur.split(/\s+/).filter(w=>/^\p{Lu}[\p{Ll}'’-]{2,}/u.test(w)&&!/^(?:van|von|de|der|den|da|di|le|la|du)$/i.test(w)),
+      keys=new Set([fold(who),...(words.length>1&&words.length<=3?[fold(words.join("")),...words.map(fold)]:[])]);
+    return {i,p,who:words.length>1&&words.length<=3?words.join(" "):who,key:fold(who),keys,year:y?.[1],suffix:y?.[2]||""};}).filter(r=>r.key&&r.year);
+  const lev=(a,b)=>{const d=[...Array(b.length+1).keys()];for(let i=1;i<=a.length;i++){let prev=d[0];d[0]=i;for(let j=1;j<=b.length;j++){const t=d[j];d[j]=Math.min(d[j]+1,d[j-1]+1,prev+(a[i-1]===b[j-1]?0:1));prev=t;}}return d[b.length];};
+  const name=c=>`${c.disp} (${c.year}${c.suffix})`;
+  const where=c=>{const a=Math.max(0,c.at-100),z=Math.min(bodyText.length,c.at+140);return (a?"…":"")+bodyText.slice(a,z).trim()+(z<bodyText.length?"…":"");};
+  for(const c of cites){
+    const id=c.key+c.year+c.suffix;if(seen.has(id))continue;seen.add(id);
+    const exact=refs.filter(r=>r.keys.has(c.key)&&r.year===c.year&&(!c.suffix||!r.suffix||r.suffix===c.suffix));
+    if(exact.length){exact.forEach(r=>used.add(r.i));continue;}
+    const near=refs.find(r=>r.year===c.year&&lev(r.key,c.key)<=Math.max(1,Math.floor(c.key.length/4))||r.keys.has(c.key)&&Math.abs(+r.year-+c.year)<=1);
+    if(near){used.add(near.i);issues.push({level:"warn",idx:-1,label:`Citation ${name(c)}`,code:"REFERENCE_CITATION_NOT_LISTED",context:where(c),msg:`${name(c)} has no exact entry in the reference list. The closest entry is ${lab(near.p,near.i)} (${near.who}, ${near.p.year}); check the author spelling or year.`});}
+    else{missing.push(c);issues.push({level:"err",idx:-1,label:`Citation ${name(c)}`,code:"REFERENCE_CITATION_NOT_LISTED",context:where(c),msg:`${name(c)} is cited in the text but has no entry in the reference list. Add the source or correct the citation.`});}
+  }
+  if(cites.length)refs.filter(r=>!used.has(r.i)).forEach(r=>{
+    const same=missing.filter(c=>c.year===r.year).map(name);
+    issues.push({level:"warn",idx:r.i,label:lab(r.p,r.i),code:"REFERENCE_NOT_CITED",msg:`No author–year citation matching ${r.p.firstAuthor||r.p.authorRegion||r.who} (${r.year}${r.suffix}) was detected in the text.`+(same.length?` Citations from the same year without an entry: ${same.join(", ")}; check whether one of them refers to this source.`:" Check whether this source should be cited or removed.")});
+  });
+  return {citedNotListed:missing.map(name),listedNotCited:refs.filter(r=>!used.has(r.i)).map(r=>r.i)};
 }
 function refCheck(refText, bodyText, presegmentedEntries=null){
   let style,marker,entries;
@@ -27494,9 +27603,16 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
     });
     const listNums=new Set(parsed.map(p=>p.num).filter(n=>Number.isSafeInteger(n)&&n>0));
     const parStyle=detectCiteStyle(bodyText)==="numeric_parentheses";
+    // Reference-manager citations that never display as "(n)" mean plain round-bracket numbers are values, not citations.
+    const shownNumeric=(window.MC_SUPERSCRIPT_SEMANTICS?.fieldDisplayTexts||[]).filter(x=>/^\s*[[(]?\s*\d/.test(x)),fieldsNoParen=shownNumeric.length>=3&&!shownNumeric.some(x=>/^\s*\(/.test(x));
+    // Atomic numbers after element symbols, e.g. "La (57) to Eu (63)": two or more such pairs close together are not citations.
+    const elemPairs=[...citationText.matchAll(/(?<=(?:^|[\s(,;])(?:H|He|Li|Be|B|C|N|O|F|Ne|Na|Mg|Al|Si|P|S|Cl|Ar|K|Ca|Sc|Ti|V|Cr|Mn|Fe|Co|Ni|Cu|Zn|Ga|Ge|As|Se|Br|Kr|Rb|Sr|Y|Zr|Nb|Mo|Tc|Ru|Rh|Pd|Ag|Cd|In|Sn|Sb|Te|I|Xe|Cs|Ba|La|Ce|Pr|Nd|Pm|Sm|Eu|Gd|Tb|Dy|Ho|Er|Tm|Yb|Lu|Hf|Ta|W|Re|Os|Ir|Pt|Au|Hg|Tl|Pb|Bi|Po|At|Rn|Fr|Ra|Ac|Th|Pa|U|Np|Pu|Am)\s)\(\d{1,3}\)/g)].map(x=>x.index);
+    const atomicNumbers=new Set(elemPairs.filter(p=>elemPairs.some(q=>q!==p&&Math.abs(q-p)<150)));
     const candidates=[...citationText.matchAll(/\[([^()[\]]*)\]|\(([^()[\]]*)\)|\[([^()[\]]*\d[^()[\]]*)(?=\[|$)/g)].filter(m=>{
       const raw=(m[1]??m[2]??m[3]).trim();
       if(wordCitations.has(m.index))return true;
+      if(fieldsNoParen&&m[0][0]==='(')return false;
+      if(m[0][0]==='('&&atomicNumbers.has(m.index))return false;
       if(refIsClassificationRange(citationText,m.index,m[0].length)||refIsMeasurementEndpoint(citationText,m.index,m[0].length))return false;
       if(/^[-+]?\d+\.\d+$/.test(raw))return false;
       // Capture numeric lists with attached suffixes too: unsupported labels
@@ -27507,6 +27623,16 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
       if(refIsCrystalMarker(citationText,m.index,m[0].length))return false;
       const equationCore=paragraph.slice(0,m.index-start).trim();
       if(!paragraph.slice(m.index-start+m[0].length).trim()&&ftePlainEquationLike(equationCore||citationText.slice(0,start).trimEnd().split('\n').at(-1)||''))return false;
+      // An end-of-line label after a wide gap or a maths symbol numbers an equation: "… c²      (3)".
+      if(m[0][0]==='('&&/^\d{1,3}$/.test(raw)&&!paragraph.slice(m.index-start+m[0].length).trim()&&/(?:\s{3,}|\t|[=+−×∑∫⟩}$²³⁻¹])\s*$/.test(paragraph.slice(0,m.index-start)))return false;
+      // A label inside a line of flattened maths ("…+b[x](1)", "S=C:E(5)"): the line has "=" and no ordinary words.
+      if(m[0][0]==='('&&/^\d{1,3}$/.test(raw)){const before=paragraph.slice(0,m.index-start);if(before.includes("=")&&!/\p{Ll}{4,}/u.test(before))return false;}
+      // In-sentence list markers "(1) to calibrate … and (2) to analyse" when round brackets are not the citation style.
+      if(!parStyle&&m[0][0]==='('&&/^\d$/.test(raw)){
+        const sStart=Math.max(citationText.lastIndexOf(". ",m.index),citationText.lastIndexOf("\n",m.index))+1,sEndDot=citationText.indexOf(". ",m.index),sEnd=sEndDot<0?citationText.length:sEndDot;
+        const sentence=citationText.slice(sStart,sEnd),k=Number(raw);
+        if(k>=1&&[...Array(Math.max(2,k)).keys()].every(i=>new RegExp(`\\(${i+1}\\)\\s+[a-z]`).test(sentence)))return false;
+      }
       const left=citationText.slice(Math.max(0,m.index-160),m.index),right=citationText.slice(m.index+m[0].length,m.index+m[0].length+60);
       const lead=left.replace(/(?:[([]\s*[\d.,;+\s–—-]+[)\]]\s*(?:,\s*)?(?:(?:(?:up|down)\s+to|and|or|to|towards?|from|through|&)\s*)?(?:(?:[a-z]+ly|about|around|nearly|roughly)\s+)*)+$/i,"");
       if(/\b(?:coordinates?|intervals?|vectors?|arrays?|matri(?:x|ces)|tuples?|dimensions?|shapes?|years?|campaigns?|seasons?|counts?|sample\s+sizes?|numbers?\s+of\s+(?:samples|replicates|participants|observations))(?:\s+(?:was|were|is|are|of|equal|equals|to|given|as|set|at|reported|estimated|measured|approximately|about|respectively))*\s*[:=]?\s*$/i.test(lead)||/[=±×÷]\s*$/.test(left))return false;
@@ -27521,6 +27647,12 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
       if(m[0][0]==='('&&(/\b(?:[fFgGhHxyz]|sin|cos|tan|log|ln|exp)$/.test(left)||/\b(?:[Ftrzχ]|chi[- ]square)\s*$/i.test(left)&&/^\s*[=<>≤≥]/.test(right)))return false;
       if(/\b(?:values?|measurements?|concentrations?|temperatures?|volumes?|mass|masses|lengths?|widths?|heights?|depths?|pressure|dosage|conductivity)[ \t]*$/i.test(left)&&/^[ \t]*(?:%|°|(?:mg|kg|g|mL|L|mM|M|mm|cm|m|s|h|K|Pa|kPa|MPa|eV|V|A|Hz|ppm|ppb)(?![\p{L}\p{N}_-]))/u.test(right))return false;
       const listMax=Math.max(0,...listNums),nums=(raw.match(/\d+/g)||[]).map(Number);
+      // Leading zeros mark crystal planes or codes, never citation numbers: (002).
+      if(/(?:^|[^\d.])0\d/.test(raw))return false;
+      // Decimal values in round brackets are measurements, not citation numbers: (95.71 1.71).
+      if(m[0][0]==='('&&/\d\.\d/.test(raw))return false;
+      // Miller indices such as (111), (220) next to diffraction wording.
+      if(m[0][0]==='('&&/^\d{3}(?:\s*[,;]\s*\d{3})*$/.test(raw)&&/°|\bplanes?\b|facet|diffract|\bXRD\b|JCPDS|ICDD|\bpeaks?\b|lattice|crystal/i.test(citationText.slice(Math.max(0,m.index-200),m.index+80)))return false;
       if(listMax&&m[0][0]==='('&&/^\d{1,3}(?:,\d{3})+$/.test(raw)&&nums.slice(1).some(n=>n>listMax))return false;
       if(listMax&&!parStyle&&m[0][0]==='('&&nums.every(n=>n>Math.max(2*listMax,listMax+50)))return false;
       const years=raw.split(/\s*(?:[,;–—-]|\band\b|&)\s*/i);
@@ -27544,7 +27676,25 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
       if(values.size)styles.add(m[0][0]);
       for(const n of values){cited.add(n);if(m[0][0]==='(')parenNums.add(n);if(!contexts.has(n))contexts.set(n,context(m));}
     }
-    const authorDateOnly=detectCiteStyle(bodyText)==="author_year"&&!candidates.some(m=>m[0][0]==='['||wordCitations.has(m.index));
+    // Superscript citations: reference-manager fields (EndNote, Zotero, Word)
+    // and plain superscript numbers classified as bibliography citations.
+    let fieldCites=0;
+    const harvest=(text,ctx)=>{
+      const raw=String(text||"").trim();
+      if(!/^\d[\d,;\s–—−-]*$/.test(raw))return;
+      for(const token of raw.replace(/\s*[–—−-]\s*/g,"-").split(/[,;\s]+/).filter(Boolean)){
+        const r=token.match(/^(\d+)(?:-(\d+))?$/),a=Number(r?.[1]),z=Number(r?.[2]||r?.[1]);
+        if(!r||z<a||z-a>=rangeLimit)continue;
+        for(let n=a;n<=z;n++){cited.add(n);fieldCites++;if(!contexts.has(n))contexts.set(n,"…"+String(ctx).trim()+"…");}
+      }
+    };
+    for(const b of (typeof DOCX_FTE_BLOCKS==="undefined"?null:DOCX_FTE_BLOCKS)||[])for(const f of b.referenceFields||[])
+      if(f.instruction==="BIBLIOGRAPHIC_CITATION")harvest(f.text,String(b.text||"").slice(Math.max(0,f.start-100),f.end+60));
+    for(const e of window.MC_SUPERSCRIPT_SEMANTICS?.entries||[])
+      if(e.role==="bibliography_citation")harvest(e.text,`${e.left||""}${e.text}${e.right||""}`);
+    for(const shown of window.MC_SUPERSCRIPT_SEMANTICS?.fieldDisplayTexts||[])
+      harvest(shown.replace(/^[[(]\s*|\s*[\])]$/g,""),`Reference-manager citation ${shown}`);
+    const authorDateOnly=!fieldCites&&detectCiteStyle(bodyText)==="author_year"&&!candidates.some(m=>m[0][0]==='['||wordCitations.has(m.index));
     citationCoverage={status:authorDateOnly?'not_applicable':unverified.length?'partial':cited.size?'complete':'unavailable',styles:authorDateOnly?['author_year']:[...styles],unverified:unverified.length,checked:candidates.length-unverified.length};
     if(styles.size>1)issues.push({level:"warn",idx:-1,label:"Citation style",code:"REFERENCE_CITATION_STYLE_MIXED",msg:"Numeric citations use both square brackets and parentheses. Both formats were checked; use the format required by your target style consistently."});
     if(!authorDateOnly&&(unverified.length||!cited.size))issues.push({level:"warn",idx:-1,label:"Citation cross-check",code:"REFERENCE_CITATION_COVERAGE",context:unverified.slice(0,3).map(context).join(" | "),msg:unverified.length
@@ -27558,7 +27708,9 @@ function refCheck(refText, bodyText, presegmentedEntries=null){
       citedNotListed.forEach(n=>issues.push({level:farOut(n)?"warn":"err",idx:-1,label:`Citation [${n}]`,code:"REFERENCE_CITATION_NOT_LISTED",context:contexts.get(n)||'',msg:farOut(n)?`Citation ${n} is far beyond the last reference (${listMax}) and may be a quantity rather than a citation. If it is a citation, add the missing source.`:`Citation ${n} appears in the text but has no entry in the reference list. Check the citation number and add the source if it is missing.`}));
       listedNotCited.forEach(n=>issues.push({level:"warn",idx:parsed.findIndex(p=>p.num===n),label:`[${n}]`,code:"REFERENCE_NOT_CITED",msg:"No matching numeric citation was detected in the manuscript body. Check whether this source should be cited or removed; verify citations in images or unsupported formats manually."}));
     }
+    if(authorDateOnly)cross=refAuthorYearCheck(parsed,bodyText,issues,lab);
   }
+  if(bodyText&&marker==="none")cross=refAuthorYearCheck(parsed,bodyText,issues,lab);
   const bibLines=(refText.match(/\b(?:19|20)\d{2}\b/g)||[]).length;
   const segLowConfidence = parsed.length<=2 && bibLines>=6;
   return {style, marker, count:parsed.length, parsed, issues, doiCoverage, doiConvention, titleConvention, cross, citationCoverage, hadBody:!!bodyText, segLowConfidence};
@@ -27967,6 +28119,8 @@ function precisionBodyCheck(text){
       const endpoints=sharedPower?[`${m[1]} ${sharedPower[2]}`,m[2]]:[m[1],m[2]];
       const first=unitWrittenPrecision(endpoints[0]),last=unitWrittenPrecision(endpoints[1]);
       const rangeBefore=s.slice(0,q.index),rangeAfter=s.slice(q.index+q.value.length+q.space.length+q.rawUnit.length);
+      // "… km² in 2017 to 40.6 km² in 2025": the first endpoint is a year, not a range start.
+      if(/^(?:19|20)\d{2}$/.test(m[1])&&/\b(?:in|since|by|during|of)\s*$/i.test(rangeBefore))continue;
       const approximatePreparation=/\b(?:approximately|about|around)\s*$/i.test(rangeBefore)&&
         !/\b(?:measured|recorded|observed|determined)\b/i.test(rangeBefore)&&
         /^\s*(?:of\s+(?:[A-Za-z-]+\s+){1,10})?(?:(?:was|were)\s+)?(?:then\s+)?(?:collected|added|mixed|dissolved|transferred|prepared)\b/i.test(rangeAfter);
@@ -28739,7 +28893,35 @@ $("run").onclick=async()=>{
       const nameSupport=await mcEnsureWinkNlp(text);
       if(!isCurrentRun()) return;
       status("Checking abbreviations…");
-      const r=analyze(text,title,standardSet,skipRefs,skipTables); LAST=r; renderReport(r);
+      const r=analyze(text,title,standardSet,skipRefs,skipTables);
+      // Author initials in a CRediT statement ("SMS: conceptualization, …") are not abbreviations.
+      const credit=/^\s*:\s*(?:conceptuali[sz]ation|methodology|software|validation|formal analysis|investigation|resources|data curation|writing|visuali[sz]ation|supervision|project administration|funding acquisition)/i;
+      const initialsOnly=x=>{const a=String(x?.abbr||"");if(!/^\p{Lu}{2,4}$/u.test(a))return false;const hits=[...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${a}(?![\\p{L}\\p{N}])`,"gu"))];return hits.length>0&&hits.every(m=>credit.test(text.slice(m.index+a.length,m.index+a.length+40)));};
+      // Gene or plasmid names ("pYC-rhlIR") start lowercase and never stand alone; rGO also appears on its own, so it is kept.
+      const geneOnly=x=>{const a=String(x?.abbr||"");if(!/^\p{Ll}\p{Lu}{1,5}$/u.test(a))return false;const hits=[...text.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${a}(?![\\p{L}\\p{N}])`,"gu"))];return hits.length>0&&hits.every(m=>/^-[\p{L}\p{N}]*\p{Ll}[\p{L}\p{N}]*/u.test(text.slice(m.index+a.length,m.index+a.length+20)));};
+      r.errors=(r.errors||[]).filter(x=>!initialsOnly(x)&&!geneOnly(x));r.warnings=(r.warnings||[]).filter(x=>!initialsOnly(x)&&!geneOnly(x));
+      // A second "full form (ABBR)" with a different meaning, also on short lines the prose scan skips (e.g. "Check for surface overflow rate (SOR)").
+      {const refAt=text.search(/\n\s*(?:\d+\.?\s*)?(?:references|bibliography)\s*\n(?![\s\S]*\n\s*(?:\d+\.?\s*)?(?:references|bibliography)\s*\n)/i),body0=refAt>0?text.slice(0,refAt):text,blk=[];
+        // Word paragraphs that the text extraction leaves out (e.g. calculation lines) still count.
+        const bks=typeof DOCX_FTE_BLOCKS!=="undefined"?DOCX_FTE_BLOCKS:[],refHead=bks.map(bk=>/^(?:\d+\.?\s*)?(?:references|bibliography)$/i.test(String(bk?.text||"").trim())).lastIndexOf(true);
+        bks.forEach((bk,i)=>{const t=String(bk?.text||"").trim();if((refHead<0||i<refHead)&&bk?.type==="p"&&t&&!body0.includes(t))blk.push(t);});
+        const body=body0+"\n"+blk.join("\n");
+        for(const row of r.rows||[]){
+          const ab=String(row?.base||"");if(!row?.longForm||row.conflictForms||!/^[A-Z]{2,6}$/.test(ab))continue;
+          if([...(r.errors||[]),...(r.warnings||[])].some(x=>x.abbr===ab&&/Conflicting definitions|different descriptions/i.test(x.msg||"")))continue;
+          const known=abbrNormalizeDefinitionFullForm(row.longForm,ab);
+          for(const m of body.matchAll(new RegExp(`([^()\\n]{3,80})\\(\\s*${ab}s?\\s*\\)`,"g"))){
+            let lf="";try{lf=validLongForm(ab,m[1])||"";}catch(_e){}
+            if(!lf||!abbrMatchesWordInitials(ab,lf))continue; // only a candidate whose initials spell the abbreviation
+            const other=abbrNormalizeDefinitionFullForm(lf,ab);
+            if(!other||other===known)continue;
+            row.conflictForms=[row.longForm,lf];row.status="err";
+            const usedOnly=x=>!(x.abbr===ab&&/^Used only (?:once|twice)/i.test(x.msg||""));r.errors=(r.errors||[]).filter(usedOnly);r.warnings=(r.warnings||[]).filter(usedOnly);r.infos=(r.infos||[]).filter(usedOnly);
+            r.errors.push({abbr:ab,msg:`Conflicting definitions. ${ab} is defined as "${row.longForm}" and also as "${lf.trim()}". Use one correct full form consistently.`,snip:m[0].trim()});
+            break;
+          }
+        }}
+      LAST=r; renderReport(r);
       mcSetModuleOutcome("abbr",nameSupport?"complete":"limited",nameSupport?"":"Built-in abbreviation checks completed, but additional name recognition was unavailable. Run the check again to retry.");
     }catch(e){ console.error("abbreviation check failed:",e); mcFailModule("abbr"); }
 
@@ -31070,6 +31252,10 @@ fteAnalyze=function(blocks){
     // absent from scopedBody, so they cannot manufacture a body-prose conflict.
     const hy=/\b([a-z]{3,})-([a-z]{3,})\b/gi;
     let hm; const dynSeen=new Set();
+    // A hyphen left from a line break ("algo-rithm") is a broken word, not a style choice. Known prefixes,
+    // and pairs whose two halves are both words used elsewhere, stay as hyphenation choices.
+    const hyPrefix=/^(?:non|bio|inter|intra|micro|macro|nano|under|photo|exo|endo|electro|multi|semi|sub|super|co|pre|post|re|anti|self|cross|well|eco|socio|geo|hydro|thermo|mono|poly|bi|tri|di|meso|mid|out|up|counter)$/i;
+    const bodyWords=new Set((scopedBody.replace(/\p{L}+(?:-\p{L}+)+/gu," ").match(/\p{L}+/gu)||[]).map(w=>w.toLowerCase())),splitWords=[];
     while((hm=hy.exec(scopedBody))){
       const closed=(hm[1]+hm[2]).toLowerCase();
       if(dynSeen.has(closed)) continue;
@@ -31078,6 +31264,10 @@ fteAnalyze=function(blocks){
       const hyphenForm=hm[0];
       const hyphenUses=engFindPhraseAll(scopedBody,hyphenForm).filter(f=>!mcIsFormalTermVariantOccurrence(scopedBody,f.index,f.raw));
       const closedUses=engFindPhraseAll(scopedBody,closed).filter(f=>!mcIsFormalTermVariantOccurrence(scopedBody,f.index,f.raw));
+      if(hyphenUses.length&&closedUses.length&&!hyPrefix.test(hm[1])&&!(bodyWords.has(hm[1].toLowerCase())&&bodyWords.has(hm[2].toLowerCase()))&&!/^(?:makers?|based|scale|term|free|like|wide|rich|friendly|level|house|even|step|state)$/i.test(hm[2])){
+        splitWords.push({label:hyphenUses[0].raw,count:hyphenUses.length,first:hyphenUses[0],instances:hyphenUses.map(f=>excerpt(f.index,f.length))});
+        continue;
+      }
       if(hyphenUses.length&&closedUses.length){
         const firstHyphen=hyphenUses[0];
         const issue=push("HYPHENATION_INCONSISTENT",firstHyphen.index,firstHyphen.length,
@@ -31098,6 +31288,13 @@ fteAnalyze=function(blocks){
           ];
         }
       }
+    }
+
+    if(splitWords.length){
+      const issue=push("HYPHEN_LINE_BREAK",splitWords[0].first.index,splitWords[0].first.length,
+        `Words broken by a leftover line-end hyphen: ${splitWords.map(x=>x.label).join(", ")}.`,
+        "Join these words and remove the hyphen. Such hyphens usually come from text copied from a PDF.",splitWords[0].label);
+      if(issue)issue.variantGroups=splitWords.map(({label,count,instances})=>({label,count,instances}));
     }
 
     // Internal capitalization inconsistency for repeated lexical terms. Only
@@ -31138,10 +31335,13 @@ fteAnalyze=function(blocks){
       const labelled=/^(?:chapters?|objectives?|stage|phase|step|trial|cycle|experiment|treatment|reactor|sample)$/.test(low) && /^\s*(?:\d+(?:\.\d+)*|[IVXLCDM]+)\b/.test(scopedBody.slice(wm.index+raw.length));
       const roleKey=low+(labelled?":numbered":"");
       const rec=capMap.get(roleKey)||{cap:[],lower:[]};
-      rec[kind].push({raw,index:wm.index});
+      rec[kind].push({raw,index:wm.index,quoted:/["'“‘]/.test(scopedBody[wm.index-1]||"")});
       capMap.set(roleKey,rec);
     }
     capMap.forEach(r=>{
+      // Quoted category labels ('Severe') are compared only with quoted uses,
+      // not with the same word as an ordinary adjective (severe non-compliance).
+      if(r.cap.some(x=>x.quoted)){r.cap=r.cap.filter(x=>x.quoted);r.lower=r.lower.filter(x=>x.quoted);}
       if(r.cap.length>=2 && r.lower.length>=1){
         const x=r.cap[0], y=r.lower[0];
         const issue=push("CAPITALIZATION_INCONSISTENT",x.index,x.raw.length,
@@ -33798,7 +33998,7 @@ fteAnalyze=function(blocks){
         const msg=tablePlaceholder && !globallyDefined
           ?`${display} is used as standalone table notation in ${e.scopeLabel}. Define what it means (for example, not applicable/not available/not detected) in that table's note if the notation is intended.`
           :(globallyDefined
-            ?(e.scopeType==='table'?`${display} is used in ${e.scopeLabel} without a local definition. This does not affect main-text first-use compliance; review whether the target journal requires the table to be self-contained.`:`${display} is used in ${e.scopeLabel} without a local definition. This does not affect main-text first-use compliance; review whether the target journal requires the figure caption or legend to be self-contained.`)
+            ?(e.scopeType==='table'?`${display} is used in ${e.scopeLabel} without a local definition. This does not affect main-text first-use compliance; review whether ${mcGuideSubject()} the table to be self-contained.`:`${display} is used in ${e.scopeLabel} without a local definition. This does not affect main-text first-use compliance; review whether ${mcGuideSubject()} the figure caption or legend to be self-contained.`)
             :compoundMeaning
               ?`${display} is used in ${e.scopeLabel} without a local definition. Its meaning can be inferred from ${compoundMeaning.form}; review whether the caption or legend should define it separately.`
               :`${display} is used in ${e.scopeLabel} but is not defined anywhere in the manuscript or abbreviation list. Define the term or notation before relying on the abbreviated form.`);
@@ -34250,6 +34450,7 @@ fteAnalyze=function(blocks){
     const groups=Array.isArray(it?.variantGroups)?it.variantGroups.filter(g=>g&&g.label):[];
     if(groups.length>1){
       const joined=groups.map(engVariantCountText).join(" and ");
+      if(it?.code==="HYPHEN_LINE_BREAK") return `${groups.length} words broken by a line-end hyphen: ${groups.map(g=>`"${g.label}"`).join(", ")}`;
       if(it?.code==="HYPHENATION_INCONSISTENT") return `${groups.length} forms found: ${joined}`;
       if(it?.code==="CAPITALIZATION_INCONSISTENT") return `${groups.length} capitalization forms found: ${joined}`;
       if(it?.code==="CAPTION_CAPITALIZATION_INCONSISTENT") return `${groups.length} caption capitalization styles found: ${joined}`;
@@ -35018,6 +35219,17 @@ fteAnalyze=function(blocks){
     const xml=await f.async("string");
     const doc=new DOMParser().parseFromString(xml,"application/xml");
     if(doc.getElementsByTagName("parsererror").length) return STATE;
+    // Display text of reference-manager citations, including EndNote records
+    // stored as base64 (EN.CITE.DATA) and Zotero formattedCitation values.
+    STATE.fieldDisplayTexts=[];
+    const instr=[...doc.getElementsByTagNameNS(W,"instrText")].map(n=>n.textContent||"").join("");
+    const fieldData=[...doc.getElementsByTagNameNS(W,"fldData")].map(n=>n.textContent||"");
+    for(const chunk of [...instr.split(/ADDIN\s+(?:EN\.CITE(?:\.DATA)?|ZOTERO_ITEM\s+CSL_CITATION)/).slice(1),...fieldData]){
+      let text=chunk.trim();
+      if(/^[A-Za-z0-9+/=\s]{24,}$/.test(text)){try{text=new TextDecoder().decode(Uint8Array.from(atob(text.replace(/\s+/g,"")),c=>c.charCodeAt(0)));}catch(_e){continue;}}
+      const shown=text.match(/<DisplayText>([\s\S]*?)<\/DisplayText>/)?.[1]??text.match(/"formattedCitation"\s*:\s*"((?:[^"\\]|\\.)*)"/)?.[1];
+      if(shown)STATE.fieldDisplayTexts.push(shown.replace(/<[^>]+>/g,"").trim());
+    }
 
     const paras=[...doc.getElementsByTagNameNS(W,"p")];
     let refHeadingIndex=-1;
@@ -39492,7 +39704,16 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
     const doiLabel=/\bdoi\s*:/i.test(raw);
     const preYear=year?raw.slice(0,Math.max(0,raw.indexOf(year))):raw.slice(0,Math.min(raw.length,180));
     const ampersand=/\s&\s/.test(preYear);
-    return {raw,yearParen,yearNearEnd,yearSemicolonVolume,volIssueParen,volLabel,issueLabel,pageLabel,quotedTitle,doiUrl,doiLabel,ampersand};
+    // Author name form, last-author join and source-to-year punctuation (personal, multi-author, non-et-al. lists only).
+    const au=String(p?.authorRegion||'').replace(/\s+/g,' ').trim();
+    const personal=au&&!['organisation','organization','corporate'].includes(p?.authorType)&&!/\bet\.?\s*al\b/i.test(raw.slice(0,au.length+20))&&!/…|\.\.\./.test(au)&&!(au.match(/(?<![\p{L}'’-])\p{Ll}{2,}\b/gu)||[]).some(w=>!/^(?:and|van|von|der|den|de|da|la|le|du|dos|del|di|bin|al|el|ter|ten)$/.test(w));
+    const multi=personal&&(/\s&\s|\band\b|;/.test(au)||(au.match(/,/g)||[]).length>=2);
+    const authorForm=multi?(/(?:^|[\s,;])(?:\p{Lu}\.?-?){1,3}(?=[\s,.;]|$)/u.test(au)?'initials':'full'):null;
+    const lastJoin=multi?(/\s&\s/.test(au)?'&':/\band\b/.test(au)?'and':'comma'):null;
+    const src=String(p?.sourceRegion||'').trim(),sp=src?raw.indexOf(src):-1;
+    const sy=sp>=0&&year?raw.slice(sp+src.length).match(new RegExp('^\\s*([.,;:]?)\\s*\\(?'+year)):null;
+    const srcYear=sy?(sy[1]||'space'):null;
+    return {raw,yearParen,yearNearEnd,yearSemicolonVolume,volIssueParen,volLabel,issueLabel,pageLabel,quotedTitle,doiUrl,doiLabel,ampersand,authorForm,lastJoin,srcYear};
   }
 
   function inferStyle(res){
@@ -39543,7 +39764,9 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
     if(explicitLabels>=.52) signals.push('explicit vol./no./pp. labels');
     if(m.quotedTitle>=.6) signals.push('quoted article titles');
     if(m.doiUrl>=.6) signals.push('DOIs presented as URLs');
-    return {family,name,confidence,numeric,sampleCount:sample.length,journalCount:journal.length,metrics:m,signals,scores};
+    const dom={};
+    for(const k of ['authorForm','lastJoin','srcYear']){const v=fs.map(x=>x[k]).filter(x=>x!=null),c={};v.forEach(x=>c[x]=(c[x]||0)+1);const t=Object.entries(c).sort((x,y)=>y[1]-x[1])[0];if(t)dom[k]={value:t[0],share:t[1]/v.length,n:v.length};}
+    return {family,name,confidence,numeric,sampleCount:sample.length,journalCount:journal.length,metrics:m,signals,scores,dom};
   }
 
   function policyFromRate(fieldRate,n,base='optional'){
@@ -39735,6 +39958,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
     if(m.semicolon>=.72 && p.year&&p.hasVolume&&!f.yearSemicolonVolume) reasons.push('year-volume punctuation');
     if(m.quotedTitle>=.72 && p.hasTitle&&!f.quotedTitle) reasons.push('title punctuation');
     if(m.doiUrl>=.72 && p.doi&&!f.doiUrl) reasons.push('DOI presentation');
+    for(const [k,label] of [['authorForm','author name form'],['lastJoin','last-author join'],['srcYear','source–year punctuation']]){const d=info.dom?.[k];if(d&&d.n>=8&&d.share>=.8&&f[k]!=null&&f[k]!==d.value)reasons.push(label);}
     const covered={'year placement':'year placement','volume/issue grouping':'volume(issue) grouping','DOI presentation':'DOI presentation'};
     const remaining=reasons.filter(reason=>!selectedChecks.includes(covered[reason]));
     return remaining.length?`Differs from the dominant bibliography pattern: ${remaining.join(', ')}.`:'';
@@ -40803,15 +41027,22 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
   // review while preserving all raw text. This covers citation-manager artefacts
   // such as repeated semicolon-delimited surname/initial fragments.
   function c3MarkMalformedAuthorList(p){
-    if(!p||p.type!=='journal article'||!p.raw||!p.hasAuthors)return;
+    if(!p||!p.raw||!p.hasAuthors)return;
     const raw=c3StripNum(p.raw), src=c3Clean(p.sourceRegion||'');
     let pre=raw;if(src){const i=raw.toLocaleLowerCase().lastIndexOf(src.toLocaleLowerCase());if(i>0)pre=raw.slice(0,i);}
     const afterAuthor=c3AfterAuthors(p,pre);
     const semiCount=(afterAuthor.match(/;/g)||[]).length;
     const semicolonNameEvidence=/;\s*[\p{L}.'’\-]{2,40},\s*[A-Z]/u.test(afterAuthor);
     const titleStartsLeftover=/^[\p{L}'’\-]{2,35},\s*(?:[A-Z](?:\.[A-Z])?\.?\s*){1,4}[\p{L}'’\-]/u.test(c3Clean(p.title||''));
-    if((semiCount>=3&&semicolonNameEvidence&&Number(p.authorCount||0)<=2)||titleStartsLeftover){
-      p._authorState='review';p._c3AuthorListReview=true;
+    // Author-block artefacts: ",,", a leading "by", "&" followed by several
+    // more names, or the same name listed twice.
+    const ti=p.title?raw.indexOf(String(p.title).slice(0,25)):-1,authorsText=ti>0?raw.slice(0,ti):raw.slice(0,160);
+    const names=authorsText.split(/\s*(?:[;,]|&|\band\b)\s*/).map(x=>x.replace(/[.\s]+/g,' ').trim().toLowerCase()).filter(x=>x.length>3&&/\s/.test(x));
+    const artefact=!!authorsText&&(/,\s*,/.test(authorsText)||/^\s*by\s/i.test(authorsText)||
+      ((authorsText.split('&').slice(1).join('&').match(/\b[A-Z]\.(?:\s*-?[A-Z]\.)*/g)||[]).length>=2)||names.length-new Set(names).size>=2);
+    const journal=p.type==='journal article';
+    if(journal&&((semiCount>=3&&semicolonNameEvidence&&Number(p.authorCount||0)<=2)||titleStartsLeftover)||artefact){
+      p._authorState='review';p._c3AuthorListReview=true;p._c3AuthorArtefact=artefact;
       const note='Author list appears malformed or only partly parsed; review the author sequence against the source record.';
       p._styleReviewReason=p._styleReviewReason?p._styleReviewReason+' '+note:note;
     }
@@ -41635,6 +41866,67 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
     if(p.referenceFieldRegistry?.final){p.referenceFieldRegistry.final.locatorKind=kind;if(kind==='article'){p.referenceFieldRegistry.final.articleNumber=v;p.referenceFieldRegistry.final.pages=null;}else{p.referenceFieldRegistry.final.pages=v;p.referenceFieldRegistry.final.articleNumber=null;}}
     p._pagesState='yes';
   }
+  // Last-stage corrections for field splits that earlier layers get wrong.
+  function v7FinalFieldFixes(res){
+    if(!Array.isArray(res.parsed)||!Array.isArray(res.issues))return;
+    for(const [i,p] of res.parsed.entries()){
+      const src=v7Clean(p.sourceRegion||''),title=v7Clean(p.title||'');
+      const label=res.issues.find(x=>x.idx===i)?.label||`[${i+1}]`,add=(level,msg)=>{if(!res.issues.some(x=>x.idx===i&&x.msg===msg))res.issues.push({level,idx:i,label,msg});};
+      // Source copied from the end of the title (no capital and no abbreviation point): no real source.
+      if(src&&title.length>src.length&&title.endsWith(src)&&!/[\p{Lu}.]/u.test(src)){
+        p.sourceRegion=null;p.hasSource=false;p._sourceState='no';
+        if(p.structured)p.structured.source=null;if(p.referenceFieldRegistry?.final)p.referenceFieldRegistry.final.source=null;
+        add('warn','No journal or source name detected.');
+      }
+      // "Source, [vol,] year, 123456." – a lone 5+ digit number after the year is an article number, not a volume.
+      const art=v7Clean(p.raw||p.text||'').match(/,\s*(?:19|20)\d{2}\s*,\s*(\d{5,})\.?\s*$/);
+      if(art&&p._pagesState!=='yes'){
+        const sv=String(p.sourceRegion||'').match(/^(.*\S)\s*,\s*(\d{1,4})$/);
+        if(sv){v7SetSource(p,sv[1]);v7SetVol(p,sv[2]);add('info','Differs from the dominant bibliography pattern: year placement.');}
+        else if(String(p.structured?.volume||'')===art[1]){
+          p.hasVolume=false;p._volState='no';if(p.structured)p.structured.volume=null;if(p.referenceFieldRegistry?.final)p.referenceFieldRegistry.final.volume=null;
+          add('info','No volume or issue number found.');
+        }
+        v7SetLoc(p,art[1],'article');
+        res.issues=res.issues.filter(x=>!(x.idx===i&&/^(?:No page range or article number found|Page range or article number not detected)/.test(x.msg||'')));
+      }
+      // "Journal 2021, 279, Article." – volume present, the word "Article" stands where the article number belongs.
+      const ph=v7Clean(p.raw||p.text||'').match(/(?:19|20)\d{2}\s*,\s*(\d{1,4})\s*,\s*Article\s*(?:[.;,]|$)/);
+      if(ph&&p._volState!=='yes'){
+        v7SetVol(p,ph[1]);
+        res.issues=res.issues.filter(x=>!(x.idx===i&&(/^(?:No volume or issue number found|Volume information not detected)/.test(x.msg||'')||/^Unexpected bibliographic element detected: “\d+, Article”/.test(x.msg||''))));
+        add('warn','The word “Article” stands in place of the article number; the article number is missing.');
+      }
+      // "Surname I I, Surname I (2022) Title. Journal" – spaced initials without stops; authors leaked into the title.
+      const rawS=v7Clean(p.raw||p.text||'').replace(/^\s*\[?\d{1,4}[.)\]]\s*/,'');
+      const nm="[\\p{Lu}][\\p{L}'’-]+(?:[ -][\\p{Lu}][\\p{L}'’-]+)*\\s(?:\\p{Lu}\\s?){1,3}";
+      const sp=rawS.match(new RegExp(`^(${nm}(?:,\\s*${nm})*)\\s*\\(\\s*(?:19|20)\\d{2}[a-z]?\\s*\\)\\s*(.+)$`,'u'));
+      if(sp&&(!p.authorRegion||/\((?:19|20)\d{2}[a-z]?\)/.test(title)||title.startsWith(sp[1].slice(0,12))||sp[1].split(',').slice(1).some(n=>(title+' '+src).includes(n.trim())))){
+        v7SetAuthor(p,sp[1]);const t=sp[2].split(/\.\s+(?=\p{Lu})/u)[0];if(t&&t.length>=10)v7SetTitle(p,t);
+        const names=sp[1].split(',').map(n=>n.trim()),sg=t&&sp[2].slice(t.length).replace(/^\.\s*/,'').match(/^([^.\d]{3,}?)(?:\.|\s+\d|$)/u);
+        if(sg&&(!src||names.includes(src)))v7SetSource(p,sg[1]);
+        res.issues=res.issues.filter(x=>!(x.idx===i&&/^No author or (?:organisation|responsible organisation) detected/.test(x.msg||'')));
+      }
+      // "S. Gupta et al., Title, Journal" – a single initialled author with "et al." before the title.
+      const ea=!p.authorRegion&&rawS.match(/^((?:\p{Lu}\.\s?(?:-\p{Lu}\.\s?)*)+[\p{Lu}][\p{L}'’-]+\s+et\s+al\.?)\s*,\s*(.+)$/u);
+      if(ea){
+        v7SetAuthor(p,ea[1]);if(title.startsWith(ea[1]))v7SetTitle(p,title.slice(ea[1].length));
+        res.issues=res.issues.filter(x=>!(x.idx===i&&/^No author or (?:organisation|responsible organisation) detected/.test(x.msg||'')));
+      }
+      // "Adv Differ Equ 2018(1):1–24" – journals that use the year as the volume number.
+      const yv=!p.hasVolume&&p.year&&v7Clean(p.raw||p.text||'').match(/\b((?:19|20)\d{2})\s*\(\s*\d{1,4}\s*\)\s*:\s*[A-Za-z]?\d/);
+      if(yv&&String(p.year).startsWith(yv[1])&&v7Clean(p.raw||p.text||'').indexOf(yv[1])!==v7Clean(p.raw||p.text||'').lastIndexOf(yv[1])){
+        v7SetVol(p,yv[1]);
+        res.issues=res.issues.filter(x=>!(x.idx===i&&/^(?:No volume or issue number found|Volume information not detected)/.test(x.msg||'')));
+      }
+      // "Surname I I, (1994). Title. Organisation" – author block ends at "(year)"; the rest is title then issuer.
+      const ay=!p.title&&p.authorRegion&&v7Clean(p.sourceRegion||'')===v7Clean(p.authorRegion)&&v7Clean(p.raw||p.text||'').match(/^[^()]+?\(\s*(?:19|20)\d{2}[a-z]?\s*\)\.\s*([^.]{10,}?)\.\s*([^.]{3,}?)\.?\s*$/);
+      if(ay){
+        v7SetTitle(p,ay[1]);v7SetSource(p,ay[2]);v7SetType(p,'report');p._volState='na';p._pagesState='na';
+        res.issues=res.issues.filter(x=>!(x.idx===i&&/^(?:Unexpected bibliographic element detected|No article title detected|Title not detected|No volume or issue number found|Volume information not detected|No page range or article number found|Page range or article number not detected)/.test(x.msg||'')));
+      }
+    }
+  }
   function v7ClearAuthorReview(p){
     if(p.referenceCorruptionReview&&/author list/i.test(String(p.referenceCorruptionReview.message||'')))delete p.referenceCorruptionReview;
     if(p._styleReviewReason){
@@ -41950,8 +42242,8 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
     }
     if(Array.isArray(res.issues))res.issues=res.issues.filter(x=>{
       const p=Number.isInteger(x?.idx)?res.parsed[x.idx]:null;if(!p)return true;
-      if(x.code==='REFERENCE_AUTHOR_LIST_REVIEW'&&p._v7SemicolonAuthors)return false;
-      if(x.code==='REFERENCE_AUTHOR_LIST_REVIEW'&&p._v7ApaAuthors)return false;
+      if(x.code==='REFERENCE_AUTHOR_LIST_REVIEW'&&p._v7SemicolonAuthors&&!p._c3AuthorArtefact)return false;
+      if(x.code==='REFERENCE_AUTHOR_LIST_REVIEW'&&p._v7ApaAuthors&&!p._c3AuthorArtefact)return false;
       if(v7SuppressStaleAncillaryIssue(x,p))return false;
       const msg=v7Clean(x.msg||'');
       if(p.nonJournal&&[
@@ -41973,6 +42265,7 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       return true;
     });
     for(const issue of finalTypeIssues)if(!res.issues.some(x=>x.idx===issue.idx&&x.msg===issue.msg))res.issues.push(issue);
+    v7FinalFieldFixes(res);
     return res;
   };
 
@@ -41994,7 +42287,17 @@ if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",
       {name:'initial-first citation not swallowed by APA recovery',raw:'[15] K. Zhong, Y. Wang, Q. Wu, H. You, H. Zhang, M. Su, R. Liang, J. Zuo, S. Yang, J. Tang, Highly conductive skeleton Graphitic-C3N4 assisted Fe-based metal-organic frameworks derived porous bimetallic carbon nanofiber for enhanced oxygen-reduction performance in microbial fuel cells, J. Power Sources 467 (2020). https://doi.org/10.1016/j.jpowsour.2020.228313',e:{authorRegion:'K. Zhong, Y. Wang, Q. Wu, H. You, H. Zhang, M. Su, R. Liang, J. Zuo, S. Yang, J. Tang',sourceRegion:'J. Power Sources'}},
       {name:'Indian standard archive keeps nd and BIS',raw:'IS 4707 : Part 2 : 2017: Classification for cosmetic raw materials and adjuncts : Part 2 List of raw materials generally not recognized as safe for use in cosmetics : Bureau of Indian Standards : Free Download, Borrow, and Streaming : Internet Archive. (n.d.). Retrieved June 11, 2025, from https://archive.org/details/gov.in.is.4707.2.2017/',e:{type:'standard',year:'n.d.',sourceRegion:'Bureau of Indian Standards'}},
       {name:'bare web host recovered',raw:'Steinle-Darling, E., Salveson, A., & Gerrity, D. (2023). Understanding the Impacts of Wastewater Treatment Performance on Advanced Water Treatment Processes and Finished Water Quality. www.waterrf.org',e:{type:'web page',title:'Understanding the Impacts of Wastewater Treatment Performance on Advanced Water Treatment Processes and Finished Water Quality',sourceRegion:'waterrf.org'}},
-      {name:'IPCC report corporate author recovered',raw:'IPCC. Climate Change 2023: Synthesis Report; Contribution of Working Groups I, II and III to the Sixth Assessment Report of the Intergovernmental Panel on Climate Change; Core Writing Team, Lee, H., Romero, J., Eds.; IPCC: Geneva, Switzerland, 2023; pp. 35–115.',e:{type:'report',authorRegion:'IPCC',sourceRegion:'IPCC',year:'2023',hasPages:true}}
+      {name:'IPCC report corporate author recovered',raw:'IPCC. Climate Change 2023: Synthesis Report; Contribution of Working Groups I, II and III to the Sixth Assessment Report of the Intergovernmental Panel on Climate Change; Core Writing Team, Lee, H., Romero, J., Eds.; IPCC: Geneva, Switzerland, 2023; pp. 35–115.',e:{type:'report',authorRegion:'IPCC',sourceRegion:'IPCC',year:'2023',hasPages:true}},
+      {name:'title tail is not a source',raw:'4. T. Nakamura, K. Sato and Y. Tanaka, Graphene oxide cathodes for enhanced oxygen reduction in microbial fuel cells, 2021, 412, 118976.',e:{hasSource:false,_sourceState:'no'}},
+      {name:'lone long number after year is an article number',raw:'6. Q. Zhao, W. Li and X. Sun, Microplastic removal in constructed wetlands treating municipal wastewater, Chem. Eng. J., 2023, 141256.',e:{hasPages:true,hasArticleNo:true,hasVolume:false}},
+      {name:'volume before year moves out of source',raw:'13. D. Wilson, E. Brown and G. Taylor, Adsorption of emerging contaminants on biochar derived from agricultural residues, Sci. Total Environ., 760, 2021, 143456.',e:{sourceRegion:'Sci. Total Environ',hasVolume:true,hasArticleNo:true}},
+      {name:'Article placeholder keeps volume',raw:'Monetti, J.; Ledezma, P.; Freguia, S. Optimised operational parameters for improved nutrient recovery from hydrolysed urine by bio-electroconcentration. Sep. Purif. Technol. 2021, 279, Article. DOI: 10.1016/j.seppur.2021.119793.',e:{hasVolume:true}},
+      {name:'author block ends at parenthesised year',raw:'Feddema J J, (1994). Evaluation of terrestrial climate variability using a moisture index. Charles Warren Thornthwaite Associates, Laboratory of Climatology',e:{title:'Evaluation of terrestrial climate variability using a moisture index',type:'report'}},
+      {name:'spaced initials before year are authors',raw:'Erturk V S, Alomari A K, Kumar P, Murillo-Arcila M (2022) Analytic solution for the strongly nonlinear multi-order fractional version of a BVP occurring in chemical reactor theory. Discrete Dyn Nat Soc 2022:1–9',e:{authorRegion:'Erturk V S, Alomari A K, Kumar P, Murillo-Arcila M',title:'Analytic solution for the strongly nonlinear multi-order fractional version of a BVP occurring in chemical reactor theory',sourceRegion:'Discrete Dyn Nat Soc'}},
+      {name:'single initialled author with et al',raw:'8. S. Gupta et al., Removal of nitrate from drinking water by electrochemical reduction, Environ. Sci. Technol., 2021, 55, 9876–9885.',e:{authorRegion:'S. Gupta et al',title:'Removal of nitrate from drinking water by electrochemical reduction'}},
+      {name:'guidance as engineering term stays journal',raw:'Schiassi E, Curti F (2021) Class of optimal space guidance problems solved via indirect methods. J Guid Control 44:1–12',e:{type:'journal article'}},
+      {name:'Guidance on document stays guideline',raw:'Environment Agency (2019) Guidance on the classification and assessment of waste. Environment Agency, Bristol.',e:{type:'guideline'}},
+      {name:'journal year used as volume',raw:'Yang Y, Hou M, Luo J (2018) A novel improved extreme learning machine algorithm in solving ordinary differential equations by Legendre neural network methods. Adv Differ Equ 2018(1):1–24',e:{hasVolume:true}},
     ];
     const failures=[...(prior.failures||[])];
     for(const tc of cases){let p;try{p=refCheck(tc.raw,'',[{raw:tc.raw}]).parsed[0];}catch(err){failures.push({name:tc.name,error:String(err)});continue;}for(const [k,v] of Object.entries(tc.e)){if(p?.[k]!==v)failures.push({name:tc.name,field:k,expected:v,actual:p?.[k]});}}
