@@ -21,7 +21,7 @@ https://github.com/anilkdhanda18/manuscriptchecker/
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta name="application-version" content="101">
+<meta name="application-version" content="102">
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="copyright" content="Copyright © 2026 Anil Dhanda" />
@@ -14891,6 +14891,32 @@ function abbrMaskAcknowledgements(text){
     return on?line.replace(/\S/g," "):line;
   }).join("\n");
 }
+// An abbreviation that is one part of a hyphenated material name ("N-rGO-CuSn", "MoS2-MIL-101") is part of that name, not a use of the abbreviation.
+// Place names and ordinary compounds ("Delhi-NCR", "SCADA-operated", "AI-ML") still count.
+// Two-letter element symbols only: single letters (N-, P-, S-) are also ordinary prefixes ("P-MES").
+const ABBR_ELEMENT_SYMBOLS=new Set("He Li Be Ne Na Mg Al Si Cl Ar Ca Sc Ti Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr Rb Sr Zr Nb Mo Ru Rh Pd Ag Cd In Sn Sb Te Xe Cs Ba La Ce Pr Nd Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf Ta Re Os Ir Pt Au Hg Tl Pb Bi".split(" "));
+const ABBR_HYPHEN_NAME_CACHE={src:undefined,set:new Set()};
+function abbrDefinedHyphenNames(){
+  const blocks=typeof DOCX_FTE_BLOCKS!=="undefined"?DOCX_FTE_BLOCKS:null;
+  if(blocks!==ABBR_HYPHEN_NAME_CACHE.src){
+    ABBR_HYPHEN_NAME_CACHE.src=blocks;
+    ABBR_HYPHEN_NAME_CACHE.set=new Set((blocks||[]).flatMap(b=>[...String(b?.text||"").matchAll(/\(\s*([\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)+?)s?\s*\)/gu)].map(m=>m[1])));
+  }
+  return ABBR_HYPHEN_NAME_CACHE.set;
+}
+function abbrInsideMaterialName(sent,index,len){
+  const s=String(sent||"");let a=index,b=index+len;
+  while(a>0&&/[\p{L}\p{N}-]/u.test(s[a-1]))a--;
+  while(b<s.length&&/[\p{L}\p{N}-]/u.test(s[b]))b++;
+  const word=s.slice(a,b).replace(/^-+|-+$/g,"");
+  if(!word.includes("-"))return false;
+  const own=s.slice(index,index+len);
+  if(own.includes("-"))return false; // the abbreviation is itself the hyphenated form (e.g. "RE-MOF")
+  // A hyphenated name defined in its own right somewhere, e.g. "(N-rGO)", is a name; its parts are not uses.
+  const defined=abbrDefinedHyphenNames();if(defined.has(word)||defined.has(word.replace(/s$/,"")))return true;
+  // A material part has a digit, a formula-like mixed case ("CuSn"; not a plural such as "MOFs"), or is an element symbol.
+  return word.split("-").filter(seg=>seg&&seg!==own&&seg!==own+"s").some(seg=>/\d/.test(seg)||/^(?:\p{Lu}\p{Ll}?){2,}$/u.test(seg)&&/\p{Ll}/u.test(seg)&&!/^\p{Lu}+s$/u.test(seg)||ABBR_ELEMENT_SYMBOLS.has(seg));
+}
 function analyze(rawText, title, standardSet, skipRefs, skipTables){
   // Establish the bibliography boundary from the ORIGINAL manuscript before any
   // abbreviation-specific preprocessing can remove or alter structural headings.
@@ -15194,6 +15220,7 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
       [...DECLARED_ABBR_MAP.values()].filter(d=>abbrLooksExplicitMixedCaseAcronym(d.form)&&abbrDefLooksLexicalFullForm(d.form,d.long)));
   function addOccurrence(raw,key,sent,si,index,spans,meta={}){
     if(abbrOverlapsProtectedSpan(ramanSpansBySentence[si],index,String(raw).length))return;
+    if(abbrInsideMaterialName(sent,index,String(raw).length))return;
     const occKey=`${si}:${index}:${key}`;
     if(seenOccurrence.has(occKey)) return;
     seenOccurrence.add(occKey);
@@ -15697,7 +15724,14 @@ function analyze(rawText, title, standardSet, skipRefs, skipTables){
           if(!already){
             errors.push({
               abbr:disp,
-              msg:`${disp} is defined in the abstract but not in the main text. Define it again at its first occurrence in the main text.`,
+              msg:(()=>{
+                // Say plainly when the abstract only defines a combined form such as "AI–ML".
+                const absText=String(absDefHtml||"").replace(/<[^>]+>/g,""),esc=String(disp).replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+                const combo=(absText.match(new RegExp(`\\(\\s*([^()]*?(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])[^()]*?)\\s*\\)`,"u"))||[])[1];
+                return combo&&combo.trim()!==disp
+                  ?`${disp} is defined in the abstract only as part of "${combo.trim()}", and is not defined in the main text. The main text needs its own definition: define ${disp} at its first use in the main text.`
+                  :`${disp} is defined in the abstract, and is not defined again in the main text. The main text needs its own definition: define ${disp} again at its first use in the main text.`;
+              })(),
               snip:mainUseHtml,
               contexts,
               independentMainScope:true,
@@ -16493,7 +16527,7 @@ function abbrIssueStatusLabel(msg,priority,it=null,row=null){
   if(it?.tableGroup)return "Local definition review";
   if(it?.programmeName)return "Check programme name";
   if(it?.optionalFrequency)return msg.split(" in eligible prose")[0];
-  if(it?.abstractOnlyDefinition)return "Not defined at first use in the main text";
+  if(it?.abstractOnlyDefinition)return "Defined in abstract only — define again in main text";
   if(/List of Abbreviations not detected/i.test(msg)) return "List of Abbreviations not detected";
   if(/used in (?:Table|Figure) .*without a local definition|local (?:table|figure) definition/i.test(msg)) return "Local definition review";
 
@@ -28380,6 +28414,8 @@ function precisionTableCheck(tables){
       // parameter/unit; otherwise require at least three values before inferring a pattern.
       const comparableHeader=/\b(?:pH|BOD|COD|TSS|TDS|TN|TP|FC|DO|EC|temperature|temp\.?|pressure|flow|concentration|removal|efficiency|capacity|rate|yield|voltage|current|conductivity|turbidity)\b/i.test(header)
         || /[([]\s*(?:mg|g|µg|μg|ng|kg|mL|L|m³|cm³|mm|cm|m|°C|K|Pa|kPa|MPa|%|µS|μS|mS|S\/m|CFU|MPN)\b/i.test(header);
+      // Prices of different items (cost, price, Rs, ₹, $) are not measurements; their decimals are not a precision question.
+      if(/\b(?:cost|costs|price|prices|expenditure|budget|rs|inr|usd|eur)\b|[₹$€£]/i.test(header)) continue;
       if(vals.length<(comparableHeader?2:3)) continue;
 
       const units=[...new Set(vals.map(v=>v.unit).filter(Boolean))];
@@ -28416,7 +28452,7 @@ function precisionRowTableCheck(table,info){
   const out=[],location=mcNumericTableLocation(table);
   for(let r=info.dataStart;r<table.rows.length;r++){
     const row=table.rows[r],header=String(row[0]||"").trim(),hi=unitTableRowUnit(header);
-    if(!header||unitTableIdentifierParameter(header))continue;
+    if(!header||unitTableIdentifierParameter(header)||/\b(?:cost|costs|price|prices|expenditure|budget|rs|inr|usd|eur)\b|[₹$€£]/i.test(header))continue;
     const groups=new Map();
     for(let c=1;c<row.length;c++){
       if(table.dataCells?.[r]?.[c]===false)continue;
@@ -33828,6 +33864,7 @@ fteAnalyze=function(blocks){
             }
             if(abbrLooksMixedCaseCompound(form) && !mixedCompounds.some(c=>c.index===mm.index&&c[0].length===form.length))continue;
             if(!tokenCandidate(scanText,mm.index,form,standardSet,protectedDesignationSuffixSpans,effectiveStandardOverrideKeys,{defs:[...(defsByKey.get(mk)||[]),...compoundDefinitions.filter(d=>keyOf(d.form)===mk)]}))continue;
+            if(abbrInsideMaterialName(scanText,mm.index,form.length))continue;
             if(!occByKey.has(mk))occByKey.set(mk,[]);
             if(!occByKey.get(mk).some(o=>o.partIndex===part.index&&o.index===mm.index&&o.raw===form))occByKey.get(mk).push({key:mk,raw:form,index:mm.index,partRole:part.role,partIndex:part.index,text:scanText,display:part.display||scanText,scopeId:scope.id,scopeType:scope.scopeType,scopeLabel:scope.label,
               definitionOccurrence:(defsByKey.get(mk)||[]).some(d=>d.partIndex===part.index&&d.shortStart===mm.index)});
@@ -33844,6 +33881,7 @@ fteAnalyze=function(blocks){
           continue;
         }
         if(!tokenCandidate(scanText,m.index,raw,standardSet,protectedDesignationSuffixSpans,effectiveStandardOverrideKeys))continue;
+        if(abbrInsideMaterialName(scanText,m.index,raw.length))continue;
         const definitionOccurrence=(defsByKey.get(k)||[]).some(d=>{
           if(d.partRole!==part.role)return false;
           if(Number.isFinite(d.shortStart) && Math.abs(d.shortStart-m.index)<=1) return true;
